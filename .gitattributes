@@ -210,9 +210,10 @@ bin/	binary
 
 # Source files
 # ============
-*.Rdata     text
+*.rdz     binary
 *.rdb       binary
 *.rds       binary
+*.rdz       binary
 *.Rd        text
 *.Rdx       binary
 *.Rmd		text
