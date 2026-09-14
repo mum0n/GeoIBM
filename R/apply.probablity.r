@@ -1,6 +1,0 @@
-
-  apply.probablity = function () {
-      
-   ### TODO 
-    
-  }
