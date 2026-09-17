@@ -282,8 +282,8 @@ function growth_schedule()
     schedule.cwf_inc = zeros(Float64, length(instars))
 
     for k in 1:(length(instars) - 1)
-        schedule.cwm_inc[k] = (schedule.cwm_med[k + 1] - schedule.cwm_med[k]) / 2.0
-        schedule.cwf_inc[k] = (schedule.cwf_med[k + 1] - schedule.cwf_med[k]) / 2.0
+        schedule.cwm_inc[k] = schedule.cwm_med[k + 1] - schedule.cwm_med[k]
+        schedule.cwf_inc[k] = schedule.cwf_med[k + 1] - schedule.cwf_med[k]
     end
 
     return schedule
@@ -448,8 +448,9 @@ function fecundity(
     chosen_method = if method !== nothing
         method
     else
-        # Females with <= 1 stored sperm clutch or young adult age are primiparous
-        (crab.sperm_clutches <= 1) ? "moncton.primiparous" : "moncton.multiparous"
+        # Females with no stored sperm (never mated) are primiparous;
+        # after first mating sperm_clutches is set to 2 or 3 before extrusion
+        (crab.sperm_clutches == 0) ? "moncton.primiparous" : "moncton.multiparous"
     end
     shell_age = max(1.0, (crab.age_days - 180.0 * (crab.instar - 3)) / 365.0)
     raw_eggs = fecundity(

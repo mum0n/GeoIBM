@@ -1070,8 +1070,8 @@ using model_agent
             4, (5, 5), juvenile, male, 6, 260.0, 20.0, 3.5, 10.0, 150.0, 100.0,
             false, 0, 0.0, 0
         )
-        m_soft = calculate_mortality_probability(soft_crab, 3.0, 5.0)
-        m_hard = calculate_mortality_probability(hard_crab, 3.0, 5.0)
+        m_soft = calculate_mortality_probability(soft_crab, 3.0, 5.0, 205.0)
+        m_hard = calculate_mortality_probability(hard_crab, 3.0, 5.0, 260.0)
         @test m_soft > m_hard
 
         young_adult = SnowCrab(
@@ -1082,8 +1082,8 @@ using model_agent
             6, (5, 5), adult, male, 12, 2800.0, 105.0, 450.0, 60.0, 1000.0, 100.0,
             false, 0, 0.0, 0
         )
-        m_young = calculate_mortality_probability(young_adult, 3.0, 5.0)
-        m_old = calculate_mortality_probability(old_adult, 3.0, 5.0)
+        m_young = calculate_mortality_probability(young_adult, 3.0, 5.0, 1200.0)
+        m_old   = calculate_mortality_probability(old_adult, 3.0, 5.0, 2800.0)
         @test m_old > m_young
 
         # 6. Temperature-coupled perform_molt!
@@ -1250,7 +1250,8 @@ using model_agent
             0.0, 0.0, false, 0, 0.0, 0
         )
         # Set days since molt to exceed min_intermolt_days(juvenile, 5) (~90 days)
-        juv.last_molt_time = 0.0
+        # current_time = 30.0, so last_molt_time = -120.0 gives days_since_molt = 150
+        juv.last_molt_time = -120.0
         juv.age_days = 150.0
         # Step until molt occurs
         molted = false

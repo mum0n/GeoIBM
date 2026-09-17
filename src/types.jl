@@ -193,6 +193,8 @@ molting thresholds, reproduction, and harvesting rules in the snow crab IBM.
 - `assimilation_efficiency::Float64`: Fraction of ingested food assimilated into metabolic pool.
 - `soft_shell_duration::Float64`: Duration in days of elevated post-ecdysis vulnerability.
 - `senescence_age_threshold::Float64`: Adult carapace shell age (years) when senescence starts.
+- `temp_thermal_stress::Float64`: Bottom-water temperature (°C) above which stenothermic stress mortality activates.
+- `min_mating_energy_fraction::Float64`: Minimum energy reserve (as fraction of `energy_molt_threshold`) required for mating or clutch extrusion.
 - `dt::Float64`: Simulation time step in days.
 """
 Base.@kwdef struct IBMParameters
@@ -200,7 +202,7 @@ Base.@kwdef struct IBMParameters
     max_size_female::Float64 = 95.0
     maturity_size_mid::Float64 = 60.0
     metabolic_rate_base::Float64 = 0.01
-    intake_rate_base::Float64 = 0.05
+    intake_rate_base::Float64 = 0.15  # I_max: saturation-limit ingestion coeff (g^0.75 d^-1)
     energy_molt_threshold::Float64 = 50.0
     energy_molt_slope::Float64 = 1.5
     molt_energy_retention::Float64 = 0.10
@@ -226,6 +228,8 @@ Base.@kwdef struct IBMParameters
     assimilation_efficiency::Float64 = 0.75
     soft_shell_duration::Float64 = 30.0
     senescence_age_threshold::Float64 = 3.0
+    temp_thermal_stress::Float64 = 8.0    # °C onset for stenothermic mortality
+    min_mating_energy_fraction::Float64 = 0.10  # fraction of energy_molt_threshold
     dt::Float64 = 1.0
 end
 

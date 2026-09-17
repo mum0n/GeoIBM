@@ -146,8 +146,10 @@ crab given local environmental conditions and body size or wet mass.
   moderates metabolic efficiency above thermal optimum.
 - **Holling Type II Functional Ingestion Response**:
   ```math
-  I_{demand} = I_{base} \\cdot \\frac{F_{local}}{F_{local} + K_{half}} \\cdot W^{0.75}
+  I_{demand} = I_{max} \\cdot \\frac{F_{local}}{F_{local} + K_{half}} \\cdot W^{0.75}
   ```
+  where ``I_{max}`` = `intake_rate_base` (default: `0.15`) is the maximum ingestion coefficient at
+  food saturation (units: g energy g^{-0.75} d^{-1}).
 - **Realized Ingestion and Net Assimilation**:
   ```math
   I_{actual} = \\min(I_{demand}, F_{local})
@@ -185,9 +187,10 @@ function calculate_energy_change(
     end
     allometric_factor = max(0.01, effective_mass)^0.75
 
-    # Thermal metabolic scaling with warm-temperature depression
+    # Thermal metabolic scaling with warm-temperature efficiency depression
+    t_stress = params.temp_thermal_stress
     thermal_exp = exp(0.08 * temp)
-    thermal_penalty = (temp > 6.0) ? exp(-0.01 * (temp - 6.0)^2) : 1.0
+    thermal_penalty = (temp > t_stress) ? exp(-0.01 * (temp - t_stress)^2) : 1.0
     metabolism = params.metabolic_rate_base * allometric_factor * thermal_exp * thermal_penalty
 
     # Holling Type II saturating functional response
@@ -196,8 +199,9 @@ function calculate_energy_change(
     functional_response = (food_avail > 0.0) ?
         (food_avail / (food_avail + k_half)) : 0.0
 
-    desired_intake = params.intake_rate_base * functional_response *
-                     allometric_factor * (k_half + 1.0)
+    # Demand: I_max * FR * W^0.75, where I_max = intake_rate_base is the
+    # maximum (food-saturated) ingestion coefficient (g energy g^-0.75 d^-1)
+    desired_intake = params.intake_rate_base * functional_response * allometric_factor
     actual_intake = min(desired_intake, food_avail)
 
     # Net assimilated energy after Specific Dynamic Action (SDA ~ 10%)
@@ -419,6 +423,11 @@ function perform_molt!(
             rng = rng
         )
         crab.instar += 1
+
+        # Clamp to empirical size and instar limits
+        max_cw = (crab.sex === female) ? params.max_size_female : params.max_size_male
+        crab.size_mm = min(crab.size_mm, max_cw)
+        crab.instar = min(crab.instar, 15)  # empirical upper limit: males ~12-13, females ~10-11
     end
 
     # Update body mass following growth
@@ -433,7 +442,7 @@ function perform_molt!(
 end
 
 """
-    calculate_mortality_probability(crab, temp, food; params=IBMParameters(), local_density=0.0)
+    calculate_mortality_probability(crab, temp, food, current_time=0.0; params=IBMParameters(), local_density=0.0)
 
 Compute aggregate daily instantaneous natural mortality probability for an individual
 crab, integrating:
@@ -464,7 +473,8 @@ Z_{daily} = (Z_{base} \\cdot \\mu_{stage}) + Z_{pred} + Z_{soft} + Z_{starve} + 
 function calculate_mortality_probability(
     crab::SnowCrab,
     temp::Real,
-    food::Real;
+    food::Real,
+    current_time::Real = 0.0;
     params::IBMParameters = IBMParameters(),
     local_density::Real = 0.0
 )
@@ -482,13 +492,10 @@ function calculate_mortality_probability(
     cw_excess = max(0.0, crab.size_mm - 5.0)
     predation_risk = (0.15 / 365.0) * exp(-0.03 * cw_excess)
 
-    # 3. Post-molt soft-shell ecdysial vulnerability (Shell condition 1)
-    days_since_molt = max(0.0, crab.age_days - crab.last_molt_time)
-    soft_shell_risk = if days_since_molt < params.soft_shell_duration
-        (0.12 / 365.0) * exp(-days_since_molt / 15.0)
-    else
-        0.0
-    end
+    # 3. Post-molt soft-shell ecdysial vulnerability
+    # Exponential decay with τ=15 d; negligible (<1.5e-6/d) by day 60 — no hard cutoff needed
+    days_since_molt = max(0.0, current_time - crab.last_molt_time)
+    soft_shell_risk = (0.12 / 365.0) * exp(-days_since_molt / 15.0)
 
     # 4. Progressive starvation hazard scaling with energetic deficit
     starvation_risk = if crab.energy_reserve < 0.0
@@ -499,9 +506,9 @@ function calculate_mortality_probability(
         0.0
     end
 
-    # 5. Stenothermic thermal stress mortality accelerating above 6.0°C
-    thermal_stress = if temp > 6.0
-        (0.05 / 365.0) * ((temp - 6.0)^1.5)
+    # 5. Stenothermic thermal stress mortality above params.temp_thermal_stress
+    thermal_stress = if temp > params.temp_thermal_stress
+        (0.05 / 365.0) * ((temp - params.temp_thermal_stress)^1.5)
     else
         0.0
     end

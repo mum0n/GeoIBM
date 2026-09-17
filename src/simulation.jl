@@ -11,6 +11,7 @@ using Agents
 using DataFrames
 using Random
 using Statistics
+using Distributions
 using TOML
 
 """
@@ -468,7 +469,7 @@ function initialize_model(;
         weight_g = crab_weight(size_mm, sex; mat=0)
         age_days = (instar - 3) * 180.0 + rand(rng) * 90.0
         energy_reserve = params.energy_molt_threshold * rand(rng, Uniform(0.3, 0.8))
-        last_molt_time = 0.0
+        last_molt_time = -age_days    # backdate so days_since_molt == age_days at t=0
         degree_days = rand(rng, Uniform(50.0, 300.0))
         is_mating_ready = false
         eggs_count = 0
@@ -538,7 +539,7 @@ Selected element from `items`.
 function sample_weighted(items, weights, rng)
     tot = sum(weights)
     if tot <= 0.0 || isempty(items)
-        return rand(rng, items)
+        return items[rand(rng, 1:length(items))]
     end
     r = rand(rng) * tot
     cum = 0.0
@@ -589,8 +590,7 @@ function crab_disperse!(
     end
 
     # 3. Benthic habitat taxis: evaluate current position and Moore neighbors
-    neighbors = collect(nearby_positions(crab.pos, model))
-    candidates = pushfirst!(neighbors, crab.pos)
+    candidates = [crab.pos; collect(nearby_positions(crab.pos, model))]
 
     # Compute habitat utility for each candidate position
     # U(x, y) = S_temp * (1.0 + 0.5 * S_food)
@@ -649,16 +649,15 @@ Distillation features:
 function agent_step_simple!(crab::SnowCrab, model)
     day_of_year = mod(model.current_time, 365.0)
 
-    # 1. Age progression (without food limitation or degree-day accumulation)
+    # 1. Age progression (simple mode: no food limitation or degree-day accumulation)
     crab.age_days += model.dt
-    crab.energy_reserve = model.params.energy_molt_threshold
 
     # 2. Time/age-based molting check and execution
     is_molt_season = (model.params.molt_season_start <= day_of_year <=
                       model.params.molt_season_end)
 
     if crab.stage === juvenile && is_molt_season
-        days_since_molt = crab.age_days - crab.last_molt_time
+        days_since_molt = model.current_time - crab.last_molt_time
         min_days = min_intermolt_days(crab.stage, crab.instar)
         if days_since_molt >= min_days
             # Daily molt hazard scaling with accumulated intermolt duration
@@ -690,9 +689,7 @@ function agent_step_simple!(crab::SnowCrab, model)
                 crab.last_molt_time = model.current_time
                 crab.weight_g = crab_weight(crab; stochastic = false, rng = abmrng(model))
 
-                if haskey(abmproperties(model), :total_molts)
-                    model.total_molts += 1
-                end
+                model.total_molts += 1
             end
         end
     end
@@ -704,9 +701,7 @@ function agent_step_simple!(crab::SnowCrab, model)
     mort_prob = clamp(base_mort + pred_risk, 0.0, 1.0)
 
     if rand(abmrng(model)) < mort_prob
-        if haskey(abmproperties(model), :deaths_predation)
-            model.deaths_predation += 1
-        end
+        model.deaths_predation += 1
         remove_agent!(crab, model)
         return nothing
     end
@@ -724,13 +719,9 @@ function agent_step_simple!(crab::SnowCrab, model)
                            s50_sigma = 5.0
                        )
         if rand(abmrng(model)) < harvest_prob
-            if haskey(abmproperties(model), :total_catch_numbers)
-                model.total_catch_numbers += 1
-                model.total_catch_biomass_kg += (crab.weight_g / 1000.0)
-            end
-            if haskey(abmproperties(model), :deaths_fishery)
-                model.deaths_fishery += 1
-            end
+            model.total_catch_numbers += 1
+            model.total_catch_biomass_kg += (crab.weight_g / 1000.0)
+            model.deaths_fishery += 1
             remove_agent!(crab, model)
             return nothing
         end
@@ -769,9 +760,7 @@ function agent_step_simple!(crab::SnowCrab, model)
                     rng = abmrng(model)
                 )
 
-                if haskey(abmproperties(model), :total_eggs_spawned)
-                    model.total_eggs_spawned += crab.eggs_count
-                end
+                model.total_eggs_spawned += crab.eggs_count
             end
         end
     end
@@ -779,12 +768,6 @@ function agent_step_simple!(crab::SnowCrab, model)
     # 7. Larval hatching and benthic settlement
     if crab.eggs_count > 0 && model.current_time >= crab.hatch_day
         n_benthic = get(abmproperties(model), :n_benthic_crabs, 0)
-        if n_benthic == 0
-            n_benthic = count(
-                c -> c.stage === juvenile || c.stage === adult,
-                allagents(model)
-            )
-        end
         k_cap = model.params.benthic_carrying_capacity
         density_feedback = 1.0 + (n_benthic / k_cap)
 
@@ -828,20 +811,15 @@ function agent_step_simple!(crab::SnowCrab, model)
             )
         end
 
-        if haskey(abmproperties(model), :clutch_recruitment_records)
-            push!(abmproperties(model)[:clutch_recruitment_records], (
-                hatch_time = model.current_time,
-                mother_cw = crab.size_mm,
-                mother_weight_g = crab.weight_g,
-                eggs_count = crab.eggs_count,
-                recruits_settled = num_recruits,
-                density_feedback = density_feedback
-            ))
-        end
-
-        if haskey(abmproperties(model), :total_recruits_settled)
-            model.total_recruits_settled += num_recruits
-        end
+        push!(abmproperties(model)[:clutch_recruitment_records], (
+            hatch_time = model.current_time,
+            mother_cw = crab.size_mm,
+            mother_weight_g = crab.weight_g,
+            eggs_count = crab.eggs_count,
+            recruits_settled = num_recruits,
+            density_feedback = density_feedback
+        ))
+        model.total_recruits_settled += num_recruits
         crab.eggs_count = 0
         crab.is_mating_ready = true
 
@@ -895,9 +873,7 @@ function agent_step_complex!(crab::SnowCrab, model)
             params = model.params,
             rng = abmrng(model)
         )
-        if haskey(abmproperties(model), :total_molts)
-            model.total_molts += 1
-        end
+        model.total_molts += 1
     end
 
     # 3. Natural mortality with density-dependent cannibalism coupling
@@ -905,24 +881,23 @@ function agent_step_complex!(crab::SnowCrab, model)
     mort_prob = calculate_mortality_probability(
         crab,
         current_temp,
-        current_food;
+        current_food,
+        model.current_time;
         params = model.params,
         local_density = local_density
     )
     if rand(abmrng(model)) < mort_prob
-        # Tally dominant mortality driver
-        if haskey(abmproperties(model), :deaths_starvation)
-            days_since_molt = max(0.0, crab.age_days - crab.last_molt_time)
-            thresh = model.params.senescence_age_threshold
-            if crab.energy_reserve < 0.0
-                model.deaths_starvation += 1
-            elseif current_temp > 6.0
-                model.deaths_thermal += 1
-            elseif crab.stage === adult && (days_since_molt / 365.0) > thresh
-                model.deaths_senescence += 1
-            else
-                model.deaths_predation += 1
-            end
+        # Tally dominant mortality driver by most likely cause
+        days_since_molt = model.current_time - crab.last_molt_time
+        thresh = model.params.senescence_age_threshold
+        if crab.energy_reserve < 0.0
+            model.deaths_starvation += 1
+        elseif current_temp > model.params.temp_thermal_stress
+            model.deaths_thermal += 1
+        elseif crab.stage === adult && (days_since_molt / 365.0) > thresh
+            model.deaths_senescence += 1
+        else
+            model.deaths_predation += 1
         end
         remove_agent!(crab, model)
         return nothing
@@ -939,13 +914,9 @@ function agent_step_complex!(crab::SnowCrab, model)
                        selectivity(crab.size_mm; s50=model.params.legal_size_male,
                                    s50_sigma=5.0)
         if rand(abmrng(model)) < harvest_prob
-            if haskey(abmproperties(model), :total_catch_numbers)
-                model.total_catch_numbers += 1
-                model.total_catch_biomass_kg += (crab.weight_g / 1000.0)
-            end
-            if haskey(abmproperties(model), :deaths_fishery)
-                model.deaths_fishery += 1
-            end
+            model.total_catch_numbers += 1
+            model.total_catch_biomass_kg += (crab.weight_g / 1000.0)
+            model.deaths_fishery += 1
             remove_agent!(crab, model)
             return nothing
         end
@@ -955,7 +926,6 @@ function agent_step_complex!(crab::SnowCrab, model)
     crab_disperse!(crab, model; rng = abmrng(model))
 
     # 6. Reproduction: seasonal mating and egg clutch extrusion
-    day_of_year = mod(model.current_time, 365.0)
     is_mating_season = (model.params.mating_season_start <= day_of_year <=
                         model.params.mating_season_end)
 
@@ -963,8 +933,10 @@ function agent_step_complex!(crab::SnowCrab, model)
         # Spring mating: receptive adult female seeks mature male within detection radius
         if is_mating_season && crab.is_mating_ready && crab.eggs_count == 0
             radius = model.params.mating_search_radius
+            min_e = model.params.min_mating_energy_fraction *
+                    model.params.energy_molt_threshold
             nearby_males = filter(
-                m -> m.stage === adult && m.sex === male && m.energy_reserve > 5.0,
+                m -> m.stage === adult && m.sex === male && m.energy_reserve > min_e,
                 collect(nearby_agents(crab, model, radius))
             )
             # If male found, copulate: replenish spermathecal storage with sperm
@@ -984,7 +956,8 @@ function agent_step_complex!(crab::SnowCrab, model)
 
         # Egg clutch extrusion: requires stored sperm, empty brood, and mating season
         if is_mating_season && crab.eggs_count == 0 && crab.sperm_clutches > 0 &&
-           crab.energy_reserve > 5.0
+           crab.energy_reserve > model.params.min_mating_energy_fraction *
+                                  model.params.energy_molt_threshold
             egg_estimate = fecundity(crab; rng = abmrng(model))
             crab.eggs_count = max(egg_estimate, 1000)
             crab.sperm_clutches -= 1
@@ -1002,9 +975,7 @@ function agent_step_complex!(crab::SnowCrab, model)
             # Update female body weight to include extruded egg mass
             crab.weight_g = crab_weight(crab; include_eggs = true, rng = abmrng(model))
 
-            if haskey(abmproperties(model), :total_eggs_spawned)
-                model.total_eggs_spawned += crab.eggs_count
-            end
+            model.total_eggs_spawned += crab.eggs_count
         end
     end
 
@@ -1012,12 +983,6 @@ function agent_step_complex!(crab::SnowCrab, model)
     if crab.eggs_count > 0 && model.current_time >= crab.hatch_day
         # Benthic population count for density-dependent compensatory survival
         n_benthic = get(abmproperties(model), :n_benthic_crabs, 0)
-        if n_benthic == 0
-            n_benthic = count(
-                c -> c.stage === juvenile || c.stage === adult,
-                allagents(model)
-            )
-        end
         k_cap = model.params.benthic_carrying_capacity
         density_feedback = 1.0 + (n_benthic / k_cap)
 
@@ -1057,7 +1022,7 @@ function agent_step_complex!(crab::SnowCrab, model)
                 recruit_cw,
                 recruit_weight,
                 10.0,                 # Modest starting energy reserve
-                model.current_time,
+                model.current_time,  # last_molt_time = t_settle → days_since_molt = 0
                 0.0,                  # Initial degree-days = 0
                 false,
                 0,
@@ -1066,20 +1031,15 @@ function agent_step_complex!(crab::SnowCrab, model)
             )
         end
 
-        if haskey(abmproperties(model), :clutch_recruitment_records)
-            push!(abmproperties(model)[:clutch_recruitment_records], (
-                hatch_time = model.current_time,
-                mother_cw = crab.size_mm,
-                mother_weight_g = crab.weight_g,
-                eggs_count = crab.eggs_count,
-                recruits_settled = num_recruits,
-                density_feedback = density_feedback
-            ))
-        end
-
-        if haskey(abmproperties(model), :total_recruits_settled)
-            model.total_recruits_settled += num_recruits
-        end
+        push!(abmproperties(model)[:clutch_recruitment_records], (
+            hatch_time = model.current_time,
+            mother_cw = crab.size_mm,
+            mother_weight_g = crab.weight_g,
+            eggs_count = crab.eggs_count,
+            recruits_settled = num_recruits,
+            density_feedback = density_feedback
+        ))
+        model.total_recruits_settled += num_recruits
         crab.eggs_count = 0
         crab.is_mating_ready = true   # Ready for next spring reproductive season
 
@@ -1132,18 +1092,10 @@ function model_step_simple!(model)
             mat_females += 1
         end
     end
-    if haskey(abmproperties(model), :n_benthic_crabs)
-        model.n_benthic_crabs = benthic_count
-    end
-    if haskey(abmproperties(model), :n_mature_males)
-        model.n_mature_males = mat_males
-    end
-    if haskey(abmproperties(model), :n_mature_females)
-        model.n_mature_females = mat_females
-    end
-    if haskey(abmproperties(model), :n_legal_males)
-        model.n_legal_males = legal_males
-    end
+    model.n_benthic_crabs = benthic_count
+    model.n_mature_males = mat_males
+    model.n_mature_females = mat_females
+    model.n_legal_males = legal_males
 
     return nothing
 end
@@ -1161,10 +1113,12 @@ Advance environmental state and update demographic caches for one simulation tim
 function model_step_complex!(model)
     model.current_time += model.dt
 
-    # Sinusoidal seasonal oscillation: T(t) = T_base + T_amp * sin(2π * t / 365)
+    # Sinusoidal seasonal oscillation with phase shift for Scotian Shelf bottom water:
+    # T(t) = T_base + T_amp * sin(2π(t − 169) / 365)
+    # Phase 169 d: minimum ~day 78 (March 19), maximum ~day 260 (Sept 17)
     seasonal_temp = model.params.temp_base +
                     model.params.temp_amplitude *
-                    sin(2.0 * π * model.current_time / 365.0)
+                    sin(2.0 * π * (model.current_time - 169.0) / 365.0)
 
     noise_sd = model.params.temp_noise_sd
     nx, ny = size(model.temperature_field)
@@ -1198,18 +1152,10 @@ function model_step_complex!(model)
             mat_females += 1
         end
     end
-    if haskey(abmproperties(model), :n_benthic_crabs)
-        model.n_benthic_crabs = benthic_count
-    end
-    if haskey(abmproperties(model), :n_mature_males)
-        model.n_mature_males = mat_males
-    end
-    if haskey(abmproperties(model), :n_mature_females)
-        model.n_mature_females = mat_females
-    end
-    if haskey(abmproperties(model), :n_legal_males)
-        model.n_legal_males = legal_males
-    end
+    model.n_benthic_crabs = benthic_count
+    model.n_mature_males = mat_males
+    model.n_mature_females = mat_females
+    model.n_legal_males = legal_males
 
     return nothing
 end
