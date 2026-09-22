@@ -467,45 +467,6 @@ function initialize_model(;
         age_days = (instar - 3) * 180.0 + rand(rng) * 90.0
         energy_reserve = params.initial_energy
 
-        # Sample intrinsic biological traits for this individual agent
-        trait_l50 = if sex == female
-            rand(rng, Normal(params.maturity_l50_female, params.maturity_l50_female_sd))
-        else
-            rand(rng, Normal(params.maturity_l50_male, params.maturity_l50_male_sd))
-        end
-
-        trait_slope = if sex == female
-            max(1.0, rand(rng, Normal(params.maturity_slope_female, params.maturity_slope_female_sd)))
-        else
-            max(1.0, rand(rng, Normal(params.maturity_slope_male, params.maturity_slope_male_sd)))
-        end
-
-        # Fecundity trait (using primiparous intercept/slope as the individual identity)
-        trait_f_int = rand(rng, Normal(params.fecundity_moncton_prim_m_log10_intercept, params.fecundity_moncton_prim_m_err))
-        trait_f_slp = rand(rng, Normal(params.fecundity_moncton_prim_m_log10_slope, 0.05)) # Low CV for slope
-
-        # Growth trait (using bivariate normal sampling)
-        if sex == female
-            z1 = rand(rng, Normal(0.0, 1.0))
-            z2 = rand(rng, Normal(0.0, 1.0))
-            trait_g_int = 0.1931 + 0.0545 * z1
-            trait_g_slp = 1.0372 - 0.017376 * z1 + 0.005068 * z2
-        else
-            z1 = rand(rng, Normal(0.0, 1.0))
-            z2 = rand(rng, Normal(0.0, 1.0))
-            trait_g_int = 0.30153 + 0.02198 * z1
-            trait_g_slp = 1.00027 - 0.00643655 * z1 + 0.0017492 * z2
-        end
-
-        # Populate initial cohort across early benthic instars (instars 4 to 7)
-    for _ in 1:N_agents
-        instar = rand(rng, 4:7)
-        sex = rand(rng, (male, female))
-        size_mm = carapacewidth(instar, sex; type=:random, rng=rng)
-        weight_g = crab_weight(size_mm, sex; mat=0)
-        age_days = (instar - 3) * 180.0 + rand(rng) * 90.0
-        energy_reserve = params.initial_energy
-
         last_molt_time = -age_days    # backdate so days_since_molt == age_days at t=0
         degree_days = rand(rng, Uniform(50.0, 300.0))
         is_mating_ready = false
@@ -596,11 +557,11 @@ function sample_individual_traits!(crab::SnowCrab, model, rng)
     z1 = rand(rng, Normal(0.0, 1.0))
     z2 = rand(rng, Normal(0.0, 1.0))
     if crab.sex == female
-        crab.trait_growth_intercept = 0.1931 + 0.0545 * z1
-        crab.trait_growth_slope = 1.0372 - 0.017376 * z1 + 0.005068 * z2
+        crab.trait_growth_intercept = model.params.growth_int_f + model.params.growth_beta1_f * z1
+        crab.trait_growth_slope = model.params.growth_slp_f + model.params.growth_beta2_f * z1 + model.params.growth_beta3_f * z2
     else
-        crab.trait_growth_intercept = 0.30153 + 0.02198 * z1
-        crab.trait_growth_slope = 1.00027 - 0.00643655 * z1 + 0.0017492 * z2
+        crab.trait_growth_intercept = model.params.growth_int_m + model.params.growth_beta1_m * z1
+        crab.trait_growth_slope = model.params.growth_slp_m + model.params.growth_beta2_m * z1 + model.params.growth_beta3_m * z2
     end
 end
 
@@ -801,7 +762,7 @@ function agent_step_simple!(crab::SnowCrab, model)
                        selectivity(
                            crab.size_mm;
                            s50 = model.params.legal_size_male,
-                           s50_sigma = 5.0
+                           s50_sigma = model.params.selectivity_s50_sigma
                        )
         if rand(abmrng(model)) < harvest_prob
             model.total_catch_numbers += 1
@@ -1228,7 +1189,7 @@ function agent_step!(crab::SnowCrab, model)
                        selectivity(
                            crab.size_mm;
                            s50 = model.params.legal_size_male,
-                           s50_sigma = 5.0
+                           s50_sigma = model.params.selectivity_s50_sigma
                        )
         if rand(abmrng(model)) < harvest_prob
             model.total_catch_numbers += 1
@@ -1289,107 +1250,29 @@ function agent_step!(crab::SnowCrab, model)
         for _ in 1:num_recruits
             recruit_sex = rand(abmrng(model), (male, female))
             sex_code = (recruit_sex === female) ? 1 : 0
-            recruit_cw = carapacewidth(4, sex_code; type=:random, rng=abmrng(model))
+            recruit_cw = carapacewidth(4, recruit_sex; type=:random, rng=abmrng(model))
             dx = rand(abmrng(model), -5:5); dy = rand(abmrng(model), -5:5)
             rx = clamp(crab.pos[1] + dx, 1, nx); ry = clamp(crab.pos[2] + dy, 1, ny)
 
             recruit_weight = crab_weight(recruit_cw, recruit_sex; mat=0)
-            add_agent!((rx, ry), model, juvenile, recruit_sex, 4, 180.0, recruit_cw, 
-                       recruit_weight, model.params.initial_energy, model.current_time, 
-                       0.0, false, 0, 0.0, 0, 
-                       crab.trait_l50, crab.trait_maturity_slope, # Placeholder logic: pass nothing for recruits? 
-                       # Wait, I need to sample traits for recruits too in initialize_model/recruitment step!
-                       ...)
-        end
-    end
 
-    return nothing
-end
-
-"""
-    model_step_simple!(model)
-
-Advance simulation time and refresh demographic caches under `model = :simple`.
-Does not compute sinusoidal temperature oscillations or food replenishment.
-"""
-function model_step_simple!(model)
-    dt = model.dt
-    old_time = model.current_time
-    model.current_time += dt
-
-    # Year boundary detection for annual resets
-    if floor(old_time/365.0) < floor(model.current_time/365.0)
-        model.annual_eggs_spawned = 0.0
-    end
-
-    # Refresh demographic aggregate caches once per time step
-    benthic_count = 0
-    mat_males = 0
-    mat_females = 0
-    legal_males = 0
-    for crab in allagents(model)
-        if crab.stage === juvenile || crab.stage === adult
-            benthic_count += 1
-        end
-        if is_adult_male(crab)
-            mat_males += 1
-            if is_legal_male(crab)
-                legal_males += 1
-            end
-        elseif is_adult_female(crab)
-            mat_females += 1
-        end
-    end
-    model.n_benthic_crabs = benthic_count
-    model.n_mature_males = mat_males
-    model.n_mature_females = mat_females
-    model.n_legal_males = legal_males
-
-    return nothing
-end
-
-"""
-    model_step_complex!(model)
-
-Advance environmental state and update demographic caches for one simulation time step under `model = :complex`:
-1. Advance simulation time by `model.dt`.
-2. Update sinusoidal seasonal bottom water temperature field with localized noise.
-3. Replenish local food resources up to carrying capacity.
-4. Update cached demographic counts (`:n_benthic_crabs`, `:n_mature_males`,
-   `:n_mature_females`, `:n_legal_males`).
-"""
-function model_step_complex!(model)
-    dt = model.dt
-    old_time = model.current_time
-    model.current_time += dt
-
-    # Year boundary detection for annual resets
-    if floor(old_time/365.0) < floor(model.current_time/365.0)
-        model.annual_eggs_spawned = 0.0
-    end
-
-    # Sinusoidal seasonal oscillation with phase shift for Scotian Shelf bottom water:
-    # T(t) = T_base + T_amp * sin(2π(t − 169) / 365)
-    # Phase 169 d: minimum ~day 78 (March 19), maximum ~day 260 (Sept 17)
-    seasonal_temp = model.params.temp_base +
-                    model.params.temp_amplitude *
-                    sin(2.0 * π * (model.current_time - 169.0) / 365.0)
-
-    noise_sd = model.params.temp_noise_sd
-    nx, ny = size(model.temperature_field)
-    for y in 1:ny
-        for x in 1:nx
-            model.temperature_field[x, y] = seasonal_temp +
-                                            randn(abmrng(model)) * noise_sd
-            current_food = model.food_availability_field[x, y]
-            model.food_availability_field[x, y] = min(
-                model.params.food_max,
-                current_food + model.params.food_replenishment_rate
+            # Add the new agent with sampled traits
+            new_recruit = add_agent!(
+                (rx, ry), model, juvenile, recruit_sex, 4, 180.0, recruit_cw, 
+                recruit_weight, model.params.initial_energy, model.current_time, 
+                0.0, false, 0, 0.0, 0, 
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0
             )
+
+            # Sample the recruit's unique personality traits
+            sample_individual_traits!(new_recruit, model, abmrng(model))
         end
     end
 
-    # Update demographic aggregate caches once per time step
+    return nothing
+end
+
+function update_demographic_caches!(model)
     benthic_count = 0
     mat_males = 0
     mat_females = 0
@@ -1411,7 +1294,6 @@ function model_step_complex!(model)
     model.n_mature_males = mat_males
     model.n_mature_females = mat_females
     model.n_legal_males = legal_males
-
     return nothing
 end
 
@@ -1419,16 +1301,51 @@ end
     model_step!(model)
 
 Advance environmental state and update demographic caches for one simulation time step,
-automatically dispatching to `model_step_simple!` or `model_step_complex!` depending
-on `model.model_mode`.
+using feature toggles to determine which processes are active.
 """
 function model_step!(model)
-    mode = get(abmproperties(model), :model_mode, :simple)
-    if mode === :complex
-        return model_step_complex!(model)
-    else
-        return model_step_simple!(model)
+    dt = model.dt
+    old_time = model.current_time
+    model.current_time += dt
+
+    # Year boundary detection for annual resets
+    if floor(old_time/365.0) < floor(model.current_time/365.0)
+        model.annual_eggs_spawned = 0.0
     end
+
+    # 1. Environmental updates (Temperature & Food)
+    if model.params.use_thermal_stress
+        seasonal_temp = model.params.temp_base +
+                        model.params.temp_amplitude *
+                        sin(2.0 * π * (model.current_time - 169.0) / 365.0)
+
+        noise_sd = model.params.temp_noise_sd
+        nx, ny = size(model.temperature_field)
+        for y in 1:ny
+            for x in 1:nx
+                model.temperature_field[x, y] = seasonal_temp +
+                                                randn(abmrng(model)) * noise_sd
+            end
+        end
+    end
+
+    if model.params.use_food_dynamics
+        nx, ny = size(model.food_availability_field)
+        for y in 1:ny
+            for x in 1:nx
+                current_food = model.food_availability_field[x, y]
+                model.food_availability_field[x, y] = min(
+                    model.params.food_max,
+                    current_food + model.params.food_replenishment_rate
+                )
+            end
+        end
+    end
+
+    # 2. Refresh demographic aggregate caches once per time step
+    update_demographic_caches!(model)
+
+    return nothing
 end
 
 """

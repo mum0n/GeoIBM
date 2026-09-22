@@ -5,7 +5,6 @@ Usage:
     julia --project=. scripts/snowcrab_ibm.jl [options]
 
 Options:
-    --model <Type>      Model formulation: 'simple' (default) or 'complex'
     --n_agents <Int>    Initial population size (default: 300)
     --days <Int>        Simulation run duration in days (default: 730)
     --grid <nx,ny>      Grid spatial dimensions (default: 50,50)
@@ -134,6 +133,7 @@ function parse_cli_args(args::Vector{String})
             continue
         elseif arg == "--no-save"
             config[:save] = false
+            
             idx += 1
             continue
         elseif arg == "--animate" || arg == "--video"
@@ -316,7 +316,7 @@ function print_simulation_report(
     init_agents::Int,
     days::Int,
     elapsed_time::Float64
-)
+)   
     println()
     println("="^80)
     println("                  SNOW CRAB IBM SIMULATION RESULTS                     ")

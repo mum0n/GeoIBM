@@ -53,7 +53,6 @@ export shell_condition, min_intermolt_days, required_degree_days
 
 # Export simulation engine
 export initialize_model, agent_step!, model_step!, run_simulation
-export agent_step_simple!, agent_step_complex!, model_step_simple!, model_step_complex!
 export crab_disperse!, nagents, allagents, abmrng, safe_mean
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
 

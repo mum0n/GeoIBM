@@ -6,7 +6,7 @@ Authored by **Jae S. Choi**.
 
 ---
 
-## 1. Overview & Dual Biological Architecture
+## 1. Overview & Modular Biological Architecture [L9-88]
 
 The Snow Crab IBM simulates the complete life history, spatial ecology, bioenergetics, developmental molting schedule, closed-loop reproduction, and demographic stock dynamics of snow crab populations.
 
@@ -207,22 +207,15 @@ $$M_{\text{total}} = M_{\text{base}}(stage) + M_{\text{predation}}(CW) + M_{\tex
 All mortality events are logged to dedicated model counters (`deaths_predation`, `deaths_starvation`, etc.) for auditing. In simple mode, mortality is simplified to a parameterized senescence risk and size-attenuated juvenile predation.
 In simple mode, mortality includes a parameterized senescence risk for adults and size-attenuated juvenile predation to ensure demographic stability.
 
-### 3.8 Molting Phenology: Simple vs. Complex Stepping
+### 3.8 Modular Biological Processes (Feature Toggles)
+The simulation uses a unified logic engine where specific biological processes are toggled via configuration parameters (`use_energetics`, `use_thermal_stress`, etc.):
+- **Thermal Stress & Environmental Forcing**: If enabled, the model simulates sinusoidal seasonal temperature oscillations and localized thermal noise.
+- **Food Dynamics**: If enabled, local food resources replenish toward carrying capacity up to a maximum level.
+- **Senescence**: If enabled, adult mortality includes an exponential increase in hazard as shell age exceeds `senescence_age_threshold`.
+- **Cannibalism & Energetics**: (Currently being integrated).
 
-#### Simple Mode Molt Scheduling:
-- Pure time/age-based ecdysis.
-- Conditioned on exceeding minimum intermolt duration $\Delta t_{\min}(\iota)$.
-- Parameterized daily molt hazard $p_{\text{molt}}$ using `molt_probability_scale`.
-- No temperature dependencies or degree-day integration.
-
-#### Complex Mode Molt Scheduling:
-- Multi-tier gating: Degree-day threshold ($\text{DD}_{\text{req}}$), minimum intermolt duration ($\Delta t_{\min}$), energetic reserve threshold ($E \ge E_{\text{req}}$), and seasonal spring window (days 15–140 for adolescent instars $\ge 7$).
-- Continuous degree-day accumulation: $\text{DD}(t) = \sum \max(0, T - T_0) \Delta t$.
-- Degree-day-scaled continuous hazard: $p_{\text{molt}} = 1 - \exp(-\lambda_{\text{molt}} \Delta t)$, $\lambda_{\text{molt}} = 0.15 \times \min(\text{DD}/\text{DD}_{\text{req}}, 3.0)$.
-- Inability to meet criteria before day 140 induces an annual skip-molt.
-
-### 3.9 Spatial Movement: Random Walk vs. Habitat Taxis
-Movement is executed by `crab_disperse!(crab, model)`:
+### 3.9 Spatial Movement: Habitat Taxis
+Movement is executed by `crab_disperse!(crab, model)`. Depending on whether habitat taxis are enabled in the configuration, crabs will either perform directed movement towards optimal habitats or simple random walks.
 - **Simple Mode**: Crabs perform unbiased 2D random walks to adjacent Moore neighborhood cells ($dx, dy \in \{-1, 0, 1\}$).
 - **Complex Mode**: Crabs perform directed habitat taxis toward cells that minimize thermal stress ($|T - T_{\text{opt}}|$ where $T_{\text{opt}} \approx 2.5^\circ\text{C}$) and maximize available benthic food resources ($F(x, y)$).
 
@@ -279,20 +272,20 @@ julia --project=. scripts/snowcrab_ibm.jl [OPTIONS]
 | `--help`, `-h` | Flag | `false` | Display command-line help text |
 
 ### 4.3 Example Runs
-
-#### Standard Run with Auto-Detected Default Config (`model = "simple"`)
+  
+#### Standard Run with Default Configuration
 ```powershell
 julia --project=. scripts/snowcrab_ibm.jl
 ```
-
-#### Run with Detailed Eco-Physiological Model (`model = "complex"`)
+  
+#### Custom Scenario via Command-Line Arguments (e.g., high fishing mortality)
 ```powershell
-julia --project=. scripts/snowcrab_ibm.jl --model=complex --days=1095 --plot
+julia --project=. scripts/snowcrab_ibm.jl --fishing_prob=0.1 --days=1095 --plot
 ```
-
-#### Multi-Year Commercial Fishery Scenario with Plotting
+  
+#### Multi-Year Commercial Fishery Scenario with Plotting and Custom Config File
 ```powershell
-julia --project=. scripts/snowcrab_ibm.jl --n_agents=300 --days=1825 --fishing_prob=0.02 --plot --output_dir=outputs
+julia --project=. scripts/snowcrab_ibm.jl --config=my_custom_setup.config --n_agents=300 --days=1825 --plot --output_dir=outputs
 ```
 
 ---

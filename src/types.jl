@@ -44,6 +44,8 @@ Base.@kwdef struct IBMParameters
     # Feature Toggles (Modular Architecture)
     use_energetics::Bool = true
     use_thermal_stress::Bool = true
+    use_food_dynamics::Bool = true
+    use_habitat_taxis::Bool = true
     use_cannibalism::Bool = true
     use_senescence::Bool = true
 
@@ -101,6 +103,20 @@ Base.@kwdef struct IBMParameters
     fecundity_moncton_mult_m_log10_intercept::Float64 = 0.0158
     fecundity_moncton_mult_m_log10_slope::Float64 = 2.5811
     fecundity_moncton_mult_m_err::Float64 = 0.145
+
+    # Selectivity Parameters
+    # Growth Parameters (Bivariate Normal for intercept and slope)
+    growth_int_f::Float64 = 0.1931
+    growth_beta1_f::Float64 = 0.0545
+    growth_slp_f::Float64 = 1.0372
+    growth_beta2_f::Float64 = -0.017376
+    growth_beta3_f::Float64 = 0.005068
+
+    growth_int_m::Float64 = 0.30153
+    growth_beta1_m::Float64 = 0.02198
+    growth_slp_m::Float64 = 1.00027
+    growth_beta2_m::Float64 = -0.00643655
+    growth_beta3_m::Float64 = 0.0017492
 
     # Selectivity Parameters
     selectivity_s50::Float64 = 95.0
