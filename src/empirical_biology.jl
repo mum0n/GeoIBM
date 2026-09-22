@@ -172,23 +172,31 @@ function growth_increment(
     mat::Integer = 0,
     temp = nothing,
     condition::Real = 1.0,
-    rng::AbstractRNG = Random.default_rng()
+    rng::AbstractRNG = Random.default_rng(),
+    trait_intercept::Union{Nothing, Real} = nothing,
+    trait_slope::Union{Nothing, Real} = nothing,
+    params::IBMParameters = IBMParameters()
 )
     is_female = (sex == 1 || sex == :female || Symbol(sex) == :female)
 
-    z1 = rand(rng, Normal(0.0, 1.0))
-    z2 = rand(rng, Normal(0.0, 1.0))
-
-    if !is_female
-        # Bivariate normal sampling with empirical correlation rho = -0.965
-        intercept = 0.30153 + 0.02198 * z1
-        slope = 1.00027 - 0.00643655 * z1 + 0.0017492 * z2
-        mat_effect = (mat == 1) ? rand(rng, Normal(-0.13564, 0.00922)) : 0.0
+    # Use individual traits or sample from population distribution if none provided
+    if !isnothing(trait_intercept) && !isnothing(trait_slope)
+        intercept = trait_intercept
+        slope = trait_slope
     else
-        # Bivariate normal sampling with empirical correlation rho = -0.960
-        intercept = 0.1931 + 0.0545 * z1
-        slope = 1.0372 - 0.017376 * z1 + 0.005068 * z2
-        mat_effect = (mat == 1) ? rand(rng, Normal(-0.1310, 0.0252)) : 0.0
+        z1 = rand(rng, Normal(0.0, 1.0))
+        z2 = rand(rng, Normal(0.0, 1.0))
+        if !is_female
+            # Bivariate normal sampling with empirical correlation rho = -0.965
+            intercept = 0.30153 + 0.02198 * z1
+            slope = 1.00027 - 0.00643655 * z1 + 0.0017492 * z2
+            mat_effect = (mat == 1) ? rand(rng, Normal(-0.13564, 0.00922)) : 0.0
+        else
+            # Bivariate normal sampling with empirical correlation rho = -0.960
+            intercept = 0.1931 + 0.0545 * z1
+            slope = 1.0372 - 0.017376 * z1 + 0.005068 * z2
+            mat_effect = (mat == 1) ? rand(rng, Normal(-0.1310, 0.0252)) : 0.0
+        end
     end
 
     # Nutritional condition modulation (energy surplus enhances expansion)
@@ -231,7 +239,9 @@ function predict_postmolt_cw(
     mat::Integer = 0,
     temp = nothing,
     condition::Real = 1.0,
-    rng::AbstractRNG = Random.default_rng()
+    rng::AbstractRNG = Random.default_rng(),
+    trait_intercept::Union{Nothing, Real} = nothing,
+    trait_slope::Union{Nothing, Real} = nothing
 )
     if cw_mm <= 0.0
         error("Carapace width must be strictly positive, received: $(cw_mm)")
@@ -243,7 +253,12 @@ function predict_postmolt_cw(
         mat = mat,
         temp = temp,
         condition = condition,
-        rng = rng
+        rng = rng,
+        trait_intercept = trait_intercept,
+        trait_slope = trait_slope
+    )
+        trait_intercept = trait_intercept,
+        trait_slope = trait_slope
     )
     return exp(log_cw_next)
 end
@@ -324,6 +339,9 @@ function maturity(
     sex,
     logcw::Real;
     temp = nothing,
+    trait_l50::Union{Nothing, Real} = nothing,
+    trait_slope::Union{Nothing, Real} = nothing,
+    params::IBMParameters = IBMParameters(),
     rng::AbstractRNG = Random.default_rng()
 )
     # Biological minimum size threshold: Instars 4-6 do not undergo terminal molt
@@ -333,12 +351,25 @@ function maturity(
 
     is_female = (sex == 1 || sex == :female || Symbol(sex) == :female)
 
-    if !is_female
-        l50_base = rand(rng, Normal(91.8, 1.2))
-        slope = max(1.0, rand(rng, Normal(6.9957, 0.25)))
+    # Use provided trait or fallback to population parameters
+    l50_base = if !isnothing(trait_l50)
+        trait_l50
     else
-        l50_base = rand(rng, Normal(51.6, 0.8))
-        slope = max(1.0, rand(rng, Normal(12.9812, 0.40)))
+        if !is_female
+            rand(rng, Normal(params.maturity_l50_male, params.maturity_l50_male_sd))
+        else
+            rand(rng, Normal(params.maturity_l50_female, params.maturity_l50_female_sd))
+        end
+    end
+
+    slope = if !isnothing(trait_slope)
+        trait_slope
+    else
+        if !is_female
+            max(1.0, rand(rng, Normal(params.maturity_slope_male, params.maturity_slope_male_sd)))
+        else
+            max(1.0, rand(rng, Normal(params.maturity_slope_female, params.maturity_slope_female_sd)))
+        end
     end
 
     # Temperature-size rule: warmer waters decrease median size at maturity
@@ -395,7 +426,11 @@ function fecundity(
     cw::Real;
     method::String = "moncton.primiparous",
     shell_age::Real = 1.0,
-    rng::AbstractRNG = Random.default_rng()
+    params::IBMParameters = IBMParameters(),
+    rng::AbstractRNG = Random.default_rng(),
+    deterministic::Bool = false,
+    trait_intercept::Union{Nothing, Real} = nothing,
+    trait_slope::Union{Nothing, Real} = nothing
 )
     if cw <= 0.0
         error("Carapace width must be positive for fecundity estimation, got: $(cw)")
@@ -404,12 +439,20 @@ function fecundity(
     if method == "st.marie"
         return cw^2.725 * (10.0^0.7311)
     elseif method == "moncton.primiparous"
-        fec_log10 = log10(cw) * 2.94 - 0.7229
-        err = rand(rng, Normal(0.0, 0.090))
+        # Use trait or fallback to population parameter
+        intercept = isnothing(trait_intercept) ? params.fecundity_moncton_prim_m_log10_intercept : trait_intercept
+        slope = isnothing(trait_slope) ? params.fecundity_moncton_prim_m_log10_slope : trait_slope
+        
+        fec_log10 = log10(cw) * slope + intercept
+        err = deterministic ? 0.0 : rand(rng, Normal(0.0, params.fecundity_moncton_prim_m_err))
         return 10.0^(fec_log10 + err)
     elseif method == "moncton.multiparous"
-        fec_log10 = log10(cw) * 2.5811 + 0.0158
-        err = rand(rng, Normal(0.0, 0.145))
+        # Use trait or fallback to population parameter
+        intercept = isnothing(trait_intercept) ? params.fecundity_moncton_mult_m_log10_intercept : trait_intercept
+        slope = isnothing(trait_slope) ? params.fecundity_moncton_mult_m_log10_slope : trait_slope
+
+        fec_log10 = log10(cw) * slope + intercept
+        err = deterministic ? 0.0 : rand(rng, Normal(0.0, params.fecundity_moncton_mult_m_err))
         senescence = (shell_age > 3.0) ?
             max(0.60, 1.0 - 0.08 * (shell_age - 3.0)) : 1.0
         return 10.0^(fec_log10 + err) * senescence
@@ -419,11 +462,11 @@ function fecundity(
     end
 end
 
-fecundity(cw::AbstractArray; method::String = "moncton.primiparous", shell_age = 1.0, rng = Random.default_rng()) =
-    fecundity.(cw; method=method, shell_age=shell_age, rng=rng)
+function fecundity(cw::AbstractArray; method::String = "moncton.primiparous", shell_age::Real = 1.0, params::IBMParameters = IBMParameters(), rng::AbstractRNG = Random.default_rng(), deterministic::Bool = false, trait_intercept::Union{Nothing, Real} = nothing, trait_slope::Union{Nothing, Real} = nothing) =
+    fecundity.(cw; method=method, shell_age=shell_age, params=params, rng=rng, deterministic=deterministic, trait_intercept=trait_intercept, trait_slope=trait_slope)
 
 """
-    fecundity(crab::SnowCrab; method=nothing, rng=Random.default_rng())
+    fecundity(crab::SnowCrab; method=nothing, rng=Random.default_rng(), deterministic=false)
 
 Estimate extruded brood fecundity directly for an individual female `SnowCrab`
 agent, automatically distinguishing primiparous versus multiparous reproductive
@@ -433,6 +476,7 @@ history from stored spermathecal clutches and carapace age.
 - `crab::SnowCrab`: Mature adult female snow crab.
 - `method`: Optional method override (`nothing` enables auto-detection).
 - `rng`: Random number generator.
+- `deterministic`: If true, use parameter means without stochastic noise.
 
 # Returns
 `Int`: Integer count of brooded eggs.
@@ -440,7 +484,9 @@ history from stored spermathecal clutches and carapace age.
 function fecundity(
     crab::SnowCrab;
     method::Union{String, Nothing} = nothing,
-    rng::AbstractRNG = Random.default_rng()
+    params::IBMParameters = IBMParameters(),
+    rng::AbstractRNG = Random.default_rng(),
+    deterministic::Bool = false
 )
     if crab.sex !== female || crab.stage !== adult
         return 0
@@ -457,7 +503,11 @@ function fecundity(
         crab.size_mm;
         method = chosen_method,
         shell_age = shell_age,
-        rng = rng
+        params = params,
+        rng = rng,
+        deterministic = deterministic,
+        trait_intercept = crab.trait_fecundity_intercept,
+        trait_slope = crab.trait_fecundity_slope
     )
     return max(0, round(Int, raw_eggs))
 end
@@ -481,17 +531,31 @@ S(s) = \\frac{1}{1 + \\exp\\left(-\\frac{s - s_{50}}{s_{50\\sigma}}\\right)}
 # Returns
 Retention probability in the interval [0.0, 1.0].
 """
-function selectivity(s::Real; s50::Real = 95.0, s50_sigma::Real = 5.0)
-    if s50_sigma <= 0.0
-        error("Selectivity bandwidth s50_sigma must be positive, got: $(s50_sigma)")
+function selectivity(s::Real; params::IBMParameters = IBMParameters(), s50::Union{Nothing, Real} = nothing, s50_sigma::Union{Nothing, Real} = nothing)
+    effective_s50 = s50 !== nothing ? s50 : params.selectivity_s50
+    effective_sigma = s50_sigma !== nothing ? s50_sigma : params.selectivity_s50_sigma
+
+    if effective_sigma <= 0.0
+        error("Selectivity bandwidth s50_sigma must be positive, got: $(effective_sigma)")
     end
-    diff = (s - s50) / s50_sigma
+    diff = (s - effective_s50) / effective_sigma
     if diff > 40.0
         return 1.0
     elseif diff < -40.0
         return 0.0
     end
     return 1.0 / (1.0 + exp(-diff))
+end
+
+function selectivity(s::AbstractArray; params::IBMParameters = IBMParameters(), s50::Union{Nothing, Real} = nothing, s50_sigma::Union{Nothing, Real} = nothing)
+    effective_s50 = s50 !== nothing ? s50 : params.selectivity_s50
+    effective_sigma = s50_sigma !== nothing ? s50_sigma : params.selectivity_s50_sigma
+
+    if effective_sigma <= 0.0
+        error("Selectivity bandwidth s50_sigma must be positive, got: $(effective_sigma)")
+    end
+    diff = (s .- effective_s50) ./ effective_sigma
+    return 1.0 ./ (1.0 .+ exp.(-diff))
 end
 
 selectivity(s::AbstractArray; s50 = 95.0, s50_sigma = 5.0) =

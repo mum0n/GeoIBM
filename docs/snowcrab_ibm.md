@@ -193,25 +193,26 @@ Individuals in Category 5 experience elevated senescence mortality due to cuticu
 ### 3.7 Natural, Shell Wear, and Multi-Driver Mortality
 Natural mortality integrates multiple biological and environmental drivers:
 
-$$M_{\text{total}} = M_{\text{senescence}} + M_{\text{predation}}(CW) + M_{\text{starvation}}(E) + M_{\text{thermal}}(T) + M_{\text{shell}}(CC)$$
+$$M_{\text{total}} = M_{\text{base}}(stage) + M_{\text{predation}}(CW) + M_{\text{soft\_shell}}(\Delta t_{molt}) + M_{\text{starvation}}(E) + M_{\text{thermal}}(T) + M_{\text{senescence}}(age) + M_{\text{cannibalism}}(\rho)$$
 
-1. **Adult Senescence Baseline**: $M_0 / 365$ ($M_0 \approx 0.20$ yr$^{-1}$).
-2. **Size-Attenuated Predation Risk**:
+1. **Base Physiological Mortality**: $M_0 / 365$ ($M_0 \approx 0.20$ yr$^{-1}$), scaled by life-history stage (e.g., higher for zoea/megalopa).
+2. **Size-Attenuated Predation Risk**: Exponential attenuation with increasing carapace width:
    $$M_{\text{predation}} = \frac{0.15}{365} \exp(-0.03 \cdot (CW - 5.0))$$
-3. **Bioenergetic Starvation Mortality**: Applied when metabolic reserves $E < 0$ (complex mode).
-4. **Thermal Stress Mortality**: Applied when bottom temperature $T > T_{\text{crit}} = 7.0^\circ\text{C}$.
-5. **Shell Degradation Mortality**: Additional mortality for Category 5 carapaces ($\Delta M_{CC5} \approx 0.25$ yr$^{-1}$).
+3. **Post-molt Soft-shell Vulnerability**: Increased hazard immediately following ecdysis, decaying exponentially as the new shell hardens: $M_{\text{soft\_shell}} = \frac{0.12}{365} \exp(-\Delta t_{molt}/15)$.
+4. **Bioenergetic Starvation Mortality**: Applied when metabolic reserves $E < 0$ (complex mode).
+5. **Stenothermic Thermal Stress**: Applied when bottom temperature exceeds critical threshold ($T > T_{\text{crit}}$) in complex mode.
+6. **Terminal Adult Senescence**: Exponentially increasing mortality for adult crabs once carapace age $\ge \tau_{sen}$ years.
+7. **Conspecific Cannibalism**: Density-dependent risk affecting small juveniles (CW < 35 mm).
 
-All mortality events are logged to dedicated model counters (`natural_deaths`, `predation_deaths`, `starvation_deaths`, `thermal_deaths`, `shell_deaths`, `harvest_deaths`) for auditing.
-
-In simple mode, mortality reduces strictly to baseline adult senescence plus size-attenuated juvenile predation.
+All mortality events are logged to dedicated model counters (`deaths_predation`, `deaths_starvation`, etc.) for auditing. In simple mode, mortality is simplified to a parameterized senescence risk and size-attenuated juvenile predation.
+In simple mode, mortality includes a parameterized senescence risk for adults and size-attenuated juvenile predation to ensure demographic stability.
 
 ### 3.8 Molting Phenology: Simple vs. Complex Stepping
 
 #### Simple Mode Molt Scheduling:
 - Pure time/age-based ecdysis.
 - Conditioned on exceeding minimum intermolt duration $\Delta t_{\min}(\iota)$.
-- Fixed daily molt hazard $p_{\text{molt}} = 0.05 \cdot \Delta t$.
+- Parameterized daily molt hazard $p_{\text{molt}}$ using `molt_probability_scale`.
 - No temperature dependencies or degree-day integration.
 
 #### Complex Mode Molt Scheduling:
@@ -228,6 +229,11 @@ Movement is executed by `crab_disperse!(crab, model)`:
 ### 3.10 Mating Dynamics & Size-Assortative Competition
 - **Simple Mode**: Receptive females search within neighborhood radius $r = 2$. Encounter with any mature adult male triggers copulation; the female extrudes eggs immediately without sperm storage, initiating a 365-day brood incubation.
 - **Complex Mode**: Receptive females evaluate all mature males in the local neighborhood. Mating features size-assortative competition: larger males have competitive priority in mate-guarding and pairing. Copulation fully charges the female spermatheca ($S \leftarrow 3$ clutches). Females autonomously extrude clutches using stored sperm even if males become scarce.
+
+### 3.11 Recruitment and Egg Production Metrics
+To facilitate both population forecasting and Stock-Recruitment (SR) modeling, the simulation tracks two distinct egg production metrics:
+1. **Cumulative Total Eggs Spawned**: The total number of eggs produced by all females since $t=0$. Useful for long-term biomass audits.
+2. **Annual Egg Production**: Calculated as the difference in cumulative counts between annual sampling intervals ($\Delta \text{Eggs}_{\text{annual}} = E_{\text{cum}}(t) - E_{\text{cum}}(t-\Delta t)$). This metric is critical for fitting classical SR models like Schaefer or Beverton-Holt.
 
 ---
 

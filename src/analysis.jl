@@ -865,7 +865,55 @@ function extract_annual_production(
     end
 
     catch_vec = zeros(Float64, n_samples)
-    egg_prod_vec = zeros(Float64, n_samples)
+    egg_prod_cum_vec = zeros(Float64, n_samples)
+    egg_prod_ann_vec = zeros(Float64, n_samples)
+
+    if :total_eggs_spawned in propertynames(model_df) || :total_egg_production in propertynames(model_df)
+        # Identify which column to use for cumulative count
+        cum_col = if :total_eggs_spawned in propertynames(model_df)
+            :total_eggs_spawned
+        else
+            :total_egg_production
+        end
+
+        for k in 1:n_samples
+            t_target = t_targets[k]
+            idx = argmin(abs.(model_df.time .- t_target))
+            egg_prod_cum_vec[k] = Float64(model_df[idx, cum_col])
+
+            # Calculate periodical (annual) production via delta between samples
+            if k > 1
+                prev_idx = argmin(abs.(model_df.time .- t_targets[k-1]))
+                egg_prod_ann_vec[k] = max(0.0, egg_prod_cum_vec[k] - egg_prod_cum_vec[prev_idx])
+            end
+        end
+    end
+
+    catch_vec = zeros(Float64, n_samples)
+    egg_prod_cum_vec = zeros(Float64, n_samples)
+    egg_prod_ann_vec = zeros(Float64, n_samples)
+
+    # 1. Handle Egg Production (Cumulative and Periodical/Annual)
+    if :total_eggs_spawned in propertynames(model_df) || :total_egg_production in propertynames(model_df)
+        cum_col = if :total_eggs_spawned in propertynames(model_df)
+            :total_eggs_spawned
+        else
+            :total_egg_production
+        end
+
+        for k in 1:n_samples
+            t_target = t_targets[k]
+            idx = argmin(abs.(model_df.time .- t_target))
+            egg_prod_cum_vec[k] = Float64(model_df[idx, cum_col])
+
+            if k > 1
+                prev_idx = argmin(abs.(model_df.time .- t_targets[k-1]))
+                egg_prod_ann_vec[k] = max(0.0, egg_prod_cum_vec[k] - egg_prod_cum_vec[prev_idx])
+            end
+        end
+    end
+
+    # 2. Handle Catch (Periodical)
     if :total_catch_numbers in propertynames(model_df)
         cum_catches = Float64[]
         for k in 1:n_samples
@@ -876,20 +924,6 @@ function extract_annual_production(
         catch_vec[1] = cum_catches[1]
         for k in 2:n_samples
             catch_vec[k] = max(0.0, cum_catches[k] - cum_catches[k - 1])
-        end
-    end
-
-    if :total_eggs_spawned in propertynames(model_df)
-        for k in 1:n_samples
-            t_target = t_targets[k]
-            idx = argmin(abs.(model_df.time .- t_target))
-            egg_prod_vec[k] = Float64(model_df.total_eggs_spawned[idx])
-        end
-    elseif :total_egg_production in propertynames(model_df)
-        for k in 1:n_samples
-            t_target = t_targets[k]
-            idx = argmin(abs.(model_df.time .- t_target))
-            egg_prod_vec[k] = Float64(model_df.total_egg_production[idx])
         end
     end
 
@@ -912,7 +946,8 @@ function extract_annual_production(
         fishable_male_biomass_kg = leg_mass_vec,
         mature_male_biomass_kg = mat_m_mass_vec,
         mature_female_biomass_kg = mat_f_mass_vec,
-        total_egg_production = egg_prod_vec,
+        total_egg_production = egg_prod_cum_vec,
+        annual_egg_production = egg_prod_ann_vec,
         catch_total = catch_vec,
         catch_legal = catch_vec,
         surplus_production_total = sp_total,

@@ -420,7 +420,9 @@ function perform_molt!(
             mat = mat_status,
             temp = temp,
             condition = condition_factor,
-            rng = rng
+            rng = rng,
+            trait_intercept = crab.trait_growth_intercept,
+            trait_slope = crab.trait_growth_slope
         )
         crab.instar += 1
 
@@ -493,12 +495,11 @@ function calculate_mortality_probability(
     predation_risk = (0.15 / 365.0) * exp(-0.03 * cw_excess)
 
     # 3. Post-molt soft-shell ecdysial vulnerability
-    # Exponential decay with τ=15 d; negligible (<1.5e-6/d) by day 60 — no hard cutoff needed
     days_since_molt = max(0.0, current_time - crab.last_molt_time)
     soft_shell_risk = (0.12 / 365.0) * exp(-days_since_molt / 15.0)
 
     # 4. Progressive starvation hazard scaling with energetic deficit
-    starvation_risk = if crab.energy_reserve < 0.0
+    starvation_risk = if params.use_energetics && crab.energy_reserve < 0.0
         deficit = -crab.energy_reserve
         crit_pool = max(0.5, crab.weight_g * 0.05)
         (0.20 / 365.0) * (1.0 - exp(-deficit / crit_pool))
@@ -507,14 +508,14 @@ function calculate_mortality_probability(
     end
 
     # 5. Stenothermic thermal stress mortality above params.temp_thermal_stress
-    thermal_stress = if temp > params.temp_thermal_stress
+    thermal_stress = if params.use_thermal_stress && temp > params.temp_thermal_stress
         (0.05 / 365.0) * ((temp - params.temp_thermal_stress)^1.5)
     else
         0.0
     end
 
     # 6. Terminal adult carapace senescence mortality (Shell ages >= 3 years)
-    senescence_risk = if crab.stage === adult
+    senescence_risk = if params.use_senescence && crab.stage === adult
         shell_age_years = days_since_molt / 365.0
         thresh = params.senescence_age_threshold
         if shell_age_years > thresh
@@ -527,7 +528,7 @@ function calculate_mortality_probability(
     end
 
     # 7. Local conspecific cannibalism on small juveniles (CW < 35 mm)
-    cannibalism_risk = if crab.size_mm < 35.0 && local_density > 0.0
+    cannibalism_risk = if params.use_cannibalism && crab.size_mm < 35.0 && local_density > 0.0
         (0.05 / 365.0) * min(local_density / 10.0, 2.0)
     else
         0.0

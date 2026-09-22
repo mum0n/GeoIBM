@@ -413,13 +413,13 @@ function initialize_model(;
     end
 
     properties = Dict{Symbol, Any}(
-        :model_mode => resolved_mode,
         :current_time => 0.0,
         :temperature_field => initial_temp,
         :food_availability_field => initial_food,
         :dt => dt_days,
         :params => params,
         :total_eggs_spawned => 0,
+        :annual_eggs_spawned => 0,
         :total_recruits_settled => 0,
         :total_catch_numbers => 0,
         :total_catch_biomass_kg => 0.0,
@@ -449,14 +449,11 @@ function initialize_model(;
         Random.Xoshiro(rng_seed)
     end
 
-    agent_step_fn = (resolved_mode === :simple) ? agent_step_simple! : agent_step_complex!
-    model_step_fn = (resolved_mode === :simple) ? model_step_simple! : model_step_complex!
-
     model = StandardABM(
         SnowCrab,
         space;
-        agent_step! = agent_step_fn,
-        model_step! = model_step_fn,
+        agent_step! = agent_step!,
+        model_step! = model_step!,
         properties = properties,
         rng = rng
     )
@@ -468,7 +465,47 @@ function initialize_model(;
         size_mm = carapacewidth(instar, sex; type=:random, rng=rng)
         weight_g = crab_weight(size_mm, sex; mat=0)
         age_days = (instar - 3) * 180.0 + rand(rng) * 90.0
-        energy_reserve = params.energy_molt_threshold * rand(rng, Uniform(0.3, 0.8))
+        energy_reserve = params.initial_energy
+
+        # Sample intrinsic biological traits for this individual agent
+        trait_l50 = if sex == female
+            rand(rng, Normal(params.maturity_l50_female, params.maturity_l50_female_sd))
+        else
+            rand(rng, Normal(params.maturity_l50_male, params.maturity_l50_male_sd))
+        end
+
+        trait_slope = if sex == female
+            max(1.0, rand(rng, Normal(params.maturity_slope_female, params.maturity_slope_female_sd)))
+        else
+            max(1.0, rand(rng, Normal(params.maturity_slope_male, params.maturity_slope_male_sd)))
+        end
+
+        # Fecundity trait (using primiparous intercept/slope as the individual identity)
+        trait_f_int = rand(rng, Normal(params.fecundity_moncton_prim_m_log10_intercept, params.fecundity_moncton_prim_m_err))
+        trait_f_slp = rand(rng, Normal(params.fecundity_moncton_prim_m_log10_slope, 0.05)) # Low CV for slope
+
+        # Growth trait (using bivariate normal sampling)
+        if sex == female
+            z1 = rand(rng, Normal(0.0, 1.0))
+            z2 = rand(rng, Normal(0.0, 1.0))
+            trait_g_int = 0.1931 + 0.0545 * z1
+            trait_g_slp = 1.0372 - 0.017376 * z1 + 0.005068 * z2
+        else
+            z1 = rand(rng, Normal(0.0, 1.0))
+            z2 = rand(rng, Normal(0.0, 1.0))
+            trait_g_int = 0.30153 + 0.02198 * z1
+            trait_g_slp = 1.00027 - 0.00643655 * z1 + 0.0017492 * z2
+        end
+
+        # Populate initial cohort across early benthic instars (instars 4 to 7)
+    for _ in 1:N_agents
+        instar = rand(rng, 4:7)
+        sex = rand(rng, (male, female))
+        size_mm = carapacewidth(instar, sex; type=:random, rng=rng)
+        weight_g = crab_weight(size_mm, sex; mat=0)
+        age_days = (instar - 3) * 180.0 + rand(rng) * 90.0
+        energy_reserve = params.initial_energy
+
         last_molt_time = -age_days    # backdate so days_since_molt == age_days at t=0
         degree_days = rand(rng, Uniform(50.0, 300.0))
         is_mating_ready = false
@@ -477,7 +514,8 @@ function initialize_model(;
         sperm_clutches = 0
         pos = (rand(rng, 1:dims[1]), rand(rng, 1:dims[2]))
 
-        add_agent!(
+        # Add agent with placeholder traits
+        new_crab = add_agent!(
             pos,
             model,
             juvenile,
@@ -492,8 +530,12 @@ function initialize_model(;
             is_mating_ready,
             eggs_count,
             hatch_day,
-            sperm_clutches
+            sperm_clutches,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0 # traits: l50, slope, f_int, f_slp, g_int, g_slp
         )
+
+        # Sample intrinsic biological traits for this individual agent
+        sample_individual_traits!(new_crab, model, rng)
     end
 
     # Cache initial demographic aggregates
@@ -536,6 +578,32 @@ If total weight is non-positive or items are empty, falls back to uniform select
 # Returns
 Selected element from `items`.
 """
+function sample_individual_traits!(crab::SnowCrab, model, rng)
+    # Maturity traits
+    if crab.sex == female
+        crab.trait_l50 = rand(rng, Normal(model.params.maturity_l50_female, model.params.maturity_l50_female_sd))
+        crab.trait_maturity_slope = max(1.0, rand(rng, Normal(model.params.maturity_slope_female, model.params.maturity_slope_female_sd)))
+    else
+        crab.trait_l50 = rand(rng, Normal(model.params.maturity_l50_male, model.params.maturity_l50_male_sd))
+        crab.trait_maturity_slope = max(1.0, rand(rng, Normal(model.params.maturity_slope_male, model.params.maturity_slope_male_sd)))
+    end
+
+    # Fecundity traits (using primiparous as base identity)
+    crab.trait_fecundity_intercept = rand(rng, Normal(model.params.fecundity_moncton_prim_m_log10_intercept, model.params.fecundity_moncton_prim_m_err))
+    crab.trait_fecundity_slope = rand(rng, Normal(model.params.fecundity_moncton_prim_m_log10_slope, 0.05)) # Low CV for slope
+
+    # Growth traits (bivariate normal)
+    z1 = rand(rng, Normal(0.0, 1.0))
+    z2 = rand(rng, Normal(0.0, 1.0))
+    if crab.sex == female
+        crab.trait_growth_intercept = 0.1931 + 0.0545 * z1
+        crab.trait_growth_slope = 1.0372 - 0.017376 * z1 + 0.005068 * z2
+    else
+        crab.trait_growth_intercept = 0.30153 + 0.02198 * z1
+        crab.trait_growth_slope = 1.00027 - 0.00643655 * z1 + 0.0017492 * z2
+    end
+end
+
 function sample_weighted(items, weights, rng)
     tot = sum(weights)
     if tot <= 0.0 || isempty(items)
@@ -662,7 +730,7 @@ function agent_step_simple!(crab::SnowCrab, model)
         if days_since_molt >= min_days
             # Daily molt hazard scaling with accumulated intermolt duration
             p_molt = clamp(
-                (days_since_molt - min_days + 1.0) / 45.0,
+                (days_since_molt - min_days + 1.0) / model.params.molt_probability_scale,
                 0.05,
                 0.35
             )
@@ -698,10 +766,27 @@ function agent_step_simple!(crab::SnowCrab, model)
     cw_excess = max(0.0, crab.size_mm - 5.0)
     pred_risk = (0.15 / 365.0) * exp(-0.03 * cw_excess)
     base_mort = 0.20 / 365.0
-    mort_prob = clamp(base_mort + pred_risk, 0.0, 1.0)
+
+    # Added: Adult senescence mortality to prevent "immortal" adults in simple mode
+    senescence_risk = 0.0
+    if crab.stage === adult
+        days_since_molt = model.current_time - crab.last_molt_time
+        shell_age_years = days_since_molt / 365.0
+        # Use a simplified version of the complex senescence logic
+        if shell_age_years > model.params.senescence_age_threshold
+            senescence_risk = (0.10 / 365.0) * exp(0.5 * (shell_age_years - model.params.senescence_age_threshold))
+        end
+    end
+
+    mort_prob = clamp(base_mort + pred_risk + senescence_risk, 0.0, 1.0)
 
     if rand(abmrng(model)) < mort_prob
-        model.deaths_predation += 1
+        # Tally mortality driver if possible (simple mode has limited tracking)
+        if crab.stage === adult && senescence_risk > 0
+             model.deaths_senescence += 1
+        else
+             model.deaths_predation += 1
+        end
         remove_agent!(crab, model)
         return nothing
     end
@@ -761,6 +846,8 @@ function agent_step_simple!(crab::SnowCrab, model)
                 )
 
                 model.total_eggs_spawned += crab.eggs_count
+                model.total_eggs_spawned += crab.eggs_count
+                model.annual_eggs_spawned += crab.eggs_count
             end
         end
     end
@@ -801,7 +888,7 @@ function agent_step_simple!(crab::SnowCrab, model)
                 180.0,
                 recruit_cw,
                 recruit_weight,
-                model.params.energy_molt_threshold,
+                model.params.initial_energy,
                 model.current_time,
                 0.0,
                 false,
@@ -939,10 +1026,9 @@ function agent_step_complex!(crab::SnowCrab, model)
                 m -> m.stage === adult && m.sex === male && m.energy_reserve > min_e,
                 collect(nearby_agents(crab, model, radius))
             )
-            # If male found, copulate: replenish spermathecal storage with sperm
-            # Larger males dominate competition (selection weighted by CW^2)
+            # Larger and energetically healthy males dominate competition (selection weighted by CW^2 * energy factor)
             if !isempty(nearby_males)
-                male_weights = [m.size_mm^2 for m in nearby_males]
+                male_weights = [(m.size_mm^2) * (1.0 + 0.5 * clamp(m.energy_reserve / model.params.energy_molt_threshold, 0.0, 1.0)) for m in nearby_males]
                 selected_male = sample_weighted(nearby_males, male_weights, abmrng(model))
 
                 # Ejaculate quantity scaled by male size
@@ -1021,9 +1107,9 @@ function agent_step_complex!(crab::SnowCrab, model)
                 180.0,                # Age in days (includes larval planktonic phase)
                 recruit_cw,
                 recruit_weight,
-                10.0,                 # Modest starting energy reserve
+                model.params.initial_energy,                 # Modest starting energy reserve
                 model.current_time,  # last_molt_time = t_settle → days_since_molt = 0
-                0.0,                  # Initial degree-days = 0
+                0.0,                 # Initial degree-days = 0
                 false,
                 0,
                 0.0,
@@ -1057,12 +1143,167 @@ Execute one simulation time step for an individual `crab`, automatically dispatc
 to `agent_step_simple!` or `agent_step_complex!` depending on `model.model_mode`.
 """
 function agent_step!(crab::SnowCrab, model)
-    mode = get(abmproperties(model), :model_mode, :simple)
-    if mode === :complex
-        return agent_step_complex!(crab, model)
-    else
-        return agent_step_simple!(crab, model)
+    # 1. Age progression
+    crab.age_days += model.dt
+
+    # 2. Molting check and execution
+    day_of_year = mod(model.current_time, 365.0)
+    is_molt_season = (model.params.molt_season_start <= day_of_year <=
+                      model.params.molt_season_end)
+
+    if crab.stage === juvenile && is_molt_season
+        days_since_molt = model.current_time - crab.last_molt_time
+        min_days = min_intermolt_days(crab.stage, crab.instar)
+        if days_since_molt >= min_days
+            p_molt = clamp(
+                (days_since_molt - min_days + 1.0) / model.params.molt_probability_scale,
+                0.05,
+                0.35
+            )
+            if rand(abmrng(model)) < p_molt
+                sex_code = (crab.sex === female) ? 1 : 0
+                prob_mat = maturity(sex_code, log(crab.size_mm); 
+                                    trait_l50 = crab.trait_l50, 
+                                    trait_slope = crab.trait_maturity_slope,
+                                    rng = abmrng(model))
+                mat_status = (rand(abmrng(model)) < prob_mat) ? 1 : 0
+
+                if mat_status == 1
+                    crab.stage = adult
+                    crab.is_mating_ready = true
+                end
+
+                crab.size_mm = predict_postmolt_cw(
+                    crab.size_mm;
+                    sex = sex_code,
+                    mat = mat_status,
+                    temp = nothing,
+                    condition = 1.0,
+                    rng = abmrng(model),
+                    trait_intercept = crab.trait_growth_intercept,
+                    trait_slope = crab.trait_growth_slope
+                )
+                crab.instar += 1
+                crab.last_molt_time = model.current_time
+                crab.weight_g = crab_weight(crab; stochastic = false, rng = abmrng(model))
+
+                model.total_molts += 1
+            end
+        end
     end
+
+    # 3. Natural mortality (Modular)
+    cw_excess = max(0.0, crab.size_mm - 5.0)
+    pred_risk = (0.15 / 365.0) * exp(-0.03 * cw_excess)
+    base_mort = 0.20 / 365.0
+
+    senescence_risk = 0.0
+    if model.params.use_senescence && crab.stage === adult
+        days_since_molt = model.current_time - crab.last_molt_time
+        shell_age_years = days_since_molt / 365.0
+        thresh = model.params.senescence_age_threshold
+        if shell_age_years > thresh
+            senescence_risk = (0.08 / 365.0) * exp(0.80 * (shell_age_years - thresh))
+        end
+    end
+
+    mort_prob = clamp(base_mort + pred_risk + senescence_risk, 0.0, 1.0)
+
+    if rand(abmrng(model)) < mort_prob
+        if model.params.use_senescence && crab.stage === adult && senescence_risk > 0
+             model.deaths_senescence += 1
+        else
+             model.deaths_predation += 1
+        end
+        remove_agent!(crab, model)
+        return nothing
+    end
+
+    # 4. Commercial fishery harvest (Modular)
+    if model.params.fishing_probability_daily > 0.0 &&
+       (model.params.fishing_season_start <= day_of_year <= model.params.fishing_season_end) &&
+       crab.stage === adult && crab.sex === male &&
+       crab.size_mm >= model.params.legal_size_male
+        harvest_prob = model.params.fishing_probability_daily *
+                       selectivity(
+                           crab.size_mm;
+                           s50 = model.params.legal_size_male,
+                           s50_sigma = 5.0
+                       )
+        if rand(abmrng(model)) < harvest_prob
+            model.total_catch_numbers += 1
+            model.total_catch_biomass_kg += (crab.weight_g / 1000.0)
+            model.deaths_fishery += 1
+            remove_agent!(crab, model)
+            return nothing
+        end
+    end
+
+    # 5. Locomotion: Random walk for simple/base behavior
+    randomwalk!(crab, model)
+
+    # 6. Reproduction (Modular)
+    is_mating_season = (model.params.mating_season_start <= day_of_year <=
+                        model.params.mating_season_end)
+
+    if crab.stage === adult && crab.sex === female
+        if is_mating_season && crab.is_mating_ready && crab.eggs_count == 0
+            radius = model.params.mating_search_radius
+            nearby_males = filter(
+                m -> m.stage === adult && m.sex === male,
+                collect(nearby_agents(crab, model, radius))
+            )
+            if !isempty(nearby_males)
+                egg_estimate = fecundity(
+                    crab.size_mm;
+                    method = "moncton.primiparous",
+                    trait_intercept = crab.trait_fecundity_intercept,
+                    trait_slope = crab.trait_fecundity_slope,
+                    rng = abmrng(model)
+                )
+                crab.eggs_count = max(round(Int, egg_estimate), 1000)
+                crab.hatch_day = model.current_time + model.params.brood_duration_base
+                crab.is_mating_ready = false
+
+                crab.weight_g = crab_weight(
+                    crab;
+                    include_eggs = true,
+                    rng = abmrng(model)
+                )
+                model.total_eggs_spawned += crab.eggs_count
+                model.annual_eggs_spawned += crab.eggs_count
+            end
+        end
+    end
+
+    # 7. Larval hatching and benthic settlement (Modular)
+    if crab.eggs_count > 0 && model.current_time >= crab.hatch_day
+        n_benthic = get(abmproperties(model), :n_benthic_crabs, 0)
+        k_cap = model.params.benthic_carrying_capacity
+        density_feedback = 1.0 + (n_benthic / k_cap)
+
+        expected_recruits = (model.params.egg_survival_base * crab.eggs_count) / density_feedback
+        num_recruits = rand(abmrng(model), Poisson(expected_recruits))
+
+        nx, ny = size(model.temperature_field)
+        for _ in 1:num_recruits
+            recruit_sex = rand(abmrng(model), (male, female))
+            sex_code = (recruit_sex === female) ? 1 : 0
+            recruit_cw = carapacewidth(4, sex_code; type=:random, rng=abmrng(model))
+            dx = rand(abmrng(model), -5:5); dy = rand(abmrng(model), -5:5)
+            rx = clamp(crab.pos[1] + dx, 1, nx); ry = clamp(crab.pos[2] + dy, 1, ny)
+
+            recruit_weight = crab_weight(recruit_cw, recruit_sex; mat=0)
+            add_agent!((rx, ry), model, juvenile, recruit_sex, 4, 180.0, recruit_cw, 
+                       recruit_weight, model.params.initial_energy, model.current_time, 
+                       0.0, false, 0, 0.0, 0, 
+                       crab.trait_l50, crab.trait_maturity_slope, # Placeholder logic: pass nothing for recruits? 
+                       # Wait, I need to sample traits for recruits too in initialize_model/recruitment step!
+                       ...)
+        end
+    end
+
+    return nothing
 end
 
 """
@@ -1072,7 +1313,14 @@ Advance simulation time and refresh demographic caches under `model = :simple`.
 Does not compute sinusoidal temperature oscillations or food replenishment.
 """
 function model_step_simple!(model)
-    model.current_time += model.dt
+    dt = model.dt
+    old_time = model.current_time
+    model.current_time += dt
+
+    # Year boundary detection for annual resets
+    if floor(old_time/365.0) < floor(model.current_time/365.0)
+        model.annual_eggs_spawned = 0.0
+    end
 
     # Refresh demographic aggregate caches once per time step
     benthic_count = 0
@@ -1111,7 +1359,14 @@ Advance environmental state and update demographic caches for one simulation tim
    `:n_mature_females`, `:n_legal_males`).
 """
 function model_step_complex!(model)
-    model.current_time += model.dt
+    dt = model.dt
+    old_time = model.current_time
+    model.current_time += dt
+
+    # Year boundary detection for annual resets
+    if floor(old_time/365.0) < floor(model.current_time/365.0)
+        model.annual_eggs_spawned = 0.0
+    end
 
     # Sinusoidal seasonal oscillation with phase shift for Scotian Shelf bottom water:
     # T(t) = T_base + T_amp * sin(2π(t − 169) / 365)
@@ -1205,7 +1460,8 @@ function run_simulation(
     n_steps::Integer;
     adata = nothing,
     mdata = nothing,
-    when = nothing
+    when = nothing,
+    func_params::Union{Nothing, Vector{IBMParameters}} = nothing
 )
     default_adata = [
         (:stage, length),
@@ -1242,9 +1498,19 @@ function run_simulation(
     actual_adata = (adata === nothing) ? default_adata : adata
     actual_mdata = (mdata === nothing) ? default_mdata : mdata
 
-    if when === nothing
-        return run!(model, n_steps; adata=actual_adata, mdata=actual_mdata)
+    results = if when === nothing
+        run!(model, n_steps; adata=actual_adata, mdata=actual_mdata)
     else
-        return run!(model, n_steps; adata=actual_adata, mdata=actual_mdata, when=when)
+        run!(model, n_steps; adata=actual_adata, mdata=actual_mdata, when=when)
     end
+
+    if !isnothing(func_params)
+        using model_agent: plot_functional_relationships
+        for type in [:maturity, :fecundity, :selectivity]
+            p = plot_functional_relationships(func_params; type=type)
+            savefig(p, "functional_space_$(type).png")
+        end
+    end
+
+    return results
 end

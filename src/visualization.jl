@@ -1884,41 +1884,53 @@ over the dynamic environmental field.
 # Returns
 `String`: Absolute path to the recorded animation file.
 """
-function animate_snowcrab_simulation(
-    model;
-    filepath::String = "snowcrab_animation.mp4",
-    frames::Int = 120,
-    dt::Int = 2,
-    framerate::Int = 15,
-    heat_field::Union{Symbol, String} = :temperature,
-    figure_size::Tuple{Int, Int} = (700, 700),
-    title::String = "Snow Crab Ecosystem Dynamics"
+function plot_functional_relationships(
+    params_list::Vector{IBMParameters};
+    type::Symbol = :maturity,
+    label_prefix::String = "Set",
+    title::Union{String, Nothing} = nothing,
+    xlabel::Union{String, Nothing} = nothing,
+    ylabel::Union{String, Nothing} = nothing
 )
-    mkpath(dirname(abspath(filepath)))
-    field_sym = Symbol(heat_field)
-    cbar_label = if field_sym in (:food, :food_availability, :food_availability_field)
-        "Benthic Food Density"
+    p = plot(legend = :outertopright, size = (800, 600))
+
+    if type === :maturity
+        # CW range for plotting: from 10mm to 250mm
+        cw_vals = exp.(range(log(10.0), log(250.0), length=100))
+        for (i, params) in enumerate(params_list)
+            # We use deterministic mode for clean functional curves
+            probs = [maturity(cw; params=params, deterministic=true) for cw in cw_vals]
+            plot!(p, cw_vals, probs, label="$(label_prefix)$i", linewidth=2.5)
+        end
+        title === nothing ? title = "Maturity Ogives (Functional Space)" : title nothing
+        xlabel === nothing ? xlabel = "Carapace Width (mm)" : xlabel nothing
+        ylabel === nothing ? ylabel = "P(Mature)" : ylabel nothing
+
+    elseif type === :fecundity
+        cw_vals = collect(10.0:5.0:250.0)
+        for (i, params) in enumerate(params_list)
+            # Using primiparous method for standard comparison
+            eggs = [fecundity(cw; method="moncton.primiparous", params=params, deterministic=true) for cw in cw_vals]
+            plot!(p, cw_vals, eggs, label="$(label_prefix)$i", linewidth=2.5)
+        end
+        title === nothing ? title = "Fecundity Curves (Functional Space)" : title nothing
+        xlabel === nothing ? xlabel = "Carapace Width (mm)" : xlabel nothing
+        ylabel === nothing ? ylabel = "Total Eggs" : ylabel nothing
+
+    elseif type === :selectivity
+        size_vals = collect(20.0:2.0:180.0)
+        for (i, params) in enumerate(params_list)
+            probs = selectivity.(size_vals; params=params)
+            plot!(p, size_vals, probs, label="$(label_prefix)$i", linewidth=2.5)
+        end
+        title === nothing ? title = "Fishery Selectivity (Functional Space)" : title nothing
+        xlabel === nothing ? xlabel = "Carapace Width (mm)" : xlabel nothing
+        ylabel === nothing ? ylabel = "Retention Probability" : ylabel nothing
+
     else
-        "Bottom Temperature (°C)"
+        error("Unsupported functional type: $type. Use :maturity, :fecundity, or :selectivity.")
     end
-    heat_fn = m -> crab_heatarray(m, field_sym)
 
-    Agents.abmvideo(
-        filepath,
-        model;
-        agent_color = crab_color,
-        agent_size = crab_size,
-        agent_marker = crab_marker,
-        heatarray = heat_fn,
-        add_colorbar = true,
-        colorbar_label = cbar_label,
-        frames = frames,
-        dt = dt,
-        framerate = framerate,
-        figure = (size = figure_size,),
-        title = title,
-        showstep = true
-    )
-
-    return abspath(filepath)
+    plot!(p, title=title, xlabel=xlabel, ylabel=ylabel)
+    return p
 end

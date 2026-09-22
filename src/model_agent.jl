@@ -76,6 +76,6 @@ export plot_maturity_ogives, plot_simulation_dashboard, plot_stock_recruitment
 export plot_population_dynamics_fits, plot_retrospective_analysis, export_all_plots
 export plot_stage_specific_dynamics, plot_macro_model_comparison
 export crab_color, crab_size, crab_marker, crab_heatarray
-export plot_abm_summary, animate_snowcrab_simulation
+export plot_abm_summary, animate_snowcrab_simulation, plot_functional_relationships
 
 end # module model_agent
