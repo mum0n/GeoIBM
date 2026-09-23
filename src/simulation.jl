@@ -97,17 +97,21 @@ function default_ibm_configuration()
 end
 
 """
-    load_ibm_configuration(filepath::String)
+    load_ibm_configuration(filepath::String; base_config=nothing)
 
-Read a TOML configuration file and return a flat `Dict{Symbol, Any}` of settings.
+Read a TOML configuration file and return a flat `Dict{Symbol, Any}` of settings,
+optionally overlaying loaded values on top of a `base_config` dictionary.
 """
-function load_ibm_configuration(filepath::String)
+function load_ibm_configuration(
+    filepath::String;
+    base_config::Union{Nothing, AbstractDict} = nothing
+)
     if !isfile(filepath)
         error("Configuration file not found: $(filepath)")
     end
 
     raw = TOML.parsefile(filepath)
-    flat = Dict{Symbol, Any}()
+    flat = base_config === nothing ? Dict{Symbol, Any}() : deepcopy(base_config)
 
     for (section, kvs) in raw
         if isa(kvs, AbstractDict)
@@ -126,6 +130,9 @@ function load_ibm_configuration(filepath::String)
 
     return flat
 end
+load_ibm_configuration(filepath::String, base_config::AbstractDict) =
+    load_ibm_configuration(filepath; base_config = base_config)
+
 
 """
     save_ibm_configuration(filepath::String, config::AbstractDict)
@@ -411,7 +418,8 @@ function initialize_model(;
             density_feedback = Float64[]
         ),
         :aggregate_populations => AggregatePopulations(),
-        :species_behavior => behavior
+        :species_behavior => behavior,
+        :step_callback => get(kwargs, :step_callback, nothing)
     )
 
     rng = if rng_seed === nothing
@@ -747,6 +755,11 @@ function model_step!(model)
     # 3. Update demographic aggregate caches
     update_demographic_caches!(model)
 
+    # 4. Optional step callback hook
+    if haskey(abmproperties(model), :step_callback) && model.step_callback !== nothing
+        model.step_callback(model)
+    end
+
     return nothing
 end
 
@@ -760,7 +773,7 @@ function safe_mean(x)
 end
 
 """
-    run_simulation(model, n_steps; adata=nothing, mdata=nothing, when=nothing)
+    run_simulation(model, n_steps; adata=nothing, mdata=nothing, when=nothing, step_callback=nothing)
 
 High-level wrapper executing `n_steps` of simulation using `Agents.run!`.
 """
@@ -769,12 +782,19 @@ function run_simulation(
     n_steps::Int;
     adata = nothing,
     mdata = nothing,
-    when = nothing
+    when = nothing,
+    step_callback = nothing
 )
+    if step_callback !== nothing
+        model.step_callback = step_callback
+    end
+
     default_adata = [
+        (:stage, length),
         (:stage, safe_mean),
         (:size, safe_mean),
         (:mass, safe_mean),
+        (:mass, sum),
         (is_adult, count),
         (is_adult_male, count),
         (is_adult_female, count),

@@ -293,6 +293,7 @@ struct MacroModelComparison
     aic_schaefer::Float64
     aic_delay_diff::Float64
     aic_leslie::Float64
+    preferred_model::Symbol
 end
 
 """
@@ -487,41 +488,17 @@ Constructor mapping a nested dictionary (e.g. from TOML) to the hierarchical
 `IBMParameters` structure.
 """
 function IBMParameters(dict::AbstractDict)
-    function build_params(struct_type, section_dict)
-        p = struct_type()
-        for (k, v) in section_dict
-            sym_k = Symbol(k)
-            if hasproperty(p, sym_k)
-                setproperty!(p, sym_k, v)
+    flat_kwargs = Dict{Symbol, Any}()
+    for (k, v) in dict
+        if isa(v, AbstractDict)
+            for (sub_k, sub_v) in v
+                flat_kwargs[Symbol(sub_k)] = sub_v
             end
-        end
-        return p
-    end
-
-    params = IBMParameters()
-
-    mapping = Dict(
-        "toggles" => ProcessToggles,
-        "simulation" => SimulationParams,
-        "environment" => EnvironmentParams,
-        "organism" => OrganismParams,
-        "phenology" => PhenologyParams,
-        "mortality" => MortalityParams,
-        "fishery" => FisheryParams,
-        "output" => OutputParams,
-        "binning" => BinningParams
-    )
-
-    for (section_name, struct_type) in mapping
-        if haskey(dict, section_name)
-            sub_dict = dict[section_name]
-            if sub_dict isa AbstractDict
-                setproperty!(params, Symbol(section_name), build_params(struct_type, sub_dict))
-            end
+        else
+            flat_kwargs[Symbol(k)] = v
         end
     end
-
-    return params
+    return IBMParameters(; flat_kwargs...)
 end
 
 function Base.getproperty(p::IBMParameters, sym::Symbol)

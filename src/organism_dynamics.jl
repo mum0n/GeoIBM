@@ -334,7 +334,7 @@ function calculate_mass(
         org.behavior,
         org.size,
         org.sex;
-        mat = (org.stage === adult ? 1 : 0),
+        mat = (is_adult(org) ? 1 : 0),
         stochastic = stochastic,
         rng = rng
     )

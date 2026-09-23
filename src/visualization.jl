@@ -451,21 +451,17 @@ function plot_spatial_habitat(model)
     end
 
     # Group positions by demographic category
-    juv_x = [c.pos[1] for c in crabs if c.stage === juvenile]
-    juv_y = [c.pos[2] for c in crabs if c.stage === juvenile]
+    juv_x = [c.pos[1] for c in crabs if !is_adult(c)]
+    juv_y = [c.pos[2] for c in crabs if !is_adult(c)]
 
-    adm_x = [c.pos[1] for c in crabs if c.stage === adult && c.sex === male]
-    adm_y = [c.pos[2] for c in crabs if c.stage === adult && c.sex === male]
+    adm_x = [c.pos[1] for c in crabs if is_adult_male(c)]
+    adm_y = [c.pos[2] for c in crabs if is_adult_male(c)]
 
-    adf_x = [c.pos[1] for c in crabs if c.stage === adult && c.sex === female &&
-             c.eggs_count == 0]
-    adf_y = [c.pos[2] for c in crabs if c.stage === adult && c.sex === female &&
-             c.eggs_count == 0]
+    adf_x = [c.pos[1] for c in crabs if is_adult_female(c) && !is_ovigerous(c)]
+    adf_y = [c.pos[2] for c in crabs if is_adult_female(c) && !is_ovigerous(c)]
 
-    ovig_x = [c.pos[1] for c in crabs if c.stage === adult && c.sex === female &&
-              c.eggs_count > 0]
-    ovig_y = [c.pos[2] for c in crabs if c.stage === adult && c.sex === female &&
-              c.eggs_count > 0]
+    ovig_x = [c.pos[1] for c in crabs if is_ovigerous(c)]
+    ovig_y = [c.pos[2] for c in crabs if is_ovigerous(c)]
 
     if !isempty(juv_x)
         scatter!(p, juv_x, juv_y, label = "Juveniles ($(length(juv_x)))",
@@ -2003,3 +1999,4 @@ end
 
 const animate_snowcrab_simulation = animate_organism_simulation
 const plot_instar_allometry = plot_stage_allometry
+const plot_instar_distribution = plot_stage_distribution

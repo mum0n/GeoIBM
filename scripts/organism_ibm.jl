@@ -244,6 +244,19 @@ function parse_cli_args(args::Vector{String})
         end
     end
 
+    # Ensure canonical and alias keys are mutually populated
+    config[:temp_base] = Float64(get(config, :temp_base, get(config, :temp, 5.0)))
+    config[:temp] = config[:temp_base]
+    config[:temp_amplitude] = Float64(get(config, :temp_amplitude, get(config, :temp_amp, 4.0)))
+    config[:temp_amp] = config[:temp_amplitude]
+    config[:fishing_probability_daily] = Float64(get(config, :fishing_probability_daily, get(config, :fishing_prob, 0.0)))
+    config[:fishing_prob] = config[:fishing_probability_daily]
+    config[:benthic_carrying_capacity] = Float64(get(config, :benthic_carrying_capacity, get(config, :carrying_capacity, 300.0)))
+    config[:carrying_capacity] = config[:benthic_carrying_capacity]
+    config[:frequency_days] = Float64(get(config, :frequency_days, get(config, :frequency, 365.0)))
+    config[:frequency] = config[:frequency_days]
+    config[:snapshot_day] = Float64(get(config, :snapshot_day, 274.0))
+
     return config
 end
 
@@ -323,10 +336,12 @@ function print_simulation_report(
     println("="^80)
     @printf(" Simulation Duration   : %d days (%.2f years)\n", days, days / 365.0)
     @printf(" Computation Time      : %.2f seconds\n", elapsed_time)
-    @printf(" Initial Population    : %d crabs\n", init_agents)
-    @printf(" Final Living Crabs    : %d crabs\n", summary.total_crabs)
+    @printf(" Initial Population    : %d organisms\n", init_agents)
+    total_orgs = hasproperty(summary, :total_organisms) ? summary.total_organisms :
+                 (hasproperty(summary, :total_crabs) ? summary.total_crabs : 0)
+    @printf(" Final Living Organisms : %d organisms\n", total_orgs)
 
-    survival_pct = (init_agents > 0) ? (summary.total_crabs / init_agents * 100.0) : 0.0
+    survival_pct = (init_agents > 0) ? (total_orgs / init_agents * 100.0) : 0.0
     @printf(" Net Population Change : %+.1f%%\n", (survival_pct - 100.0))
     println("-"^80)
 
@@ -343,22 +358,33 @@ function print_simulation_report(
     println("-"^80)
 
     println(" [Stage Distribution]")
-    @printf("   - Planktonic Larvae (Zoea & Megalopa) : %4d\n", summary.n_larvae)
-    @printf("   - Benthic Juveniles (Stage 4+)       : %4d\n", summary.n_juveniles)
-    @printf("   - Mature Adults (Terminal Molt)       : %4d\n", summary.n_adults)
-    @printf("       * Adult Males                     : %4d\n", summary.n_adult_males)
-    @printf("       * Adult Females                   : %4d\n", summary.n_adult_females)
+    has_agg = hasproperty(summary, :n_stage_0)
+    if has_agg
+        @printf("   - Stage 0 (Aggregate Eggs/Larvae)    : %7d\n", summary.n_stage_0)
+        @printf("   - Stages 1 to 5 (Aggregate Cohorts)  : %7d\n", summary.n_stages_1_to_5)
+        if hasproperty(summary, :count_by_aggregate_stage)
+            for stg in 1:5
+                cnt = get(summary.count_by_aggregate_stage, stg, 0)
+                @printf("       * Stage %d                         : %7d\n", stg, cnt)
+            end
+        end
+    end
+    @printf("   - Planktonic Larvae (Zoea & Megalopa) : %7d\n", summary.n_larvae)
+    @printf("   - Benthic Juveniles (Stage 4+)       : %7d\n", summary.n_juveniles)
+    @printf("   - Mature Adults (Terminal Molt)       : %7d\n", summary.n_adults)
+    @printf("       * Adult Males                     : %7d\n", summary.n_adult_males)
+    @printf("       * Adult Females                   : %7d\n", summary.n_adult_females)
     println("-"^80)
 
     println(" [Sex Composition]")
-    @printf("   - Males   : %4d\n", summary.n_males)
-    @printf("   - Females : %4d\n", summary.n_females)
+    @printf("   - Males   : %7d\n", summary.n_males)
+    @printf("   - Females : %7d\n", summary.n_females)
     sex_ratio = (summary.n_females > 0) ? (summary.n_males / summary.n_females) : 0.0
     @printf("   - Sex Ratio (M:F) : %.2f\n", sex_ratio)
     println("-"^80)
 
     println(" [Reproduction & Recruitment]")
-    @printf("   - Ovigerous Females Brooding Eggs  : %4d", summary.n_ovigerous_females)
+    @printf("   - Ovigerous Females Brooding Eggs  : %7d", summary.n_ovigerous_females)
     if summary.n_adult_females > 0
         pct_ovig = summary.n_ovigerous_females / summary.n_adult_females * 100.0
         @printf(" (%.1f%% of adult females)\n", pct_ovig)
@@ -387,15 +413,72 @@ function print_simulation_report(
 
     println(" [Size and Stage Structure]")
     @printf("   - Mean Carapace Size (All Organisms): %.2f mm\n", summary.mean_size)
-    println("   - Stage Mean Carapace Size Breakdown:")
-    println("       Stage | Living Count | Mean Carapace Size (mm)")
-    println("       -------+--------------+-------------------------")
-    for stg in sort(collect(keys(summary.size_by_stage)))
-        mean_size = summary.size_by_stage[stg]
-        count_stg = summary.count_by_stage[stg]
-        @printf("         %2d   |     %4d     |        %6.2f\n", stg, count_stg, mean_size)
+    has_sex_stage = hasproperty(summary, :count_by_stage_male)
+    if has_sex_stage
+        println("   - Stage Breakdown (Counts, Mean Size, and Mean Mass by Sex):")
+        println("       Stage |   Total |   Males | Females | Male Size | Female Size | Mean Mass(g)")
+        println("       ------+---------+---------+---------+-----------+-------------+-------------")
+        for stg in sort(collect(keys(summary.size_by_stage)))
+            mean_size = summary.size_by_stage[stg]
+            count_stg = summary.count_by_stage[stg]
+            c_m = get(summary.count_by_stage_male, stg, 0)
+            c_f = get(summary.count_by_stage_female, stg, 0)
+            sz_m = get(summary.size_by_stage_male, stg, 0.0)
+            sz_f = get(summary.size_by_stage_female, stg, 0.0)
+            m_mass = hasproperty(summary, :mass_by_stage) ?
+                get(summary.mass_by_stage, stg, 0.0) : 0.0
+            @printf("         %2d  | %7d | %7d | %7d |    %6.2f |      %6.2f |      %7.2f\n",
+                    stg, count_stg, c_m, c_f, sz_m, sz_f, m_mass)
+        end
+    else
+        println("   - Stage Mean Carapace Size Breakdown:")
+        println("       Stage | Living Count | Mean Carapace Size (mm)")
+        println("       -------+--------------+-------------------------")
+        for stg in sort(collect(keys(summary.size_by_stage)))
+            mean_size = summary.size_by_stage[stg]
+            count_stg = summary.count_by_stage[stg]
+            @printf("         %2d   |     %4d     |        %6.2f\n",
+                    stg, count_stg, mean_size)
+        end
     end
     println("="^80)
+    println()
+end
+
+"""
+    print_save_step_outputs(ann_df::DataFrame)
+
+Print formatted table of demographic, abundance, and biomass indicators across
+all annual or periodic save steps.
+"""
+function print_save_step_outputs(ann_df::DataFrame)
+    if isempty(ann_df)
+        return
+    end
+    println()
+    println("="^108)
+    println("                                PERIODIC SAVE STEP POPULATION INDICATORS")
+    println("="^108)
+    println(" Yr |   Day  | Total N | Adult F | Adult M | Legal N | Total(kg) | SSB F(kg) | MMB(kg) | Legal(kg) | Eggs(ann) | Catch")
+    println("----+--------+---------+---------+---------+---------+-----------+-----------+---------+-----------+-----------+------")
+    for row in eachrow(ann_df)
+        @printf(
+            " %2d | %6.0f | %7d | %7d | %7d | %7d | %9.2f | %9.2f | %7.2f | %9.2f | %9.2e | %5d\n",
+            row.year,
+            row.time,
+            round(Int, row.total_numbers),
+            round(Int, row.mature_females),
+            round(Int, row.mature_males),
+            round(Int, row.legal_numbers),
+            row.total_biomass_kg,
+            row.mature_female_biomass_kg,
+            row.mature_male_biomass_kg,
+            row.fishable_male_biomass_kg,
+            row.annual_egg_production,
+            round(Int, row.catch_total)
+        )
+    end
+    println("="^108)
     println()
 end
 
@@ -426,7 +509,7 @@ end
 """
     main()
 
-Entry point for the snow crab IBM CLI simulation execution.
+Entry point for the organism IBM CLI simulation execution.
 """
 function main()
     config = parse_cli_args(ARGS)
@@ -486,6 +569,7 @@ function main()
         (:stage, length),
         (:size, safe_mean),
         (:mass, safe_mean),
+        (:mass, sum),
         (is_adult, count),
         (is_adult_male, count),
         (is_adult_female, count),
@@ -503,30 +587,89 @@ function main()
         :total_catch_biomass_kg
     ]
 
+    # Configure live snapshot day progress reporting
+    snapshot_day = Float64(config[:snapshot_day])
+    frequency_days = Float64(config[:frequency_days])
+    first_snap = (snapshot_day == 274.0 && frequency_days < 274.0) ?
+        frequency_days : snapshot_day
+    snap_days = Float64[]
+    curr_t = first_snap
+    while curr_t <= Float64(config[:days])
+        push!(snap_days, curr_t)
+        curr_t += frequency_days
+    end
+
+    snap_count = Ref(0)
+    snap_callback = function(m)
+        t = m.current_time
+        if any(d -> abs(t - d) < (m.dt / 2.0), snap_days)
+            snap_count[] += 1
+            if snap_count[] == 1
+                println()
+                println("="^116)
+                println("                                LIVE SNAPSHOT DAY POPULATION INDICATORS")
+                println("="^116)
+                println(
+                    " Yr |   Day  | Total N | Adult F | Adult M | Legal N | " *
+                    "Total(kg) | SSB F(kg) | MMB(kg) | Legal(kg) | Stage 0 | Stages 1-5"
+                )
+                println(
+                    "----+--------+---------+---------+---------+---------+-" *
+                    "----------+-----------+---------+-----------+---------+-----------"
+                )
+            end
+            s = summarize_population(m)
+            @printf(
+                " %2d | %6.0f | %7d | %7d | %7d | %7d | %9.2f | %9.2f | %7.2f | %9.2f | %7d | %10d\n",
+                snap_count[],
+                t,
+                s.total_organisms,
+                s.n_adult_females,
+                s.n_adult_males,
+                s.legal_numbers,
+                s.total_biomass_kg,
+                s.female_ssb_kg,
+                s.male_mature_biomass_kg,
+                s.legal_biomass_kg,
+                s.n_stage_0,
+                s.n_stages_1_to_5
+            )
+            flush(stdout)
+        end
+    end
+
     println(" Executing simulation across $(config[:days]) time steps...")
     agent_df, model_df = run_simulation(
         model,
         config[:days];
         adata = adata,
-        mdata = mdata
+        mdata = mdata,
+        step_callback = snap_callback
     )
+    if snap_count[] > 0
+        println("="^116)
+        println()
+    end
     elapsed = time() - t_start
 
     summary = summarize_population(model)
     print_simulation_report(summary, config[:n_agents], config[:days], elapsed)
+
+    # Extract and display periodic save-step metrics
+    ann_df = extract_annual_production(
+        agent_df,
+        model_df;
+        frequency_days = Float64(config[:frequency_days]),
+        snapshot_day = Float64(config[:snapshot_day])
+    )
+    print_save_step_outputs(ann_df)
 
     if config[:save]
         mkpath(config[:output_dir])
         save_path = isabspath(config[:save_file]) ?
             config[:save_file] : joinpath(config[:output_dir], config[:save_file])
         println(" Saving annual simulation results to: $(save_path)")
-        save_simulation_results(
-            save_path,
-            agent_df,
-            model_df;
-            frequency_days = Float64(config[:frequency_days]),
-            snapshot_day = Float64(config[:snapshot_day])
-        )
+        write_dataframe_csv(save_path, ann_df)
         println(" Simulation results saved successfully.")
     end
 

@@ -77,7 +77,7 @@ export summarize_leslie_model, compare_macro_models, summarize_macro_comparison
 export evaluate_population_criteria
 
 # Export visualization tools
-export plot_population_timeseries, plot_stage_distribution, plot_size_by_sex
+export plot_population_timeseries, plot_stage_distribution, plot_instar_distribution, plot_size_by_sex
 export plot_stage_allometry, plot_instar_allometry, plot_reproduction_dynamics, plot_spatial_habitat
 export plot_maturity_ogives, plot_simulation_dashboard, plot_stock_recruitment
 export plot_population_dynamics_fits, plot_retrospective_analysis, export_all_plots

@@ -786,13 +786,6 @@ end
 # Convenience Methods and Aliases for Snow Crab Workflows
 # -----------------------------------------------------------------------------
 
-# Empirical fecundity parameter constants (Sainte-Marie 1993)
-const FECUNDITY_PRIMIPAROUS_INTERCEPT = -0.7229
-const FECUNDITY_PRIMIPAROUS_SLOPE = 2.94
-const FECUNDITY_PRIMIPAROUS_ERR = 0.090
-const FECUNDITY_MULTIPAROUS_INTERCEPT = 0.0158
-const FECUNDITY_MULTIPAROUS_SLOPE = 2.5811
-const FECUNDITY_MULTIPAROUS_ERR = 0.145
 
 crab_color(args...; kwargs...) = organism_color(args...; kwargs...)
 crab_size(args...; kwargs...) = organism_size(args...; kwargs...)

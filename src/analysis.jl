@@ -148,44 +148,117 @@ function summarize_population(model)
             n_larvae = 0,
             mean_size = 0.0,
             size_by_stage = Dict{Int, Float64}(),
-            count_by_stage = Dict{Int, Int}()
+            count_by_stage = Dict{Int, Int}(),
+            mass_by_stage = Dict{Int, Float64}(),
+            size_by_stage_male = Dict{Int, Float64}(),
+            count_by_stage_male = Dict{Int, Int}(),
+            mass_by_stage_male = Dict{Int, Float64}(),
+            size_by_stage_female = Dict{Int, Float64}(),
+            count_by_stage_female = Dict{Int, Int}(),
+            mass_by_stage_female = Dict{Int, Float64}()
         )
     end
 
     n_m = count(c -> c.sex === male, orgs)
     n_f = count(c -> c.sex === female, orgs)
-    n_ad = count(c -> c.stage === adult, orgs)
-    n_adm = count(c -> c.stage === adult && c.sex === male, orgs)
-    n_adf = count(c -> c.stage === adult && c.sex === female, orgs)
-    n_ovig = count(c -> c.stage === adult && c.sex === female && c.egg_count > 0, orgs)
+    n_ad = count(is_adult, orgs)
+    n_adm = count(is_adult_male, orgs)
+    n_adf = count(is_adult_female, orgs)
+    n_ovig = count(is_ovigerous, orgs)
     tot_eggs = sum(c.egg_count for c in orgs; init = 0)
-    n_juv = count(c -> c.stage === juvenile, orgs)
-    n_larv = count(c -> c.stage === zoea || c.stage === megalopa, orgs)
+    n_juv = count(c -> !is_adult(c) && c.stage >= 4, orgs)
+    n_larv = count(c -> c.stage < 4, orgs)
 
-    mean_size = mean(c.size for c in orgs)
-    mean_wt = mean(c.mass for c in orgs)
+    count_by_aggregate_stage = Dict{Int, Int}()
+    size_by_aggregate_stage = Dict{Int, Float64}()
+    mass_by_aggregate_stage = Dict{Int, Float64}()
+    n_stage_0 = 0
+    n_stages_1_to_5 = 0
+
+    if haskey(props, :aggregate_populations)
+        agg_groups = props[:aggregate_populations].groups
+        n_stage_0 = round(Int, sum(g.abundance for g in agg_groups if g.stage == 0; init = 0.0))
+        n_stages_1_to_5 = round(Int, sum(g.abundance for g in agg_groups if g.stage in 1:5; init = 0.0))
+        tot_eggs += n_stage_0
+        n_larv += round(Int, sum(g.abundance for g in agg_groups if g.stage in (1, 2, 3); init = 0.0))
+        n_juv += round(Int, sum(g.abundance for g in agg_groups if g.stage in (4, 5); init = 0.0))
+
+        for stg in 0:5
+            stg_grps = filter(g -> g.stage == stg, agg_groups)
+            tot_ab = sum(g.abundance for g in stg_grps; init = 0.0)
+            count_by_aggregate_stage[stg] = round(Int, tot_ab)
+            if tot_ab > 0
+                size_by_aggregate_stage[stg] = sum(g.size * g.abundance for g in stg_grps) / tot_ab
+                mass_by_aggregate_stage[stg] = sum(g.mass * g.abundance for g in stg_grps) / tot_ab
+            else
+                size_by_aggregate_stage[stg] = 0.0
+                mass_by_aggregate_stage[stg] = 0.0
+            end
+        end
+    end
+
+    mean_size = isempty(orgs) ? 0.0 : mean(c.size for c in orgs)
+    mean_wt = isempty(orgs) ? 0.0 : mean(c.mass for c in orgs)
 
     # Stock biomass metrics (converted from grams to kilograms)
     tot_biomass = sum(c.mass for c in orgs) / 1000.0
-    f_ssb = sum((c.mass for c in orgs if c.stage === adult && c.sex === female);
-                init = 0.0) / 1000.0
-    m_mat_b = sum((c.mass for c in orgs if c.stage === adult && c.sex === male);
-                  init = 0.0) / 1000.0
+    f_ssb = sum(mass_if_adult_female, orgs) / 1000.0
+    m_mat_b = sum(mass_if_adult_male, orgs) / 1000.0
     tot_ssb = f_ssb + m_mat_b
 
-    leg_b = sum(
-        (c.mass for c in orgs if c.stage === adult && c.sex === male &&
-         c.size >= model.params.legal_size_male);
-        init = 0.0
-    ) / 1000.0
+    legal_sz = hasproperty(model.params, :fishery) ? model.params.fishery.legal_size_male : 95.0
+    n_leg = count(c -> is_legal_male(c; legal_size = legal_sz), orgs)
+    leg_b = sum(c -> mass_if_legal_male(c; legal_size = legal_sz), orgs) / 1000.0
 
-    stages_present = unique(c.stage for c in orgs)
+    all_stages = sort(unique(vcat(collect(keys(count_by_aggregate_stage)), [c.stage for c in orgs])))
     size_by_stage = Dict{Int, Float64}()
     count_by_stage = Dict{Int, Int}()
-    for stg in sort(stages_present)
+    mass_by_stage = Dict{Int, Float64}()
+
+    size_by_stage_male = Dict{Int, Float64}()
+    count_by_stage_male = Dict{Int, Int}()
+    mass_by_stage_male = Dict{Int, Float64}()
+
+    size_by_stage_female = Dict{Int, Float64}()
+    count_by_stage_female = Dict{Int, Int}()
+    mass_by_stage_female = Dict{Int, Float64}()
+
+    for stg in all_stages
         stg_orgs = filter(c -> c.stage == stg, orgs)
-        size_by_stage[stg] = mean(c.size for c in stg_orgs)
-        count_by_stage[stg] = length(stg_orgs)
+        stg_m = filter(c -> c.stage == stg && c.sex === male, orgs)
+        stg_f = filter(c -> c.stage == stg && c.sex === female, orgs)
+
+        agg_cnt = get(count_by_aggregate_stage, stg, 0)
+        agg_sz = get(size_by_aggregate_stage, stg, 0.0)
+        agg_wt = get(mass_by_aggregate_stage, stg, 0.0)
+
+        n_ind = length(stg_orgs)
+        tot_cnt = n_ind + agg_cnt
+        count_by_stage[stg] = tot_cnt
+
+        tot_sz = sum(c.size for c in stg_orgs; init = 0.0) + (agg_sz * agg_cnt)
+        size_by_stage[stg] = (tot_cnt > 0) ? (tot_sz / tot_cnt) : 0.0
+
+        tot_wt = sum(c.mass for c in stg_orgs; init = 0.0) + (agg_wt * agg_cnt)
+        mass_by_stage[stg] = (tot_cnt > 0) ? (tot_wt / tot_cnt) : 0.0
+
+        agg_m = round(Int, agg_cnt / 2)
+        agg_f = agg_cnt - agg_m
+
+        tot_m = length(stg_m) + agg_m
+        tot_f = length(stg_f) + agg_f
+        count_by_stage_male[stg] = tot_m
+        count_by_stage_female[stg] = tot_f
+
+        sz_m = sum(c.size for c in stg_m; init = 0.0) + (agg_sz * agg_m)
+        sz_f = sum(c.size for c in stg_f; init = 0.0) + (agg_sz * agg_f)
+        size_by_stage_male[stg] = (tot_m > 0) ? (sz_m / tot_m) : 0.0
+        size_by_stage_female[stg] = (tot_f > 0) ? (sz_f / tot_f) : 0.0
+
+        wt_m = sum(c.mass for c in stg_m; init = 0.0) + (agg_wt * agg_m)
+        wt_f = sum(c.mass for c in stg_f; init = 0.0) + (agg_wt * agg_f)
+        mass_by_stage_male[stg] = (tot_m > 0) ? (wt_m / tot_m) : 0.0
+        mass_by_stage_female[stg] = (tot_f > 0) ? (wt_f / tot_f) : 0.0
     end
 
     return (
@@ -195,6 +268,8 @@ function summarize_population(model)
         male_mature_biomass_kg = m_mat_b,
         total_ssb_kg = tot_ssb,
         legal_biomass_kg = leg_b,
+        legal_numbers = n_leg,
+        n_legal_males = n_leg,
         total_mature_females = n_adf,
         total_mature_males = n_adm,
         total_fishable_male_mass_kg = leg_b,
@@ -214,8 +289,20 @@ function summarize_population(model)
         n_juveniles = n_juv,
         n_larvae = n_larv,
         mean_size = mean_size,
+        n_stage_0 = n_stage_0,
+        n_stages_1_to_5 = n_stages_1_to_5,
+        count_by_aggregate_stage = count_by_aggregate_stage,
+        size_by_aggregate_stage = size_by_aggregate_stage,
+        mass_by_aggregate_stage = mass_by_aggregate_stage,
         size_by_stage = size_by_stage,
-        count_by_stage = count_by_stage
+        count_by_stage = count_by_stage,
+        mass_by_stage = mass_by_stage,
+        size_by_stage_male = size_by_stage_male,
+        count_by_stage_male = count_by_stage_male,
+        mass_by_stage_male = mass_by_stage_male,
+        size_by_stage_female = size_by_stage_female,
+        count_by_stage_female = count_by_stage_female,
+        mass_by_stage_female = mass_by_stage_female
     )
 end
 
@@ -751,12 +838,26 @@ function extract_annual_production(
         :length_stage
     elseif :count_stage in propertynames(agent_df)
         :count_stage
+    elseif :total_organisms in propertynames(agent_df)
+        :total_organisms
     elseif :total_crabs in propertynames(agent_df)
         :total_crabs
     elseif :total_numbers in propertynames(agent_df)
         :total_numbers
+    elseif :count_is_adult in propertynames(agent_df)
+        :count_is_adult
     else
         first(names(agent_df))
+    end
+
+    tot_mass_col = if :sum_mass in propertynames(agent_df)
+        :sum_mass
+    elseif :sum_weight in propertynames(agent_df)
+        :sum_weight
+    elseif :total_biomass_kg in propertynames(agent_df)
+        :total_biomass_kg
+    else
+        nothing
     end
 
     legal_col = if :count_is_legal_male in propertynames(agent_df)
@@ -789,7 +890,9 @@ function extract_annual_production(
         nothing
     end
 
-    leg_mass_col = if :sum_weight_if_legal_male in propertynames(agent_df)
+    leg_mass_col = if :sum_mass_if_legal_male in propertynames(agent_df)
+        :sum_mass_if_legal_male
+    elseif :sum_weight_if_legal_male in propertynames(agent_df)
         :sum_weight_if_legal_male
     elseif :fishable_male_biomass_kg in propertynames(agent_df)
         :fishable_male_biomass_kg
@@ -799,7 +902,9 @@ function extract_annual_production(
         nothing
     end
 
-    mat_m_mass_col = if :sum_weight_if_adult_male in propertynames(agent_df)
+    mat_m_mass_col = if :sum_mass_if_adult_male in propertynames(agent_df)
+        :sum_mass_if_adult_male
+    elseif :sum_weight_if_adult_male in propertynames(agent_df)
         :sum_weight_if_adult_male
     elseif :mature_male_biomass_kg in propertynames(agent_df)
         :mature_male_biomass_kg
@@ -807,7 +912,9 @@ function extract_annual_production(
         nothing
     end
 
-    mat_f_mass_col = if :sum_weight_if_adult_female in propertynames(agent_df)
+    mat_f_mass_col = if :sum_mass_if_adult_female in propertynames(agent_df)
+        :sum_mass_if_adult_female
+    elseif :sum_weight_if_adult_female in propertynames(agent_df)
         :sum_weight_if_adult_female
     elseif :mature_female_biomass_kg in propertynames(agent_df)
         :mature_female_biomass_kg
@@ -818,6 +925,7 @@ function extract_annual_production(
     end
 
     total_n_vec = Float64[]
+    total_m_vec = Float64[]
     legal_n_vec = Float64[]
     mat_f_n_vec = Float64[]
     mat_m_n_vec = Float64[]
@@ -833,6 +941,16 @@ function extract_annual_production(
         push!(year_vec, k)
         push!(time_vec, agent_df.time[idx])
         push!(total_n_vec, Float64(agent_df[idx, num_col]))
+
+        tm_val = if tot_mass_col in (:sum_mass, :sum_weight)
+            Float64(agent_df[idx, tot_mass_col]) / 1000.0
+        elseif tot_mass_col !== nothing
+            Float64(agent_df[idx, tot_mass_col])
+        else
+            0.0
+        end
+        push!(total_m_vec, tm_val)
+
         l_val = (legal_col !== nothing) ? Float64(agent_df[idx, legal_col]) : 0.0
         push!(legal_n_vec, l_val)
 
@@ -842,7 +960,7 @@ function extract_annual_production(
         mm_val = (mat_m_col !== nothing) ? Float64(agent_df[idx, mat_m_col]) : 0.0
         push!(mat_m_n_vec, mm_val)
 
-        lm_val = if leg_mass_col === :sum_weight_if_legal_male
+        lm_val = if leg_mass_col in (:sum_weight_if_legal_male, :sum_mass_if_legal_male)
             Float64(agent_df[idx, leg_mass_col]) / 1000.0
         elseif leg_mass_col !== nothing
             Float64(agent_df[idx, leg_mass_col])
@@ -851,7 +969,7 @@ function extract_annual_production(
         end
         push!(leg_mass_vec, lm_val)
 
-        mmm_val = if mat_m_mass_col === :sum_weight_if_adult_male
+        mmm_val = if mat_m_mass_col in (:sum_weight_if_adult_male, :sum_mass_if_adult_male)
             Float64(agent_df[idx, mat_m_mass_col]) / 1000.0
         elseif mat_m_mass_col !== nothing
             Float64(agent_df[idx, mat_m_mass_col])
@@ -860,7 +978,7 @@ function extract_annual_production(
         end
         push!(mat_m_mass_vec, mmm_val)
 
-        mfm_val = if mat_f_mass_col === :sum_weight_if_adult_female
+        mfm_val = if mat_f_mass_col in (:sum_weight_if_adult_female, :sum_mass_if_adult_female)
             Float64(agent_df[idx, mat_f_mass_col]) / 1000.0
         elseif mat_f_mass_col !== nothing
             Float64(agent_df[idx, mat_f_mass_col])
@@ -868,31 +986,6 @@ function extract_annual_production(
             0.0
         end
         push!(mat_f_mass_vec, mfm_val)
-    end
-
-    catch_vec = zeros(Float64, n_samples)
-    egg_prod_cum_vec = zeros(Float64, n_samples)
-    egg_prod_ann_vec = zeros(Float64, n_samples)
-
-    if :total_eggs_spawned in propertynames(model_df) || :total_egg_production in propertynames(model_df)
-        # Identify which column to use for cumulative count
-        cum_col = if :total_eggs_spawned in propertynames(model_df)
-            :total_eggs_spawned
-        else
-            :total_egg_production
-        end
-
-        for k in 1:n_samples
-            t_target = t_targets[k]
-            idx = argmin(abs.(model_df.time .- t_target))
-            egg_prod_cum_vec[k] = Float64(model_df[idx, cum_col])
-
-            # Calculate periodical (annual) production via delta between samples
-            if k > 1
-                prev_idx = argmin(abs.(model_df.time .- t_targets[k-1]))
-                egg_prod_ann_vec[k] = max(0.0, egg_prod_cum_vec[k] - egg_prod_cum_vec[prev_idx])
-            end
-        end
     end
 
     catch_vec = zeros(Float64, n_samples)
@@ -911,11 +1004,10 @@ function extract_annual_production(
             t_target = t_targets[k]
             idx = argmin(abs.(model_df.time .- t_target))
             egg_prod_cum_vec[k] = Float64(model_df[idx, cum_col])
-
-            if k > 1
-                prev_idx = argmin(abs.(model_df.time .- t_targets[k-1]))
-                egg_prod_ann_vec[k] = max(0.0, egg_prod_cum_vec[k] - egg_prod_cum_vec[prev_idx])
-            end
+        end
+        egg_prod_ann_vec[1] = egg_prod_cum_vec[1]
+        for k in 2:n_samples
+            egg_prod_ann_vec[k] = max(0.0, egg_prod_cum_vec[k] - egg_prod_cum_vec[k - 1])
         end
     end
 
@@ -946,6 +1038,7 @@ function extract_annual_production(
         year = year_vec,
         time = time_vec,
         total_numbers = total_n_vec,
+        total_biomass_kg = total_m_vec,
         legal_numbers = legal_n_vec,
         mature_females = mat_f_n_vec,
         mature_males = mat_m_n_vec,
@@ -2107,7 +2200,7 @@ function compare_macro_models(
     rmse_les = sqrt(ss_res_les / T)
     aic_les = (ss_res_les > 0.0) ? (T * log(ss_res_les / T) + 2.0 * 4) : 0.0
 
-    aics = Dict(:schaefer => aic_sch, :delay_difference => aic_dd, :leslie => aic_les)
+    aics = Dict(:schaefer => aic_sch, :delay_difference => aic_dd, :generalized_leslie => aic_les)
     preferred = argmin(aics)
 
     return MacroModelComparison(

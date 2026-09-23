@@ -55,13 +55,13 @@ The simulation is organized into modular files within `src/`:
 model_agent/
 ├── Project.toml              # Dependencies: Agents, DataFrames, Distributions, Plots, etc.
 ├── docs/
-│   ├── model_agent_new.md    # Primary documentation and user guide (this file)
-│   └── organism_ibm_research_paper.md 
+│   ├── model_agent.md        # Primary documentation and API reference
+│   └── snowcrab_ibm_research_paper.md 
 ├── src/
 │   ├── model_agent.jl        # Root package module & public API exports
 │   ├── types.jl              # Structs: Organism, IBMParameters, SpeciesBehavior; Enums
-│   ├── empirical_biology.jl  # Empirical rules (e.g., growth curves, maturity ogives)
-   │   ├── organism_dynamics.jl # Bioenergetics, molting/growth thresholds, mortality
+│   ├── organism_dynamics.jl  # Generic growth/allometry interfaces, bioenergetics, molt, mortality
+│   ├── snowcrab.jl           # Snow crab parameters, empirical allometry, phenology, reproduction
 │   ├── simulation.jl         # Spatial GridSpace, core steppers, config loaders
 │   ├── analysis.jl           # Summary statistics, stock-recruitment, and macro models
 │   └── visualization.jl      # Diagnostic plots, interactive dashboards, and animations
@@ -79,11 +79,12 @@ model_agent/
 | Module File | Purpose & Key Exports |
 |---|---|
 | [`src/types.jl`](file:///c:/home/jae/projects/model_agent/src/types.jl) | Defines `@agent struct Organism`, `LifeStage`, `Sex`, `IBMParameters`, and the `SpeciesBehavior` interface. |
-| [`src/empirical_biology.jl`](file:///c:/home/jae/projects/model_agent/src/empirical_biology.jl) | Implements empirical equations for growth, maturity (ogives), fecundity, and multivariate covariance modeling. |
 | [`src/organism_dynamics.jl`](file:///c:/home/jae/projects/model_agent/src/organism_dynamics.jl) | Evaluates metabolic scaling ($W^{0.75}$), energy-dependent growth/molting thresholds, and multi-driver mortality rates. |
+| [`src/snowcrab.jl`](file:///c:/home/jae/projects/model_agent/src/snowcrab.jl) | Implements `SnowCrabParams`, `SnowCrabBehavior`, empirical Hiatt increments, maturity ogives, fecundity, and reproduction. |
 | [`src/simulation.jl`](file:///c:/home/jae/projects/model_agent/src/simulation.jl) | Implements spatial GridSpace, core `agent_step!` loop (dispatching to behavior), and configuration management. |
 | [`src/analysis.jl`](file:///c:/home/jae/projects/model_agent/src/analysis.jl) | Computes demographic snapshots, stock-recruitment curves, and macro-ecological models (Schaefer, Delay-Difference). |
 | [`src/visualization.jl`](file:///c:/home/jae/projects/model_agent/src/visualization.jl) | Produces diagnostic figures, interactive dashboards, and video animations of the simulation. |
+
 
 ---
 
