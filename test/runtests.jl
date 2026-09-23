@@ -18,23 +18,23 @@ using model_agent
 @testset "model_agent Tests" begin
 
     @testset "Empirical Bounds and Allometry" begin
-        # Monotonicity of lower bounds across instars
+        # Monotonicity of lower bounds across stages
         @test llbm(4) < llbm(5) < llbm(6) < llbm(7)
         @test llbf(4) < llbf(5) < llbf(6) < llbf(7)
 
         # Bounds order: lower bound < upper bound
-        @test carapacewidth(5, :male; type=:lb) < carapacewidth(5, :male; type=:ub)
-        @test carapacewidth(5, :female; type=:lb) < carapacewidth(5, :female; type=:ub)
+        @test get_stage_size(5, :male; type=:lb) < get_stage_size(5, :male; type=:ub)
+        @test get_stage_size(5, :female; type=:lb) < get_stage_size(5, :female; type=:ub)
 
-        mid_m = carapacewidth(6, :male; type=:mid)
+        mid_m = get_stage_size(6, :male; type=:mid)
         @test llbm(6) < mid_m < llbm(7)
 
         # Growth schedule dataframe
         sched = growth_schedule()
         @test isa(sched, DataFrame)
         @test nrow(sched) == 14
-        @test all(sched.cwm_lb .< sched.cwm_ub)
-        @test all(sched.cwf_lb .< sched.cwf_ub)
+        @test all(sched.size_male_lb .< sched.size_male_ub)
+        @test all(sched.size_female_lb .< sched.size_female_ub)
     end
 
     @testset "Empirical Growth Increments and Maturity" begin
@@ -42,8 +42,8 @@ using model_agent
 
         # Hiatt growth increment: size must increase
         cw_orig = 50.0
-        cw_next_imm = predict_postmolt_cw(cw_orig; sex=0, mat=0, rng=rng)
-        cw_next_mat = predict_postmolt_cw(cw_orig; sex=0, mat=1, rng=rng)
+        cw_next_imm = predict_postgrowth_size(cw_orig; sex=0, mat=0, rng=rng)
+        cw_next_mat = predict_postgrowth_size(cw_orig; sex=0, mat=1, rng=rng)
 
         @test cw_next_imm > cw_orig
         @test cw_next_mat > cw_orig
@@ -74,33 +74,32 @@ using model_agent
         @test selectivity(130.0; s50=95.0, s50_sigma=5.0) > 0.99
     end
 
-    @testset "SnowCrab Struct and Instar Tracking" begin
+    @testset "Organism Struct and Stage Tracking" begin
         rng = MersenneTwister(123)
 
         # Initialize model with 20 agents
         model = initialize_model(N_agents=20, dims=(20, 20), rng_seed=123)
         @test nagents(model) == 20
 
-        # Verify all agents have valid instar and stage
+        # Verify all agents have valid stage and size
         for agent in allagents(model)
-            @test agent.instar in 4:7
-            @test agent.stage === juvenile
-            @test agent.size_mm > 0.0
+            @test agent.stage in 6:9
+            @test agent.size > 0.0
             @test agent.age_days >= 0.0
         end
 
-        # Test molt progression and instar increment
+        # Test molt progression and stage increment
         test_crab = first(allagents(model))
-        init_instar = test_crab.instar
-        init_size = test_crab.size_mm
+        init_stage = test_crab.stage
+        init_size = test_crab.size
 
         perform_molt!(test_crab, 10.0; rng=rng)
-        @test test_crab.instar == init_instar + 1
-        @test test_crab.size_mm > init_size
-        @test test_crab.last_molt_time == 10.0
+        @test test_crab.stage == init_stage + 1
+        @test test_crab.size > init_size
+        @test test_crab.last_growth_event_time == 10.0
 
-        # Terminal molt check: adult crabs should not molt
-        test_crab.stage = adult
+        # Terminal molt check: mature organisms should not molt
+        test_crab.is_mature = true
         @test check_molt_conditions(test_crab, 5.0) == false
     end
 
@@ -117,16 +116,16 @@ using model_agent
 
         # Summary statistics calculation
         summary = summarize_population(model)
-        @test summary.total_crabs <= 30
-        @test summary.n_males + summary.n_females == summary.total_crabs
-        @test summary.mean_cw > 0.0
+        @test summary.total_organisms <= 30
+        @test summary.n_males + summary.n_females == summary.total_organisms
+        @test summary.mean_size > 0.0
         @test summary.total_biomass_kg > 0.0
-        @test summary.mean_weight_g > 0.0
+        @test summary.mean_mass > 0.0
         @test summary.total_ssb_kg >= 0.0
         @test summary.female_ssb_kg + summary.male_mature_biomass_kg == summary.total_ssb_kg
         @test summary.total_biomass_kg >= summary.total_ssb_kg
-        @test !isempty(summary.cw_by_instar)
-    end
+        @test !isempty(summary.size_by_stage)
+            end
 
     @testset "Reproduction, Egg Generation, and Recruitment" begin
         # Initialize model in spring mating season (day 40)
@@ -134,53 +133,42 @@ using model_agent
         model.current_time = 40.0
 
         # Add receptive adult female and adult male nearby
-        w_f = crab_weight(65.0, female; mat=1)
-        w_m = crab_weight(110.0, male; mat=1)
-        add_agent!(
-            (5, 5), model, adult, female, 10, 1500.0, 65.0, w_f, 50.0,
-            0.0, 1000.0, true, 0, 0.0, 0
+        w_f = calculate_mass(65.0, female; mat=1)
+        w_m = calculate_mass(110.0, male; mat=1)
+        f_crab = add_agent!(
+            (5, 5), model, 10, female, 1500.0, 65.0, w_f, 50.0,
+            0.0, 1000.0, true, 0, 0.0, 0, true
         )
-        add_agent!(
-            (5, 6), model, adult, male, 12, 1800.0, 110.0, w_m, 80.0,
-            0.0, 1000.0, false, 0, 0.0, 0
+        m_crab = add_agent!(
+            (5, 6), model, 12, male, 1800.0, 110.0, w_m, 80.0,
+            0.0, 1000.0, false, 0, 0.0, 0, true
         )
-
-        f_crab = model[1]
-        m_crab = model[2]
 
         # Female executes agent_step! -> copulates and extrudes clutch
         agent_step!(f_crab, model)
 
-        @test f_crab.eggs_count > 5000
+        @test f_crab.egg_count > 5000
         @test f_crab.hatch_day > model.current_time
         @test model.total_eggs_spawned > 5000
         @test f_crab.is_mating_ready == false
 
         # Advance time to hatch day
         model.current_time = f_crab.hatch_day + 1.0
-        n_before_hatch = nagents(model)
+        n_groups_before = length(model.aggregate_populations.groups)
 
         agent_step!(f_crab, model)
 
-        @test f_crab.eggs_count == 0
+        @test f_crab.egg_count == 0
         @test f_crab.is_mating_ready == true
-        @test nagents(model) > n_before_hatch
-        @test model.total_recruits_settled > 0
-
-        # Verify new recruits are instar 4 benthic juveniles
-        new_recruits = filter(c -> c.id > 2, collect(allagents(model)))
-        @test !isempty(new_recruits)
-        for r in new_recruits
-            @test r.instar == 4
-            @test r.stage === juvenile
-            @test r.size_mm > 0.0
-        end
+        @test length(model.aggregate_populations.groups) > n_groups_before
+        @test model.aggregate_populations.groups[end].stage == 0
+        @test model.aggregate_populations.groups[end].abundance > 5000
     end
 
     @testset "Visualization Tools & Plotting" begin
         model = initialize_model(N_agents = 40, dims = (15, 15), rng_seed = 42)
-        adata = [(:stage, length), (:size_mm, safe_mean), (is_adult, count),
-                 (is_ovigerous, count), (:instar, safe_mean)]
+        adata = [(:stage, length), (:size, safe_mean), (is_adult, count),
+                 (is_ovigerous, count)]
         mdata = [:total_eggs_spawned, :total_recruits_settled]
 
         agent_df, model_df = run_simulation(model, 30; adata = adata, mdata = mdata)
@@ -189,16 +177,18 @@ using model_agent
         p_pop = plot_population_timeseries(agent_df; model_df = model_df)
         @test p_pop isa Plots.Plot
 
-        # 2. Instar distribution
-        p_inst = plot_instar_distribution(model)
+        # 2. Stage distribution
+        p_inst = plot_stage_distribution(model)
+        @test plot_instar_distribution(model) isa Plots.Plot
         @test p_inst isa Plots.Plot
 
         # 3. Size distribution by sex
         p_size = plot_size_by_sex(model)
         @test p_size isa Plots.Plot
 
-        # 4. Instar allometry
-        p_allo = plot_instar_allometry(model)
+        # 4. Stage allometry
+        p_allo = plot_stage_allometry(model)
+        @test plot_instar_allometry(model) isa Plots.Plot
         @test p_allo isa Plots.Plot
 
         # 5. Reproduction dynamics
@@ -240,48 +230,48 @@ using model_agent
     end
 
     @testset "Length-Weight Allometry, Stock Biomass, and Molt Seasonality" begin
-        # 1. Length-Weight allometric scaling: W = alpha * CW^beta
-        w_f_imm = crab_weight(50.0, female; mat = 0)
-        w_f_mat = crab_weight(50.0, female; mat = 1)
+        # 1. Length-Weight allometric scaling: W = alpha * Size^beta
+        w_f_imm = calculate_mass(50.0, female; mat = 0)
+        w_f_mat = calculate_mass(50.0, female; mat = 1)
         @test 0.0003440 * 50.0^2.980 ≈ w_f_imm
         @test 0.0004500 * 50.0^2.920 ≈ w_f_mat
 
-        w_m_imm = crab_weight(95.0, male; mat = 0)
-        w_m_mat = crab_weight(95.0, male; mat = 1)
+        w_m_imm = calculate_mass(95.0, male; mat = 0)
+        w_m_mat = calculate_mass(95.0, male; mat = 1)
         @test 0.0002665 * 95.0^3.098 ≈ w_m_imm
         @test 0.0001830 * 95.0^3.160 ≈ w_m_mat
         @test w_m_mat > 300.0  # ~335 g for 95mm mature male
 
         # 2. Degree-day accumulation and molt conditions
         p = IBMParameters()
-        crab_juv = SnowCrab(
-            1, (5, 5), juvenile, male, 6, 400.0, 28.0,
-            crab_weight(28.0, male; mat = 0),
-            50.0, 0.0, 500.0, false, 0, 0.0, 0
+        crab_juv = Organism(
+            1, (5, 5), 6, male, SnowCrabBehavior(), 400.0, 28.0,
+            calculate_mass(28.0, male; mat = 0),
+            50.0, 0.0, 500.0, false, 0, 0.0, 0, false
         )
-        # Degree days = 500 < 550 for instar 6 -> cannot molt yet
+        # Degree days = 500 < 550 for stage 6 -> cannot molt yet
         @test check_molt_conditions(crab_juv, 4.0, 50.0; params = p) == false
 
         # Accumulate degree days past threshold (550), but intermolt duration < 150 d
         crab_juv.degree_days = 600.0
-        crab_juv.last_molt_time = 0.0
+        crab_juv.last_growth_event_time = 0.0
         @test check_molt_conditions(crab_juv, 4.0, 50.0; params = p) == false
 
         # Current time = 160 >= 150 d intermolt -> eligible to molt
         @test check_molt_conditions(crab_juv, 4.0, 160.0; params = p) == true
 
-        # Perform molt and verify degree-day reset and weight recalculation
-        init_wt = crab_juv.weight_g
+        # Perform molt and verify degree-day reset and mass recalculation
+        init_wt = crab_juv.mass
         perform_molt!(crab_juv, 160.0; rng = MersenneTwister(42))
         @test crab_juv.degree_days == 0.0
-        @test crab_juv.weight_g > init_wt
-        @test crab_juv.instar == 7
+        @test crab_juv.mass > init_wt
+        @test crab_juv.stage == 7
 
-        # 3. Molt seasonality for instars >= 7
+        # 3. Molt seasonality for stages >= 7
         # Inside spring window (day 40, within [15, 140]), having molted in previous year
         crab_juv.degree_days = 1000.0
         crab_juv.energy_reserve = 100.0
-        crab_juv.last_molt_time = -300.0
+        crab_juv.last_growth_event_time = -300.0
         @test check_molt_conditions(crab_juv, 4.0, 40.0; params = p) == true
 
         # Outside spring window (day 200, summer/autumn) -> blocked by seasonality
@@ -291,7 +281,7 @@ using model_agent
         model = initialize_model(N_agents = 50, dims = (20, 20), rng_seed = 999)
         summary = summarize_population(model)
         @test summary.total_biomass_kg > 0.0
-        @test summary.mean_weight_g > 0.0
+        @test summary.mean_mass > 0.0
         @test summary.female_ssb_kg >= 0.0
         @test summary.male_mature_biomass_kg >= 0.0
         @test summary.legal_biomass_kg >= 0.0
@@ -311,9 +301,9 @@ using model_agent
         # Simulate clutch record
         push!(abmproperties(model)[:clutch_recruitment_records], (
             hatch_time = 365.0,
-            mother_cw = 68.0,
-            mother_weight_g = 120.0,
-            eggs_count = 50000,
+            mother_size = 68.0,
+            mother_mass = 120.0,
+            egg_count = 50000,
             recruits_settled = 18,
             density_feedback = 1.2
         ))
@@ -514,30 +504,30 @@ using model_agent
     @testset "Generalized Leslie Matrix & Macro Model Comparison" begin
         rng = MersenneTwister(999)
 
-        # 1. Empirical Instar Stages definition
-        stages = build_instar_stages()
+        # 1. Empirical Stages definition
+        stages = build_stages()
         @test length(stages) == 15
-        @test stages[1].name == "Instar 4 (Recruit)"
+        @test stages[1].name == "Stage 4 (Recruit)"
         @test stages[1].sex === undifferentiated
-        @test stages[2].name == "Instar 5 (Juvenile)"
+        @test stages[2].name == "Stage 5 (Juvenile)"
         @test stages[2].sex === undifferentiated
-        @test stages[3].name == "Instar 6 Male"
+        @test stages[3].name == "Stage 6 Male"
         @test stages[3].sex === male
-        @test stages[10].name == "Instar 6 Female"
+        @test stages[10].name == "Stage 6 Female"
         @test stages[10].sex === female
 
-        # Legal males: CW >= 95 mm (Instar 11 and 12+ Male, stages 8 & 9)
+        # Legal males: Size >= 95 mm (Stage 11 and 12+ Male, stages 8 & 9)
         for st in stages
-            if st.sex === male && st.instar >= 11
+            if st.sex === male && st.stage >= 11
                 @test st.is_legal_male == true
             else
                 @test st.is_legal_male == false
             end
         end
 
-        # Reproductive maturity flags (Mature females: Instar 9, 10, 11+, stages 13..15)
+        # Reproductive maturity flags (Mature females: Stage 9, 10, 11+, stages 13..15)
         for st in stages
-            if st.sex === female && st.instar >= 9
+            if st.sex === female && st.stage >= 9
                 @test st.is_reproductive == true
             else
                 @test st.is_reproductive == false
@@ -560,12 +550,12 @@ using model_agent
         # 3. Stage proportion derivation from KDE
         cw_vec = vcat(fill(12.0, 50), fill(45.0, 50), fill(100.0, 50))
         sex_vec = vcat(fill(:unknown, 50), fill(:male, 50), fill(:male, 50))
-        counts, props = derive_instar_proportions_kde(cw_vec, sex_vec; stages = stages)
+        counts, props = derive_stage_proportions_kde(cw_vec, sex_vec; stages = stages)
         @test length(counts) == 15
         @test length(props) == 15
         @test sum(props) ≈ 1.0 atol = 1e-4
         @test all(props .>= 0.0)
-        # Instar 4 should dominate for 12 mm
+        # Stage 4 should dominate for 12 mm
         @test props[1] > 0.20
 
         # 4. Annual Stage Matrix Extraction
@@ -684,7 +674,7 @@ using model_agent
         rm(tmp_cfg_file, force=true)
 
         # 6. CLI '=' argument syntax parsing
-        include(projectdir("scripts", "snowcrab_ibm.jl"))
+        include(projectdir("scripts", "organism_ibm.jl"))
         cli_parsed = parse_cli_args([
             "--config=snowcrab_ibm.config",
             "--temp_base=3.5",
@@ -782,7 +772,7 @@ using model_agent
         # 1. Evaluate population criteria on a running model
         m_test = initialize_model(N_agents = 25, dims = (20, 20), rng_seed = 99)
         agent_df, model_df = run_simulation(m_test, 60;
-            adata = [(:stage, length), (:size_mm, safe_mean)],
+            adata = [(:stage, length), (:size, safe_mean)],
             mdata = [:total_catch_numbers]
         )
         crit = evaluate_population_criteria(m_test, agent_df; min_population = 5)
@@ -799,7 +789,7 @@ using model_agent
         @test crit_extinct.passed_all == false
 
         # 2. Test orchestrator parsing helpers
-        include(projectdir("scripts", "snowcrab_orchestrator.jl"))
+        include(projectdir("scripts", "organism_orchestrator.jl"))
         vary_parsed = parse_vary_string("temp_base=3.5,5.0;food_max=8.0,12.0")
         @test haskey(vary_parsed, :temp_base)
         @test haskey(vary_parsed, :food_max)
@@ -903,19 +893,19 @@ using model_agent
         @test llbm(3.0) == 2.50
         @test llbf(3.0) == 2.50
 
-        cw_samp = carapacewidth(5, :male; type = :random, rng = rng)
+        cw_samp = get_stage_size(5, :male; type = :random, rng = rng)
         @test llbm(5) <= cw_samp <= llbm(6)
 
         # 2. Bivariate Hiatt growth increments and condition modulation
         cw_base = 50.0
-        cw_starved = predict_postmolt_cw(
+        cw_starved = predict_postgrowth_size(
             cw_base;
             sex = :male,
             mat = 0,
             condition = 0.70,
             rng = MersenneTwister(1)
         )
-        cw_fed = predict_postmolt_cw(
+        cw_fed = predict_postgrowth_size(
             cw_base;
             sex = :male,
             mat = 0,
@@ -933,16 +923,15 @@ using model_agent
         p_warm = maturity(:male, log(92.0); temp = 7.0, rng = MersenneTwister(10))
         @test p_warm > p_cold
 
-        # 4. Fecundity agent dispatch, senescence, and clutch weight
-        mock_fem = SnowCrab(
-            1, (5, 5), adult, female, 10, 800.0, 75.0, 120.0, 40.0, 0.0, 150.0,
-            false, 50000, 365.0, 1
+        mock_fem = Organism(
+            1, (5, 5), 10, female, SnowCrabBehavior(), 800.0, 75.0, 120.0, 40.0, 0.0, 150.0,
+            false, 50000, 365.0, 1, true
         )
         fec_agent = fecundity(mock_fem; rng = rng)
         @test fec_agent > 10000
 
-        wt_somatic = crab_weight(mock_fem; include_eggs = false)
-        wt_total = crab_weight(mock_fem; include_eggs = true)
+        wt_somatic = calculate_mass(mock_fem; include_eggs = false)
+        wt_total = calculate_mass(mock_fem; include_eggs = true)
         @test wt_total > wt_somatic
         @test (wt_total - wt_somatic) ≈ (50000 * 0.00007)
 
@@ -950,8 +939,8 @@ using model_agent
         survey_df = generate_mock_survey_data(n_samples = 300, rng = rng)
         @test isa(survey_df, DataFrame)
         @test nrow(survey_df) == 300
-        @test :cw in propertynames(survey_df)
-        @test :mass_g in propertynames(survey_df)
+        @test :size in propertynames(survey_df)
+        @test :mass in propertynames(survey_df)
         @test :maturity in propertynames(survey_df)
         @test :fecundity in propertynames(survey_df)
 
@@ -959,10 +948,10 @@ using model_agent
         emp_model = fit_empirical_biology_model(survey_df)
         @test isa(emp_model, EmpiricalBiologicalModel)
         @test emp_model.sample_size == 300
-        @test haskey(emp_model.weight_params, :male_imm)
-        @test haskey(emp_model.weight_params, :male_mat)
-        @test haskey(emp_model.weight_params, :female_imm)
-        @test haskey(emp_model.weight_params, :female_mat)
+        @test haskey(emp_model.mass_params, :male_imm)
+        @test haskey(emp_model.mass_params, :male_mat)
+        @test haskey(emp_model.mass_params, :female_imm)
+        @test haskey(emp_model.mass_params, :female_mat)
 
         @test haskey(emp_model.maturity_params, :male)
         @test haskey(emp_model.maturity_params, :female)
@@ -976,28 +965,28 @@ using model_agent
         @test isposdef(emp_model.trait_cov)
 
         # 7. Sample crab traits from empirical model
-        traits_m = sample_crab_traits(
+        traits_m = sample_organism_traits(
             emp_model;
-            cw = 100.0,
+            size = 100.0,
             sex = :male,
             temp = 3.5,
             rng = rng
         )
-        @test traits_m.mass_g > 300.0
+        @test traits_m.mass > 300.0
         @test traits_m.fecundity == 0.0
-        @test traits_m.estimated_instar in (11, 12)
-
-        traits_f = sample_crab_traits(
+        @test traits_m.estimated_stage in (11, 12)
+        
+        traits_f = sample_organism_traits(
             emp_model;
-            cw = 70.0,
+            size = 70.0,
             sex = :female,
             temp = 3.5,
             shell_age = 1.0,
             rng = rng
         )
-        @test traits_f.mass_g > 50.0
-        @test traits_f.estimated_instar in (9, 10, 11)
-
+        @test traits_f.mass > 50.0
+        @test traits_f.estimated_stage in (9, 10, 11)
+        
         # 8. Model summary display
         io_buf = IOBuffer()
         summarize_empirical_model(emp_model; io = io_buf)
@@ -1045,7 +1034,7 @@ using model_agent
 
         # Scalar vs SnowCrab dispatch consistency
         dE_scalar, intake_scalar = calculate_energy_change(
-            3.0, 5.0, 95.0; weight = 350.0
+            3.0, 5.0, 95.0; mass = 350.0
         )
         dE_agent, intake_agent = calculate_energy_change(mock_c, 3.0, 5.0)
         @test dE_scalar ≈ dE_agent
@@ -1087,15 +1076,15 @@ using model_agent
         @test m_old > m_young
 
         # 6. Temperature-coupled perform_molt!
-        test_juv = SnowCrab(
+        test_juv = Organism(
             7, (5, 5), juvenile, male, 5, 200.0, 18.0, 2.5, 25.0, 50.0, 400.0,
             false, 0, 0.0, 0
         )
         perform_molt!(test_juv, 200.0, 3.0; rng = rng)
-        @test test_juv.instar == 6
-        @test test_juv.size_mm > 18.0
-        @test test_juv.weight_g > 2.5
-        @test test_juv.last_molt_time == 200.0
+        @test test_juv.stage == 6
+        @test test_juv.size > 18.0
+        @test test_juv.mass > 2.5
+        @test test_juv.last_growth_event_time == 200.0
         @test test_juv.degree_days == 0.0
     end
 
@@ -1202,96 +1191,110 @@ using model_agent
         )
         m_mate.current_time = 45.0  # Spring mating season
 
-        # Test sub-legal male (CW = 80 mm < 95 mm) -> confers 2 clutches
+        # Test sub-legal male (Size = 80 mm < 95 mm) -> confers 2 clutches
         sub_male = add_agent!(
-            (5, 5), m_mate, adult, male, 11, 1200.0, 80.0, 200.0, 50.0,
-            0.0, 800.0, false, 0, 0.0, 0
+            (5, 5), m_mate, 11, male, 1200.0, 80.0, 200.0, 50.0,
+            0.0, 800.0, false, 0, 0.0, 0, true
         )
         fem_crab = add_agent!(
-            (5, 6), m_mate, adult, female, 10, 1200.0, 65.0,
-            crab_weight(65.0, female; mat = 1), 50.0, 0.0, 800.0, true, 0, 0.0, 0
+            (5, 6), m_mate, 10, female, 1200.0, 65.0,
+            calculate_mass(65.0, female; mat = 1), 50.0, 0.0, 800.0, true, 0, 0.0, 0, true
         )
-        base_somatic_w = fem_crab.weight_g
+        base_somatic_w = fem_crab.mass
         agent_step!(fem_crab, m_mate)
         # Copulated with sub-legal male -> 2 clutches, then extruded 1 -> 1 clutch left
         @test fem_crab.sperm_clutches == 1
-        @test fem_crab.eggs_count >= 1000
-        @test fem_crab.weight_g > base_somatic_w # Includes egg clutch mass
+        @test fem_crab.egg_count >= 1000
+        @test fem_crab.mass > base_somatic_w # Includes egg clutch mass
 
-        # Test legal male (CW = 110 mm >= 95 mm) -> confers 3 clutches
+        # Test legal male (Size = 110 mm >= 95 mm) -> confers 3 clutches
         m_mate2 = initialize_model(
-            N_agents = 0, dims = (10, 10), rng_seed = 123, model_mode = :complex
+            N_agents = 0, dims = (10, 10), rng_seed = 123
         )
         m_mate2.current_time = 45.0
         leg_male = add_agent!(
-            (5, 5), m_mate2, adult, male, 12, 1400.0, 110.0, 450.0, 50.0,
-            0.0, 800.0, false, 0, 0.0, 0
+            (5, 5), m_mate2, 12, male, 1400.0, 110.0, 450.0, 50.0,
+            0.0, 800.0, false, 0, 0.0, 0, true
         )
         fem_crab2 = add_agent!(
-            (5, 6), m_mate2, adult, female, 10, 1200.0, 65.0,
-            crab_weight(65.0, female; mat = 1), 50.0, 0.0, 800.0, true, 0, 0.0, 0
+            (5, 6), m_mate2, 10, female, 1200.0, 65.0,
+            calculate_mass(65.0, female; mat = 1), 50.0, 0.0, 800.0, true, 0, 0.0, 0, true
         )
         agent_step!(fem_crab2, m_mate2)
         # Copulated with legal male -> 3 clutches, then extruded 1 -> 2 clutches left
         @test fem_crab2.sperm_clutches == 2
-        @test fem_crab2.eggs_count >= 1000
-        @test fem_crab2.weight_g > base_somatic_w
+        @test fem_crab2.egg_count >= 1000
+        @test fem_crab2.mass > base_somatic_w
 
-        # 5. Simple model distillation behavior (model = :simple)
-        m_simple = initialize_model(
-            N_agents = 0, dims = (10, 10), rng_seed = 456, model_mode = :simple
+        # 5. Process Toggles and Probabilistic Aggregate Dynamics
+        p_toggles = IBMParameters(
+            toggles = ProcessToggles(
+                use_movement = false,
+                use_degree_days = false,
+                use_spermatheca = false
+            )
         )
-        @test m_simple.model_mode === :simple
-        m_simple.current_time = 30.0 # Molt & mating season
+        m_toggled = initialize_model(params = p_toggles, N_agents = 0, dims = (10, 10), rng_seed = 456)
+        @test m_toggled.params.toggles.use_movement == false
+        @test m_toggled.params.toggles.use_degree_days == false
 
-        # Time/age-based molting without degree days
-        juv = add_agent!(
-            (2, 2), m_simple, juvenile, male, 5, 200.0, 18.0, 2.5, 50.0,
-            0.0, 0.0, false, 0, 0.0, 0
+        # Test movement toggle off: agent position does not change
+        test_agent = add_agent!(
+            (4, 4), m_toggled, 7, male, 300.0, 25.0, 5.0, 50.0,
+            0.0, 0.0, false, 0, 0.0, 0, false
         )
-        # Set days since molt to exceed min_intermolt_days(juvenile, 5) (~90 days)
-        # current_time = 30.0, so last_molt_time = -120.0 gives days_since_molt = 150
-        juv.last_molt_time = -120.0
-        juv.age_days = 150.0
-        # Step until molt occurs
-        molted = false
-        for _ in 1:25
-            agent_step!(juv, m_simple)
-            if juv.instar > 5
-                molted = true
-                break
-            end
-        end
-        @test molted
-        @test juv.size_mm > 18.0
-        @test juv.degree_days == 0.0 # Degree days not accumulated in simple model
+        organism_disperse!(test_agent, m_toggled)
+        @test test_agent.pos == (4, 4)
 
-        # Direct mating and clutch extrusion without spermathecal storage
+        # Direct mating and clutch extrusion when use_spermatheca is false
+        m_toggled.current_time = 30.0
         s_male = add_agent!(
-            (5, 5), m_simple, adult, male, 12, 1200.0, 95.0, 300.0, 50.0,
-            0.0, 0.0, false, 0, 0.0, 0
+            (5, 5), m_toggled, 12, male, 1200.0, 95.0, 300.0, 50.0,
+            0.0, 0.0, false, 0, 0.0, 0, true
         )
         s_fem = add_agent!(
-            (5, 6), m_simple, adult, female, 10, 1200.0, 65.0, 85.0, 50.0,
-            0.0, 0.0, true, 0, 0.0, 0
+            (5, 6), m_toggled, 10, female, 1200.0, 65.0, 85.0, 50.0,
+            0.0, 0.0, true, 0, 0.0, 0, true
         )
-        agent_step!(s_fem, m_simple)
-        @test s_fem.eggs_count >= 1000
+        agent_step!(s_fem, m_toggled)
+        @test s_fem.egg_count >= 1000
         @test s_fem.is_mating_ready == false
-        @test s_fem.hatch_day == m_simple.current_time + m_simple.params.brood_duration_base
         @test s_fem.sperm_clutches == 0 # Spermathecal storage not used
 
-        # Hatching in simple model
-        m_simple.current_time = s_fem.hatch_day + 1.0
-        n_prev = nagents(m_simple)
-        agent_step!(s_fem, m_simple)
-        @test s_fem.eggs_count == 0
-        @test s_fem.is_mating_ready == true
-        @test nagents(m_simple) > n_prev
+        # Test Probabilistic Aggregate Groups
+        agg_model = initialize_model(N_agents = 0, dims = (10, 10), rng_seed = 777)
+        # Seed an aggregate group in stage 5 (near individuation to stage 6)
+        grp5 = AggregateGroup(
+            id = 99,
+            stage = 5,
+            abundance = 50.0,
+            size = 15.0,
+            mass = 1.5,
+            age_days = 1400.0,
+            degree_days = 800.0, # Exceeds required_degree_days(5) = 350
+            last_growth_time = 0.0,
+            pos = (5, 5)
+        )
+        push!(agg_model.aggregate_populations.groups, grp5)
 
-        # Model step simple executes smoothly and refreshes demographic cache
-        model_step!(m_simple)
-        @test m_simple.n_benthic_crabs == nagents(m_simple)
+        # Step aggregate groups
+        initial_org_count = nagents(agg_model)
+        for _ in 1:15
+            step_aggregate_groups!(agg_model)
+        end
+
+        # Individuals should have probabilistically individuated into stage 6 Organism agents
+        @test nagents(agg_model) > initial_org_count
+        for org in allagents(agg_model)
+            @test org.stage == 6
+            @test org.size > 0.0
+            @test org.mass > 0.0
+            @test org.sex in (male, female)
+        end
+
+        # Model step executes smoothly and refreshes demographic cache
+        model_step!(m_toggled)
+        @test m_toggled.n_benthic_organisms == nagents(m_toggled)
     end
 
 end

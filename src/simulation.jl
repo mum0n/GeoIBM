@@ -1,10 +1,12 @@
 """
-Simulation engine for the Snow Crab Individual-Based Model (IBM).
+    simulation.jl
+
+Simulation engine for the organism Individual-Based Model (IBM).
 
 Implements spatial environment initialization, daily agent stepping (energetics,
 molting, natural and fishing mortality, dispersal, mating, and hatching), daily
 environmental stepping (seasonal temperature cycling and food replenishment),
-and simulation execution.
+and simulation execution governed by granular process toggles.
 """
 
 using Agents
@@ -17,15 +19,27 @@ using TOML
 """
     default_ibm_configuration()
 
-Return the default configuration dictionary for the snow crab IBM simulation,
+Return the default configuration dictionary for the organism IBM simulation,
 encompassing spatial grid geometry, runtime duration, environmental forcings,
-bioenergetics, life-history phenology, fishery dynamics, and output handling.
+bioenergetics, life-history phenology, fishery dynamics, process toggles, and output handling.
 
 # Returns
 `Dict{Symbol, Any}` containing all baseline parameter keys and values.
 """
 function default_ibm_configuration()
     return Dict{Symbol, Any}(
+        # Process Toggles
+        :use_energetics => true,
+        :use_thermal_stress => true,
+        :use_cannibalism => false,
+        :use_senescence => true,
+        :use_spermatheca => true,
+        :use_movement => true,
+        :use_directed_movement => true,
+        :use_fishery => true,
+        :use_degree_days => true,
+        :use_molting => true,
+        :use_reproduction => true,
         # Simulation
         :n_agents => 300,
         :days => 730,
@@ -35,22 +49,23 @@ function default_ibm_configuration()
         # Environment
         :temp_base => 5.0,
         :temp_amplitude => 4.0,
-        :temp_amp => 4.0,
         :temp_noise_sd => 0.50,
         :food_max => 10.0,
         :food_replenishment_rate => 0.10,
         :benthic_carrying_capacity => 300.0,
-        :carrying_capacity => 300.0,
-        # Biology
+        :half_saturation_food => 2.0,
+        :temp_base_degreedays => 0.0,
+        # Organism Biology
         :max_size_male => 160.0,
         :max_size_female => 95.0,
+        :max_stage_male => 16,
+        :max_stage_female => 14,
         :maturity_size_mid => 60.0,
         :metabolic_rate_base => 0.01,
         :intake_rate_base => 0.05,
         :energy_molt_threshold => 50.0,
         :energy_molt_slope => 1.5,
         :molt_energy_retention => 0.10,
-        :temp_base_degreedays => 0.0,
         # Phenology
         :molt_season_start => 15.0,
         :molt_season_end => 140.0,
@@ -62,7 +77,6 @@ function default_ibm_configuration()
         # Fishery
         :legal_size_male => 95.0,
         :fishing_probability_daily => 0.0,
-        :fishing_prob => 0.0,
         :fishing_season_start => 90.0,
         :fishing_season_end => 150.0,
         # Output
@@ -70,12 +84,11 @@ function default_ibm_configuration()
         :save_file => "simulation_results.csv",
         :snapshot_day => 274.0,
         :frequency_days => 365.0,
-        :output_frequency => 365.0,
         :plot => false,
         :output_dir => "outputs",
         # Animation
         :animate => false,
-        :animation_file => "snowcrab_animation.mp4",
+        :animation_file => "organism_animation.mp4",
         :anim_frames => 120,
         :anim_dt => 2,
         :anim_fps => 15,
@@ -84,108 +97,47 @@ function default_ibm_configuration()
 end
 
 """
-    load_ibm_configuration(filepath::String;
-                           base_config::Union{Nothing, Dict{Symbol, Any}}=nothing)
+    load_ibm_configuration(filepath::String)
 
-Parse a configuration file (in TOML format, such as `snowcrab_ibm.config`)
-and merge its sections and parameters into a standardized configuration dictionary.
-Any parameter explicitly defined in the file overrides `base_config` (or
-`default_ibm_configuration()` if `base_config` is not supplied).
-
-# Arguments
-- `filepath::String`: Path to the configuration file.
-- `base_config::Union{Nothing, Dict{Symbol, Any}}`: Optional baseline configuration
-  dictionary to update.
-
-# Returns
-`Dict{Symbol, Any}` containing merged configuration settings.
+Read a TOML configuration file and return a flat `Dict{Symbol, Any}` of settings.
 """
-function load_ibm_configuration(
-    filepath::String;
-    base_config::Union{Nothing, Dict{Symbol, Any}} = nothing
-)
+function load_ibm_configuration(filepath::String)
     if !isfile(filepath)
         error("Configuration file not found: $(filepath)")
     end
 
-    raw_toml = TOML.parsefile(filepath)
-    config = (base_config === nothing) ? default_ibm_configuration() : copy(base_config)
+    raw = TOML.parsefile(filepath)
+    flat = Dict{Symbol, Any}()
 
-    for (section_or_key, val) in raw_toml
-        if isa(val, AbstractDict)
-            # Sectioned entry, e.g. [simulation], [environment]
-            for (k, v) in val
-                sym_k = Symbol(k)
-                if sym_k === :grid && isa(v, AbstractVector) && length(v) >= 2
-                    config[:grid] = (Int(v[1]), Int(v[2]))
-                else
-                    config[sym_k] = v
-                end
+    for (section, kvs) in raw
+        if isa(kvs, AbstractDict)
+            for (k, v) in kvs
+                flat[Symbol(k)] = v
             end
         else
-            # Flat entry
-            sym_k = Symbol(section_or_key)
-            if sym_k === :grid && isa(val, AbstractVector) && length(val) >= 2
-                config[:grid] = (Int(val[1]), Int(val[2]))
-            else
-                config[sym_k] = val
-            end
+            flat[Symbol(section)] = kvs
         end
     end
 
-    # Reconcile common aliases
-    if haskey(config, :temp_amplitude)
-        config[:temp_amp] = config[:temp_amplitude]
-    elseif haskey(config, :temp_amp)
-        config[:temp_amplitude] = config[:temp_amp]
+    # Normalize grid dimensions if present as array
+    if haskey(flat, :grid) && isa(flat[:grid], AbstractVector)
+        flat[:grid] = (Int(flat[:grid][1]), Int(flat[:grid][2]))
     end
 
-    if haskey(config, :fishing_probability_daily)
-        config[:fishing_prob] = config[:fishing_probability_daily]
-    elseif haskey(config, :fishing_prob)
-        config[:fishing_probability_daily] = config[:fishing_prob]
-    end
-
-    if haskey(config, :benthic_carrying_capacity)
-        config[:carrying_capacity] = config[:benthic_carrying_capacity]
-    elseif haskey(config, :carrying_capacity)
-        config[:benthic_carrying_capacity] = config[:carrying_capacity]
-    end
-
-    if haskey(config, :frequency_days)
-        config[:output_frequency] = config[:frequency_days]
-        config[:frequency] = config[:frequency_days]
-    elseif haskey(config, :output_frequency)
-        config[:frequency_days] = config[:output_frequency]
-        config[:frequency] = config[:output_frequency]
-    elseif haskey(config, :frequency)
-        config[:frequency_days] = config[:frequency]
-        config[:output_frequency] = config[:frequency]
-    end
-
-    return config
+    return flat
 end
 
 """
     save_ibm_configuration(filepath::String, config::AbstractDict)
 
-Serialize a configuration dictionary into TOML format at `filepath`,
-structuring keys into logical categories (`simulation`, `environment`,
-`biology`, `phenology`, `fishery`, `output`, `animation`).
-
-# Arguments
-- `filepath::String`: Destination path for the `.config` or `.toml` file.
-- `config::AbstractDict`: Configuration settings dictionary.
-
-# Returns
-`filepath` upon successful serialization.
+Serialize a simulation configuration dictionary to a structured TOML file.
 """
 function save_ibm_configuration(filepath::String, config::AbstractDict)
-    # Group settings into standardized sections
     sections = Dict{String, Dict{String, Any}}(
+        "toggles" => Dict{String, Any}(),
         "simulation" => Dict{String, Any}(),
         "environment" => Dict{String, Any}(),
-        "biology" => Dict{String, Any}(),
+        "organism" => Dict{String, Any}(),
         "phenology" => Dict{String, Any}(),
         "fishery" => Dict{String, Any}(),
         "output" => Dict{String, Any}(),
@@ -193,7 +145,18 @@ function save_ibm_configuration(filepath::String, config::AbstractDict)
     )
 
     section_map = Dict{Symbol, String}(
-        :model => "simulation",
+        :use_energetics => "toggles",
+        :use_thermal_stress => "toggles",
+        :use_cannibalism => "toggles",
+        :use_senescence => "toggles",
+        :use_spermatheca => "toggles",
+        :use_movement => "toggles",
+        :use_directed_movement => "toggles",
+        :use_fishery => "toggles",
+        :use_degree_days => "toggles",
+        :use_molting => "toggles",
+        :use_reproduction => "toggles",
+
         :n_agents => "simulation",
         :days => "simulation",
         :grid => "simulation",
@@ -203,19 +166,22 @@ function save_ibm_configuration(filepath::String, config::AbstractDict)
         :temp_base => "environment",
         :temp_amplitude => "environment",
         :temp_noise_sd => "environment",
+        :temp_base_degreedays => "environment",
         :food_max => "environment",
         :food_replenishment_rate => "environment",
         :benthic_carrying_capacity => "environment",
+        :half_saturation_food => "environment",
 
-        :max_size_male => "biology",
-        :max_size_female => "biology",
-        :maturity_size_mid => "biology",
-        :metabolic_rate_base => "biology",
-        :intake_rate_base => "biology",
-        :energy_molt_threshold => "biology",
-        :energy_molt_slope => "biology",
-        :molt_energy_retention => "biology",
-        :temp_base_degreedays => "biology",
+        :max_size_male => "organism",
+        :max_size_female => "organism",
+        :max_stage_male => "organism",
+        :max_stage_female => "organism",
+        :maturity_size_mid => "organism",
+        :metabolic_rate_base => "organism",
+        :intake_rate_base => "organism",
+        :energy_molt_threshold => "organism",
+        :energy_molt_slope => "organism",
+        :molt_energy_retention => "organism",
 
         :molt_season_start => "phenology",
         :molt_season_end => "phenology",
@@ -245,14 +211,8 @@ function save_ibm_configuration(filepath::String, config::AbstractDict)
         :anim_field => "animation"
     )
 
-    # Aliases to skip in serialized output to prevent duplicate entries
-    alias_keys = Set([:temp_amp, :fishing_prob, :carrying_capacity, :output_frequency, :frequency])
-
     for (k, v) in config
         sym_k = Symbol(k)
-        if sym_k in alias_keys
-            continue
-        end
         sec = get(section_map, sym_k, "simulation")
         str_k = string(sym_k)
         if sym_k === :grid && (isa(v, Tuple) || isa(v, AbstractVector))
@@ -263,7 +223,7 @@ function save_ibm_configuration(filepath::String, config::AbstractDict)
     end
 
     open(filepath, "w") do io
-        TOML.print(io, sections; sorted=true)
+        TOML.print(io, sections)
     end
 
     return filepath
@@ -272,15 +232,8 @@ end
 """
     initialize_model(config_filepath::String; kwargs...)
 
-Initialize a snow crab IBM simulation directly from a TOML configuration file on disk.
-Optional keyword arguments override entries loaded from the configuration file.
-
-# Arguments
-- `config_filepath::String`: Path to `.config` or `.toml` configuration file.
-- `kwargs...`: Optional keyword parameter overrides.
-
-# Returns
-`StandardABM` instance configured and populated with agents.
+Initialize an individual-based model loading base parameters from a TOML configuration
+file, with optional keyword argument overrides.
 """
 function initialize_model(config_filepath::String; kwargs...)
     config = load_ibm_configuration(config_filepath)
@@ -290,74 +243,115 @@ end
 """
     initialize_model(config::AbstractDict; kwargs...)
 
-Convenience constructor to initialize the snow crab IBM directly from a configuration
-dictionary loaded from `snowcrab_ibm.config` or generated programmatically.
-Optional keyword arguments override entries in `config`.
-
-# Arguments
-- `config::AbstractDict`: Configuration settings dictionary.
-- `kwargs...`: Additional keyword arguments to override dictionary entries.
-
-# Returns
-Configured and populated `StandardABM` instance ready for simulation.
+Initialize an individual-based model from a configuration dictionary,
+with optional keyword argument overrides.
 """
 function initialize_model(config::AbstractDict; kwargs...)
-    merged = Dict{Symbol, Any}()
-    for (k, v) in config
-        merged[Symbol(k)] = v
-    end
+    merged = deepcopy(config)
     for (k, v) in kwargs
         merged[Symbol(k)] = v
     end
 
-
-    n_agents = if haskey(merged, :N_agents)
-        merged[:N_agents]
-    else
-        get(merged, :n_agents, 300)
+    n_ag = get(merged, :N_agents, get(merged, :n_agents, 100))
+    grid_dim = get(merged, :dims, get(merged, :grid, (50, 50)))
+    if isa(grid_dim, AbstractVector)
+        grid_dim = (Int(grid_dim[1]), Int(grid_dim[2]))
     end
 
-    grid_raw = if haskey(merged, :dims)
-        merged[:dims]
-    else
-        get(merged, :grid, (100, 100))
-    end
-    dims = if isa(grid_raw, Tuple)
-        (Int(grid_raw[1]), Int(grid_raw[2]))
-    elseif isa(grid_raw, AbstractVector)
-        (Int(grid_raw[1]), Int(grid_raw[2]))
-    else
-        (100, 100)
-    end
+    dt = Float64(get(merged, :dt_days, get(merged, :dt, 1.0)))
+    seed = get(merged, :rng_seed, get(merged, :seed, 1234))
 
-    dt = Float64(haskey(merged, :dt_days) ? merged[:dt_days] : get(merged, :dt, 1.0))
-    seed = haskey(merged, :rng_seed) ? merged[:rng_seed] : get(merged, :seed, 1234)
-    params = IBMParameters(merged)
+    # Construct toggles
+    toggles = ProcessToggles(
+        use_energetics = get(merged, :use_energetics, true),
+        use_thermal_stress = get(merged, :use_thermal_stress, true),
+        use_cannibalism = get(merged, :use_cannibalism, false),
+        use_senescence = get(merged, :use_senescence, true),
+        use_spermatheca = get(merged, :use_spermatheca, true),
+        use_movement = get(merged, :use_movement, true),
+        use_directed_movement = get(merged, :use_directed_movement, true),
+        use_fishery = get(merged, :use_fishery, true),
+        use_degree_days = get(merged, :use_degree_days, true),
+        use_molting = get(merged, :use_molting, true),
+        use_reproduction = get(merged, :use_reproduction, true)
+    )
+
+    # Construct environment
+    env = EnvironmentParams(
+        temp_base = Float64(get(merged, :temp_base, 5.0)),
+        temp_amplitude = Float64(get(merged, :temp_amplitude, 4.0)),
+        temp_noise_sd = Float64(get(merged, :temp_noise_sd, 0.50)),
+        temp_base_degreedays = Float64(get(merged, :temp_base_degreedays, 0.0)),
+        food_max = Float64(get(merged, :food_max, 10.0)),
+        food_replenishment_rate = Float64(get(merged, :food_replenishment_rate, 0.10)),
+        benthic_carrying_capacity = Float64(get(merged, :benthic_carrying_capacity, 300.0)),
+        half_saturation_food = Float64(get(merged, :half_saturation_food, 2.0))
+    )
+
+    # Construct organism params
+    org_params = OrganismParams(
+        max_size_male = Float64(get(merged, :max_size_male, 160.0)),
+        max_size_female = Float64(get(merged, :max_size_female, 95.0)),
+        max_stage_male = Int(get(merged, :max_stage_male, 16)),
+        max_stage_female = Int(get(merged, :max_stage_female, 14)),
+        maturity_size_mid = Float64(get(merged, :maturity_size_mid, 60.0)),
+        metabolic_rate_base = Float64(get(merged, :metabolic_rate_base, 0.01)),
+        intake_rate_base = Float64(get(merged, :intake_rate_base, 0.05)),
+        energy_molt_threshold = Float64(get(merged, :energy_molt_threshold, 50.0)),
+        energy_molt_slope = Float64(get(merged, :energy_molt_slope, 1.5)),
+        molt_energy_retention = Float64(get(merged, :molt_energy_retention, 0.10))
+    )
+
+    # Construct phenology
+    phen = PhenologyParams(
+        molt_season_start = Float64(get(merged, :molt_season_start, 15.0)),
+        molt_season_end = Float64(get(merged, :molt_season_end, 140.0)),
+        mating_season_start = Float64(get(merged, :mating_season_start, 30.0)),
+        mating_season_end = Float64(get(merged, :mating_season_end, 120.0)),
+        mating_search_radius = Int(get(merged, :mating_search_radius, 5)),
+        brood_duration_base = Float64(get(merged, :brood_duration_base, 365.0)),
+        egg_survival_base = Float64(get(merged, :egg_survival_base, 5.0e-5))
+    )
+
+    # Construct fishery
+    fish = FisheryParams(
+        legal_size_male = Float64(get(merged, :legal_size_male, 95.0)),
+        fishing_probability_daily = Float64(get(merged, :fishing_probability_daily, 0.0)),
+        fishing_season_start = Float64(get(merged, :fishing_season_start, 90.0)),
+        fishing_season_end = Float64(get(merged, :fishing_season_end, 150.0))
+    )
+
+    params = IBMParameters(
+        toggles = toggles,
+        simulation = SimulationParams(dt = dt, seed = seed, n_agents = n_ag),
+        environment = env,
+        organism = org_params,
+        phenology = phen,
+        fishery = fish
+    )
 
     return initialize_model(
-        N_agents = Int(n_agents),
-        dims = dims,
+        N_agents = n_ag,
+        dims = grid_dim,
         dt_days = dt,
         params = params,
-        rng_seed = (seed === nothing) ? nothing : Int(seed)
+        rng_seed = seed
     )
 end
 
 """
-    initialize_model(; N_agents=100, dims=(50, 50),
-                     temp_map=nothing, food_map=nothing, dt_days=1.0,
-                     params=IBMParameters(), rng_seed=nothing)
+    initialize_model(; N_agents=100, dims=(50, 50), ...)
 
-Construct and populate an `Agents.StandardABM` representing the snow crab ecosystem.
+Construct and populate an `Agents.StandardABM` representing the organism ecosystem.
 
 # Arguments
-- `N_agents::Int`: Initial number of crabs seeded into the environment (default: 100).
+- `N_agents::Int`: Initial number of individual agents seeded into the environment (default: 100).
 - `dims::Tuple{Int, Int}`: Grid spatial dimensions `(nx, ny)` (default: `(50, 50)`).
 - `temp_map::Union{Nothing, Matrix{Float64}}`: Optional initial temperature field.
 - `food_map::Union{Nothing, Matrix{Float64}}`: Optional initial food density field.
 - `dt_days::Float64`: Time step in days (default: 1.0).
-- `params::IBMParameters`: Bioenergetic and environmental parameters.
-- `rng_seed::Union{Nothing, Int}`: Optional RNG seed for deterministic simulations.
+- `params::IBMParameters`: Parameters and process toggles.
+- `rng_seed::Union{Nothing, Int}`: Optional RNG seed.
 
 # Returns
 Configured and populated `StandardABM` instance ready for simulation.
@@ -369,9 +363,10 @@ function initialize_model(;
     food_map::Union{Nothing, Matrix{Float64}} = nothing,
     dt_days::Float64 = 1.0,
     params::IBMParameters = IBMParameters(),
-    rng_seed::Union{Nothing, Int} = nothing
+    behavior::SpeciesBehavior = default_species_behavior(),
+    rng_seed::Union{Nothing, Int} = nothing,
+    kwargs...
 )
-
     space = GridSpace(dims)
 
     initial_temp = if temp_map === nothing
@@ -403,19 +398,20 @@ function initialize_model(;
         :deaths_thermal => 0,
         :deaths_senescence => 0,
         :deaths_fishery => 0,
-        :n_benthic_organisms => 0, # Changed from n_benthic_crabs to match instructions (more generic)
+        :n_benthic_organisms => 0,
         :n_mature_males => 0,
         :n_mature_females => 0,
         :n_legal_males => 0,
         :clutch_recruitment_records => DataFrame(
             hatch_time = Float64[],
-            mother_cw = Float64[],
-            mother_weight_g = Float64[],
-            eggs_count = Int[],
+            mother_size = Float64[],
+            mother_mass = Float64[],
+            egg_count = Int[],
             recruits_settled = Int[],
             density_feedback = Float64[]
         ),
-        :aggregate_populations => AggregatePopulations() # Added this!
+        :aggregate_populations => AggregatePopulations(),
+        :species_behavior => behavior
     )
 
     rng = if rng_seed === nothing
@@ -425,7 +421,7 @@ function initialize_model(;
     end
 
     model = StandardABM(
-        SnowCrab,
+        Organism,
         space;
         agent_step! = agent_step!,
         model_step! = model_step!,
@@ -433,75 +429,75 @@ function initialize_model(;
         rng = rng
     )
 
-    # --- Initialize Aggregate Populations (Non-spatial stages) ---
+    # --- Initialize Aggregate Populations (Egg stage 0 through stage 5) ---
     pop = AggregatePopulations()
-    if params.binning.use_bins
-        n = params.binning.n_age_bins
-        edges = collect(range(0.0, stop=params.simulation.days * 2.0, length=n+1))
-
-        # Initialize stage distributions with empty/zeroed bins based on configuration
-        pop.eggs = StageBinDistribution(zeros(Float64, n), edges)
-        pop.larvae = StageBinDistribution(zeros(Float64, n), edges)
-        pop.megalopa = StageBinDistribution(zeros(Float64, n), edges)
-        for _ in 1:5 # Instars 1 to 5 (pre-individuation stages)
-            push!(pop.instars, StageBinDistribution(zeros(Float64, n), edges))
+    if N_agents > 0
+        for stg in 0:5
+            sz = (stg == 0) ? 0.60 : ((stg < 4) ? stage_size_lower_bound(behavior, Float64(stg), :male) : stage_size(behavior, stg, :male; type = :random, rng = rng))
+            wt = (stg == 0) ? 0.00007 : calculate_mass(behavior, sz, :male; mat = 0, stochastic = true, rng = rng)
+            grp = AggregateGroup(
+                id = pop.next_group_id,
+                stage = stg,
+                abundance = (stg == 0) ? 2000.0 : 500.0,
+                size = sz,
+                mass = wt,
+                age_days = stg * 90.0,
+                degree_days = 0.0,
+                last_growth_time = 0.0,
+                pos = (rand(rng, 1:dims[1]), rand(rng, 1:dims[2]))
+            )
+            pop.next_group_id += 1
+            push!(pop.groups, grp)
         end
     end
     properties[:aggregate_populations] = pop
 
-    # --- Populate Initial Benthic Agents (Individuated: Instar >= 6 onwards only) ---
+    # --- Populate Initial Spatial Agents (Individuated: stage 6 onwards) ---
     benthic_cnt = 0
     mat_m = 0
     mat_f = 0
     leg_m = 0
 
     for _ in 1:N_agents
-        # According to the hybrid model, spatial agents begin at Instar 6.
-        instar = rand(rng, 6:7) # Start with some initial cohort of mature/late juveniles
+        stg = rand(rng, 6:9)
         sex = rand(rng, (male, female))
-        size = carapacewidth(instar, sex; type=:random, rng=rng)
-        mass = calculate_mass(size, sex; mat=0)
-        age_days = (instar - 3.0) * 180.0 + rand(rng)*90.0 # Approx age for these instars
+        sz = stage_size(behavior, stg, sex; type = :random, rng = rng)
+        mat = (stg >= 10)
+        wt = calculate_mass(behavior, sz, sex; mat = (mat ? 1 : 0), stochastic = true, rng = rng)
+        age_days = (stg - 3.0) * 180.0 + rand(rng) * 90.0
         energy_reserve = params.organism.initial_energy
-
-        last_molt_time = -age_days    # backdate so days_since_molt == age_days at t=0
+        last_molt_time = -age_days
         degree_days = rand(rng, Uniform(50.0, 300.0))
-        is_mating_ready = false
-        eggs_count = 0
+        is_mating_ready = mat
+        egg_count = 0
         hatch_day = 0.0
         sperm_clutches = 0
         pos = (rand(rng, 1:dims[1]), rand(rng, 1:dims[2]))
 
-        # Add agent with placeholder traits for the Organism struct fields in types.jl
         new_org = add_agent!(
             pos,
             model,
-            juvenile, # Using juvenile as a generic LifeStage label if instar >=6 is still considered 'juvenile' or similar 
-                      # Actually we should probably have more stages but for now let's keep it consistent.
+            stg,
             sex,
-            instar,
             age_days,
-            size,
-            mass,
+            sz,
+            wt,
             energy_reserve,
             last_molt_time,
             degree_days,
             is_mating_ready,
-            eggs_count,
+            egg_count,
             hatch_day,
             sperm_clutches,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0 # traits: l50, slope, f_int, f_slp, g_int, g_slp
+            mat;
+            behavior = behavior
         )
-
-        # Sample intrinsic biological traits for this individual agent from population parameters/distributions
         sample_individual_traits!(new_org, model, rng)
     end
 
-    # --- Cache initial demographic aggregates (for spatial agents only) ---
+    # Cache initial demographic aggregates
     for a in allagents(model)
-        if is_adult(a) || a.stage === juvenile # If we consider instar 6+ as 'juvenile' or similar
-            benthic_cnt += 1
-        end
+        benthic_cnt += 1
         if is_adult_male(a)
             mat_m += 1
             if is_legal_male(a)
@@ -512,8 +508,8 @@ function initialize_model(;
         end
     end
 
-    # Update the properties dictionary with current counts for reporting/visualization
     properties[:n_benthic_organisms] = benthic_cnt
+    properties[:n_benthic_crabs] = benthic_cnt
     properties[:n_mature_males] = mat_m
     properties[:n_mature_females] = mat_f
     properties[:n_legal_males] = leg_m
@@ -522,43 +518,16 @@ function initialize_model(;
 end
 
 """
-    sample_weighted(items, weights, rng)
+    sample_individual_traits!(org::Organism, model, rng)
 
-Sample an element from `items` with probability proportional to `weights`.
-If total weight is non-positive or items are empty, falls back to uniform selection.
-
-# Arguments
-- `items`: Collection of selectable candidate elements.
-- `weights`: Numerical vector of relative sampling weights.
-- `rng`: Random number generator.
-
-# Returns
-Selected element from `items`.
+Sample intrinsic empirical life-history traits for an individual `Organism`.
 """
 function sample_individual_traits!(org::Organism, model, rng)
-    # Maturity traits (SnowCrab species specific)
-    if org.sex == female
-        org.trait_l50 = rand(rng, Normal(model.params.species_snowcrab.maturity_l50_female, model.params.species_snowcrab.maturity_l50_female_sd))
-        org.trait_maturity_slope = max(1.0, rand(rng, Normal(model.params.species_snowcrab.maturity_slope_female, model.params.species_snowcrab.maturity_slope_female_sd)))
-    else
-        org.trait_l50 = rand(rng, Normal(model.params.species_snowcrab.maturity_l50_male, model.params.species_snowcrab.maturity_l50_male_sd))
-        org.trait_maturity_slope = max(1.0, rand(rng, Normal(model.params.species_snowcrab.maturity_slope_male, model.params.species_snowcrab.maturity_slope_male_sd)))
-    end
-
-    # Fecundity traits (using primiparous as base identity)
-    org.trait_fecundity_intercept = rand(rng, Normal(FECUNDITY_PRIMIPAROUS_INTERCEPT, FECUNDITY_PRIMIPAROUS_ERR))
-    org.trait_fecundity_slope = rand(rng, Normal(FECUNDITY_PRIMIPAROUS_SLOPE, 0.05)) # Low CV for slope
-
-    # Growth traits (bivariate normal - SnowCrab species specific)
-    z1 = rand(rng, Normal(0.0, 1.0))
-    z2 = rand(rng, Normal(0.0, 1.0))
-    if org.sex == female
-        org.trait_growth_intercept = model.params.species_snowcrab.growth_int_female + model.params.species_snowcrab.growth_beta1_female * z1
-        org.trait_growth_slope = model.params.species_snowcrab.growth_slp_female + model.params.species_snowcrab.growth_beta2_female * z1 + model.params.species_snowcrab.growth_beta3_female * z2
-    else
-        org.trait_growth_intercept = model.params.species_snowcrab.growth_int_male + model.params.species_snowcrab.growth_beta1_male * z1
-        org.trait_growth_slope = model.params.species_snowcrab.growth_slp_male + model.params.species_snowcrab.growth_beta2_male * z1 + model.params.species_snowcrab.growth_beta3_male * z2
-    end
+    org.trait_growth_quantile = rand(rng, Uniform(0.01, 0.99))
+    org.trait_maturity_quantile = rand(rng, Uniform(0.01, 0.99))
+    org.trait_fecundity_quantile = rand(rng, Uniform(0.01, 0.99))
+    org.trait_mortality_quantile = rand(rng, Uniform(0.01, 0.99))
+    return nothing
 end
 
 function sample_weighted(items, weights, rng)
@@ -578,47 +547,38 @@ function sample_weighted(items, weights, rng)
 end
 
 """
-    crab_disperse!(crab::SnowCrab, model; rng=abmrng(model))
+    organism_disperse!(org::Organism, model; rng=abmrng(model))
 
-Execute directed spatial movement and habitat taxis for a `SnowCrab` agent:
-- Planktonic larval stages (`zoea`, `megalopa`) undergo stochastic advection / random walk.
-- Benthic juveniles and adults evaluate local environmental gradients (temperature and food)
-  across adjacent grid cells and stochastically move toward preferred habitat:
-  - Cold-stenothermic preference optimum at ~2.5°C with Gaussian decay (σ = 1.5°C).
-  - Food foraging preference scaled via Holling Type II response.
-  - Softmax probability weighting over candidate neighbor positions and current cell.
-- Energetically exhausted crabs (`energy_reserve <= 0`) experience reduced mobility
-  (75% probability of staying stationary to conserve somatic reserves).
-
-# Arguments
-- `crab::SnowCrab`: Agent executing movement.
-- `model`: Simulation ABM instance.
-- `rng`: Random number generator (defaults to `abmrng(model)`).
-
-# Returns
-`Tuple{Int, Int}`: Final grid coordinates of the agent.
+Execute spatial movement and habitat taxis for an `Organism` agent governed by
+process toggles `use_movement` and `use_directed_movement`.
 """
 function organism_disperse!(
     org::Organism,
     model;
     rng::AbstractRNG = abmrng(model)
 )
-    # 1. Larval pelagic drift: simple stochastic dispersal
-    if org.stage === zoea || org.stage === megalopa
-        randomwalk!(org, model)
+    # Check movement toggle
+    if !model.params.toggles.use_movement
         return org.pos
     end
 
-    # 2. Energy-depleted lethargy: 75% chance of remaining stationary
-    if org.energy_reserve <= 0.0 && rand(rng) < 0.75
+    # Energy-depleted lethargy: 75% chance of remaining stationary when energetics active
+    if model.params.toggles.use_energetics && org.energy_reserve <= 0.0 && rand(rng) < 0.75
         return org.pos
     end
 
-    # 3. Benthic habitat taxis: evaluate current position and Moore neighbors
     candidates = [org.pos; collect(nearby_positions(org.pos, model))]
 
-    # Compute habitat utility for each candidate position
-    # U(x, y) = S_temp * (1.0 + 0.5 * S_food)
+    if !model.params.toggles.use_directed_movement
+        # Stochastic random walk: discrete neighbor choice
+        chosen_pos = candidates[rand(rng, 1:length(candidates))]
+        if chosen_pos != org.pos
+            move_agent!(org, chosen_pos, model)
+        end
+        return org.pos
+    end
+
+    # Benthic habitat taxis: evaluate local environmental suitability
     t_opt = 2.5
     t_sigma = 1.5
     half_sat = model.params.environment.half_saturation_food
@@ -652,64 +612,61 @@ function organism_disperse!(
     return org.pos
 end
 
-
 """
-    agent_step!(crab::SnowCrab, model)
+    agent_step!(org::Organism, model)
 
-Execute one simulation time step for an individual `crab`. Biological processes
-(e.g., energetics, thermal stress, cannibalism, senescence) are applied
-modularly based on the feature toggles in `model.params`.
+Execute one simulation time step for an individual `Organism`. Biological processes
+are applied modularly based on the feature toggles in `model.params.toggles`.
 """
 function agent_step!(org::Organism, model)
-    # 1. Age progression
     org.age_days += model.dt
     day_of_year = mod(model.current_time, 365.0)
 
-    # 2. Development (Modular via Behavior Interface)
+    # 1. Energetics (Holling Type II & Kleiber consumption)
+    if model.params.toggles.use_energetics
+        temp = model.temperature_field[org.pos...]
+        food = model.food_availability_field[org.pos...]
+        dE_dt, intake = calculate_energy_change(temp, food, org.size; params = model.params, mass = org.mass)
+        org.energy_reserve += dE_dt * model.dt
+        model.food_availability_field[org.pos...] = max(0.0, food - intake * model.dt)
+    end
+
+    # 2. Degree-day accumulation
+    if model.params.toggles.use_degree_days
+        temp = model.temperature_field[org.pos...]
+        dd_inc = max(0.0, temp - model.params.environment.temp_base_degreedays) * model.dt
+        org.degree_days += dd_inc
+    end
+
+    # 3. Development & Molting
     perform_development!(org.behavior, org, model)
 
-    # 3. Natural mortality (Modular)
-    size_excess = max(0.0, org.size - 5.0)
-    pred_risk = (0.15 / 365.0) * exp(-0.03 * size_excess)
-    base_mort = 0.20 / 365.0
-
-    senescence_risk = 0.0
-    if model.params.simulation.use_senescence && org.stage === adult
-        days_since_molt = model.current_time - org.last_molt_time
-        shell_age_years = days_since_molt / 365.0
-        thresh = model.params.mortality.senescence_age_threshold
-        if shell_age_years > thresh
-            senescence_risk = (0.08 / 365.0) * exp(0.80 * (shell_age_years - thresh))
-        end
-    end
-
-    mort_prob = base_mort + pred_risk + senescence_risk
-    if mort_prob > 1.0
-        error("Total mortality probability exceeded 1.0 at time $(model.current_time) (value: $mort_prob). Check model assumptions.")
-    elseif mort_prob < 0.0
-        mort_prob = 0.0
-    end
+    # 4. Mortality
+    temp = model.temperature_field[org.pos...]
+    local_density = Float64(count(_ -> true, nearby_agents(org, model, 1)))
+    mort_prob = calculate_mortality_probability(org, temp, local_density, model.current_time; params = model.params)
 
     if rand(abmrng(model)) < mort_prob
-        if model.params.simulation.use_senescence && org.stage === adult && senescence_risk > 0
-             model.deaths_senescence += 1
+        if model.params.toggles.use_senescence && org.is_mature
+            model.deaths_senescence += 1
         else
-             model.deaths_predation += 1
+            model.deaths_predation += 1
         end
         remove_agent!(org, model)
         return nothing
     end
 
-    # 4. Commercial fishery harvest (Modular)
-    if model.params.fishery.fishing_probability_daily > 0.0 &&
-       (model.params.fishery.fishing_season_start <= day_of_year && day_of_year <= model.params.fishery.fishing_season_end) &&
-       org.stage === adult && org.sex === male &&
-       org.size >= model.params.fishery.legal_size_male
+    # 5. Fishery Harvest
+    if model.params.toggles.use_fishery &&
+       model.params.fishery.fishing_probability_daily > 0.0 &&
+       (model.params.fishery.fishing_season_start <= day_of_year <= model.params.fishery.fishing_season_end) &&
+       is_legal_male(org; legal_size = model.params.fishery.legal_size_male)
+
         harvest_prob = model.params.fishery.fishing_probability_daily *
                        selectivity(
                            org.size;
                            s50 = model.params.fishery.legal_size_male,
-                           s50_sigma = model.params.species_snowcrab.selectivity_s50_sigma
+                           s50_sigma = org.behavior.params.selectivity_s50_sigma
                        )
         if rand(abmrng(model)) < harvest_prob
             model.total_catch_numbers += 1
@@ -720,10 +677,10 @@ function agent_step!(org::Organism, model)
         end
     end
 
-    # 5. Locomotion: Habitat Taxis or Random Walk (Modular via Behavior/Config)
+    # 6. Locomotion / Spatial Dispersal
     organism_disperse!(org, model)
 
-    # 6. Reproduction (Modular via Behavior Interface)
+    # 7. Reproduction
     perform_reproduction!(org.behavior, org, model)
 
     return nothing
@@ -735,9 +692,7 @@ function update_demographic_caches!(model)
     mat_females = 0
     legal_males = 0
     for org in allagents(model)
-        if org.stage === juvenile || org.stage === adult
-            benthic_count += 1
-        end
+        benthic_count += 1
         if is_adult_male(org)
             mat_males += 1
             if is_legal_male(org)
@@ -748,6 +703,7 @@ function update_demographic_caches!(model)
         end
     end
     model.n_benthic_organisms = benthic_count
+    model.n_benthic_crabs = benthic_count
     model.n_mature_males = mat_males
     model.n_mature_females = mat_females
     model.n_legal_males = legal_males
@@ -757,8 +713,8 @@ end
 """
     model_step!(model)
 
-Advance environmental state and update demographic caches for one simulation time step,
-using feature toggles to determine which processes are active.
+Advance environmental state, advance aggregate cohorts, and update demographic caches
+for one simulation time step.
 """
 function model_step!(model)
     dt = model.dt
@@ -766,79 +722,57 @@ function model_step!(model)
     model.current_time += dt
 
     # Year boundary detection for annual resets
-    if floor(old_time/365.0) < floor(model.current_time/365.0)
+    if floor(old_time / 365.0) < floor(model.current_time / 365.0)
         model.annual_eggs_spawned = 0.0
     end
 
     # 1. Environmental updates (Temperature & Food)
-    if model.params.simulation.use_thermal_stress
-        seasonal_temp = model.params.environment.temp_base +
-                        model.params.environment.temp_amplitude *
-                        sin(2.0 * π * (model.current_time - 169.0) / 365.0)
+    day_of_year = mod(model.current_time, 365.0)
+    sinusoidal_factor = sin(2.0 * π * (day_of_year - 80.0) / 365.0)
 
-        noise_sd = model.params.environment.temp_noise_sd
-        nx, ny = size(model.temperature_field)
-        for y in 1:ny
-            for x in 1:nx
-                model.temperature_field[x, y] = seasonal_temp +
-                                                randn(abmrng(model)) * noise_sd
-            end
-        end
-    end
+    t_base = model.params.environment.temp_base
+    t_amp = model.params.environment.temp_amplitude
+    t_sd = model.params.environment.temp_noise_sd
 
-    if model.params.simulation.use_food_dynamics
-        nx, ny = size(model.food_availability_field)
-        for y in 1:ny
-            for x in 1:nx
-                current_food = model.food_availability_field[x, y]
-                model.food_availability_field[x, y] = min(
-                    model.params.environment.food_max,
-                    current_food + model.params.environment.food_replenishment_rate
-                )
-            end
-        end
-    end
+    noise = rand(abmrng(model), Normal(0.0, t_sd), size(model.temperature_field))
+    @. model.temperature_field = t_base + t_amp * sinusoidal_factor + noise
 
-    # 2. Refresh demographic aggregate caches once per time step
+    f_max = model.params.environment.food_max
+    f_rate = model.params.environment.food_replenishment_rate
+    @. model.food_availability_field += f_rate * (f_max - model.food_availability_field) * dt
+
+    # 2. Advance pre-individuation aggregate cohort groups (stages 0 through 5)
+    step_aggregate_groups!(model)
+
+    # 3. Update demographic aggregate caches
     update_demographic_caches!(model)
 
     return nothing
 end
 
 """
-    safe_mean(itr)
+    safe_mean(x)
 
-Compute arithmetic mean of an iterator, returning 0.0 if empty.
+Calculate sample mean of numeric collection `x`, returning 0.0 if empty.
 """
-safe_mean(itr) = isempty(itr) ? 0.0 : mean(itr)
+function safe_mean(x)
+    return isempty(x) ? 0.0 : mean(x)
+end
 
 """
     run_simulation(model, n_steps; adata=nothing, mdata=nothing, when=nothing)
 
-Convenience wrapper to execute an IBM simulation for `n_steps` days, collecting
-agent-level and model-level time-series metrics.
-
-# Default Agent Metrics (`adata`)
-- Total population count: `(:stage, length)`
-- Average carapace width: `(:size_mm, safe_mean)`
-- Total adults: `(is_adult, count)`
-- Adult males: `(is_adult_male, count)`
-- Adult females: `(is_adult_female, count)`
-- Mean instar: `(:instar, safe_mean)`
-
-# Returns
-Tuple `(agent_df, model_df)`.
+High-level wrapper executing `n_steps` of simulation using `Agents.run!`.
 """
 function run_simulation(
     model,
-    n_steps::Integer;
+    n_steps::Int;
     adata = nothing,
     mdata = nothing,
-    when = nothing,
-    func_params::Union{Nothing, Vector{IBMParameters}} = nothing
+    when = nothing
 )
     default_adata = [
-        (:stage, length),
+        (:stage, safe_mean),
         (:size, safe_mean),
         (:mass, safe_mean),
         (is_adult, count),
@@ -846,12 +780,11 @@ function run_simulation(
         (is_adult_female, count),
         (is_legal_male, count),
         (is_ovigerous, count),
-        (weight_if_adult_female, sum),
-        (weight_if_adult_male, sum),
-        (weight_if_legal_male, sum),
-        (:instar, safe_mean)
+        (mass_if_adult_female, sum),
+        (mass_if_adult_male, sum),
+        (mass_if_legal_male, sum)
     ]
-    
+
     default_mdata = [
         :total_eggs_spawned,
         :total_recruits_settled,
@@ -872,19 +805,9 @@ function run_simulation(
     actual_adata = (adata === nothing) ? default_adata : adata
     actual_mdata = (mdata === nothing) ? default_mdata : mdata
 
-    results = if when === nothing
-        run!(model, n_steps; adata=actual_adata, mdata=actual_mdata)
+    if when === nothing
+        return run!(model, n_steps; adata = actual_adata, mdata = actual_mdata)
     else
-        run!(model, n_steps; adata=actual_adata, mdata=actual_mdata, when=when)
+        return run!(model, n_steps; adata = actual_adata, mdata = actual_mdata, when = when)
     end
-
-    if !isnothing(func_params)
-        using model_agent: plot_functional_relationships
-        for type in [:maturity, :fecundity, :selectivity]
-            p = plot_functional_relationships(func_params; type=type)
-            savefig(p, "functional_space_$(type).png")
-        end
-    end
-
-    return results
 end

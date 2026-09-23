@@ -5,7 +5,7 @@ Visualization and plotting tools for the snow crab (*Chionoecetes opilio*)
 individual-based model (IBM).
 
 Provides specialized diagnostic plots for population dynamics, demographic
-stage and instar structures, size distributions by sex, allometric growth
+stage structures, size distributions by sex, allometric growth
 trajectories, bioenergetics, spatial distributions over environmental fields,
 and a unified executive simulation dashboard.
 """
@@ -26,7 +26,7 @@ simulated snow crab population.
 # Visualized Metrics
 - **Panel 1 (Abundance)**: Total living crabs, mature adults, and ovigerous females.
 - **Panel 2 (Body Size)**: Mean carapace width (mm) across time.
-- **Panel 3 (Recruitment, optional)**: Cumulative benthic recruitment of Instar 4 settlers
+- **Panel 3 (Recruitment, optional)**: Cumulative benthic recruitment of Stage 4 settlers
   if `model_df` contains `:total_recruits_settled`.
 
 # Arguments
@@ -73,13 +73,21 @@ function plot_population_timeseries(
         )
     end
 
+    mean_size_series = if :safe_mean_size in propertynames(agent_df)
+        agent_df.safe_mean_size
+    elseif :mean_size in propertynames(agent_df)
+        agent_df.mean_size
+    else
+        zeros(nrow(agent_df))
+    end
+
     p2 = plot(
         agent_df.time,
-        agent_df.safe_mean_size_mm,
+        mean_size_series,
         xlabel = "Time (Days)",
-        ylabel = "Carapace Width (mm)",
-        title = "Mean Carapace Width Progression",
-        label = "Mean Population CW",
+        ylabel = "Size (mm)",
+        title = "Mean Size Progression",
+        label = "Mean Population Size",
         linewidth = 2.0,
         color = :darkorange
     )
@@ -90,7 +98,7 @@ function plot_population_timeseries(
             model_df.total_recruits_settled,
             xlabel = "Time (Days)",
             ylabel = "Cumulative Recruits",
-            title = "Benthic Recruitment (Instar 4)",
+            title = "Benthic Recruitment (Stage 4)",
             label = "Settled Recruits",
             linewidth = 2.0,
             color = :teal
@@ -103,56 +111,56 @@ end
 
 
 """
-    plot_instar_distribution(model)
+    plot_stage_distribution(model)
 
 Generate a grouped bar chart displaying the frequency of living crabs across
-developmental instars, categorized by sex.
+developmental stages, categorized by sex.
 
 # Biological Significance
-Snow crab developmental progress is marked by discrete instars. Instars 1-3
-correspond to pelagic larvae, while instars 4-14+ represent benthic juveniles
-and mature adults. This plot visualizes cohort abundance and recruitment
-progression across the demographic age-structure.
+Snow crab developmental progress is marked by discrete developmental stages.
+Pre-benthic stages (egg, zoea, megalopa) develop at stage 0, while stages 1 through 14+
+represent benthic juveniles and mature adults. This plot visualizes cohort abundance
+and recruitment progression across the demographic age-structure.
 
 # Arguments
-- `model::ABM`: Agents.jl simulation model containing `SnowCrab` agents.
+- `model::ABM`: Agents.jl simulation model containing `Organism` agents.
 
 # Returns
-`Plots.Plot`: Grouped bar chart of crab counts per instar by sex.
+`Plots.Plot`: Grouped bar chart of crab counts per stage by sex.
 """
-function plot_instar_distribution(model)
+function plot_stage_distribution(model)
     crabs = collect(allagents(model))
     if isempty(crabs)
         return plot(title = "No living crabs to display", size = (700, 450))
     end
 
-    instar_range = 4:14
-    males_by_instar = zeros(Int, length(instar_range))
-    females_by_instar = zeros(Int, length(instar_range))
+    stage_range = 4:14
+    males_by_stage = zeros(Int, length(stage_range))
+    females_by_stage = zeros(Int, length(stage_range))
 
     for c in crabs
-        idx = c.instar - 3
-        if 1 <= idx <= length(instar_range)
+        idx = c.stage - first(stage_range) + 1
+        if 1 <= idx <= length(stage_range)
             if c.sex === male
-                males_by_instar[idx] += 1
+                males_by_stage[idx] += 1
             elseif c.sex === female
-                females_by_instar[idx] += 1
+                females_by_stage[idx] += 1
             end
         end
     end
 
-    instar_coords = collect(instar_range)
+    stage_coords = collect(stage_range)
 
     p = bar(
-        instar_coords .- 0.18,
-        males_by_instar,
+        stage_coords .- 0.18,
+        males_by_stage,
         bar_width = 0.35,
         label = "Males",
         color = :dodgerblue,
         alpha = 0.85,
-        xlabel = "Developmental Instar",
+        xlabel = "Developmental Stage",
         ylabel = "Abundance (Crabs)",
-        title = "Instar Demographic Structure by Sex",
+        title = "Stage Demographic Structure by Sex",
         legend = :topright,
         size = (750, 450),
         margin = 5Plots.mm
@@ -160,8 +168,8 @@ function plot_instar_distribution(model)
 
     bar!(
         p,
-        instar_coords .+ 0.18,
-        females_by_instar,
+        stage_coords .+ 0.18,
+        females_by_stage,
         bar_width = 0.35,
         label = "Females",
         color = :hotpink,
@@ -172,6 +180,7 @@ function plot_instar_distribution(model)
 end
 
 
+
 """
     plot_size_by_sex(model)
 
@@ -180,8 +189,8 @@ separated by sex for all living individuals.
 
 # Biological Significance
 Illustrates sexual dimorphism in *Chionoecetes opilio*. Females undergo terminal
-molt at smaller sizes (typically 50-80 mm CW), whereas males can continue to
-grow to instars 12-14+ (exceeding 140 mm CW).
+molt at smaller sizes (typically 50-80 mm size), whereas males can continue to
+grow to stages 12-14+ (exceeding 140 mm size).
 
 # Arguments
 - `model::ABM`: Simulation model containing `SnowCrab` agents.
@@ -195,12 +204,12 @@ function plot_size_by_sex(model)
         return plot(title = "No living crabs to display", size = (750, 450))
     end
 
-    male_sizes = [c.size_mm for c in crabs if c.sex === male]
-    female_sizes = [c.size_mm for c in crabs if c.sex === female]
+    male_sizes = [c.size for c in crabs if c.sex === male]
+    female_sizes = [c.size for c in crabs if c.sex === female]
 
     p = plot(
         title = "Carapace Width Distribution by Sex",
-        xlabel = "Carapace Width (mm)",
+        xlabel = "Size (mm)",
         ylabel = "Density",
         size = (750, 450),
         margin = 5Plots.mm
@@ -247,40 +256,40 @@ end
 
 
 """
-    plot_instar_allometry(model)
+    plot_stage_allometry(model)
 
-Scatter plot of individual crab carapace widths across instars contrasted
+Scatter plot of individual crab carapace widths across stages contrasted
 with the empirical theoretical allometric mean curves (`llbm` and `llbf`).
 
 # Allometric Reference
-- Males:   ``CW = \\exp(1.917564 + 0.298914 \\cdot (instar - 3))``
-- Females: ``CW = \\exp(2.198848 + 0.315026 \\cdot (instar - 4))``
+- Males:   ``Size = \\exp(1.917564 + 0.298914 \\cdot (stage - 3))``
+- Females: ``Size = \\exp(2.198848 + 0.315026 \\cdot (stage - 4))``
 
 # Arguments
-- `model::ABM`: Simulation model containing `SnowCrab` agents.
+- `model::ABM`: Simulation model containing `Organism` agents.
 
 # Returns
-`Plots.Plot`: Carapace width vs instar scatter with empirical bounds.
+`Plots.Plot`: Carapace width vs stage scatter with empirical bounds.
 """
-function plot_instar_allometry(model)
+function plot_stage_allometry(model)
     crabs = collect(allagents(model))
     if isempty(crabs)
         return plot(title = "No living crabs to display", size = (750, 480))
     end
 
-    instar_grid = 4:14
-    cw_males_theory = [llbm(i) for i in instar_grid]
-    cw_females_theory = [llbf(i) for i in instar_grid]
+    stage_grid = 4:14
+    cw_males_theory = [llbm(i) for i in stage_grid]
+    cw_females_theory = [llbf(i) for i in stage_grid]
 
     p = plot(
-        instar_grid,
+        stage_grid,
         cw_males_theory,
         label = "Empirical Male Curve (llbm)",
         linewidth = 2.5,
         color = :blue,
-        xlabel = "Developmental Instar",
+        xlabel = "Developmental Stage",
         ylabel = "Carapace Width (mm)",
-        title = "Instar Allometric Scaling: Simulation vs Theory",
+        title = "Stage Allometric Scaling: Simulation vs Theory",
         legend = :topleft,
         size = (750, 480),
         margin = 5Plots.mm
@@ -288,7 +297,7 @@ function plot_instar_allometry(model)
 
     plot!(
         p,
-        instar_grid,
+        stage_grid,
         cw_females_theory,
         label = "Empirical Female Curve (llbf)",
         linewidth = 2.5,
@@ -297,12 +306,12 @@ function plot_instar_allometry(model)
     )
 
     # Plot simulated male agents
-    male_instars = [c.instar + randn() * 0.08 for c in crabs if c.sex === male]
-    male_sizes = [c.size_mm for c in crabs if c.sex === male]
+    male_stages = [c.stage + randn() * 0.08 for c in crabs if c.sex === male]
+    male_sizes = [c.size for c in crabs if c.sex === male]
     if !isempty(male_sizes)
         scatter!(
             p,
-            male_instars,
+            male_stages,
             male_sizes,
             label = "Simulated Males",
             color = :dodgerblue,
@@ -312,12 +321,12 @@ function plot_instar_allometry(model)
     end
 
     # Plot simulated female agents
-    female_instars = [c.instar + randn() * 0.08 for c in crabs if c.sex === female]
-    female_sizes = [c.size_mm for c in crabs if c.sex === female]
+    female_stages = [c.stage + randn() * 0.08 for c in crabs if c.sex === female]
+    female_sizes = [c.size for c in crabs if c.sex === female]
     if !isempty(female_sizes)
         scatter!(
             p,
-            female_instars,
+            female_stages,
             female_sizes,
             label = "Simulated Females",
             color = :hotpink,
@@ -330,6 +339,7 @@ function plot_instar_allometry(model)
 end
 
 
+
 """
     plot_reproduction_dynamics(agent_df, model_df)
 
@@ -338,7 +348,7 @@ Plot reproductive activity, egg production, and recruitment pulses over time.
 # Panels
 - **Panel 1**: Temporal trajectory of brooding ovigerous females.
 - **Panel 2**: Cumulative eggs spawned into the system.
-- **Panel 3**: Cumulative benthic recruits (Instar 4) settled.
+- **Panel 3**: Cumulative benthic recruits (Stage 4) settled.
 
 # Arguments
 - `agent_df::DataFrame`: Agent metrics tracked over simulation.
@@ -387,7 +397,7 @@ function plot_reproduction_dynamics(
             model_df.total_recruits_settled,
             xlabel = "Time (Days)",
             ylabel = "Recruits Settled",
-            title = "Cumulative Benthic Recruitment (Instar 4)",
+            title = "Cumulative Benthic Recruitment (Stage 4)",
             label = "Settled Recruits",
             linewidth = 2,
             color = :teal
@@ -407,7 +417,7 @@ Generate a 2D spatial habitat map displaying benthic water temperature with
 living crabs superimposed by demographic stage and sex.
 
 # Demarcated Groups
-- Juveniles (Instar 4+): Yellow circles
+- Juveniles (Stage 4+): Yellow circles
 - Adult Males: Dodgerblue squares
 - Adult Non-Ovigerous Females: Pink triangles
 - Adult Ovigerous Females: Crimson stars
@@ -493,29 +503,29 @@ logistic maturity schedules for both male and female snow crabs.
 
 # Theoretical Model
 ```math
-P_{\\text{mature}}(CW) = \\frac{1}{1 + \\exp(-k \\cdot (CW - L_{50}))}
+P_{\\text{mature}}(Size) = \\frac{1}{1 + \\exp(-k \\cdot (Size - L_{50}))}
 ```
 where ``L_{50} \\approx 91.8`` mm for males and ``51.6`` mm for females.
 
 # Arguments
 - `model::ABM`: Simulation model containing `SnowCrab` agents.
-- `cw_bins::AbstractRange`: Carapace width bin boundaries.
+- `size_bins::AbstractRange`: Carapace size bin boundaries.
 
 # Returns
 `Plots.Plot`: Empirical vs theoretical maturity ogive comparison.
 """
-function plot_maturity_ogives(model; cw_bins = 20.0:10.0:140.0)
-    cw_eval = 20.0:1.0:140.0
-    pm_male_theory = [maturity(0, log(cw)) for cw in cw_eval]
-    pm_female_theory = [maturity(1, log(cw)) for cw in cw_eval]
+function plot_maturity_ogives(model; size_bins = 20.0:10.0:140.0)
+    size_eval = 20.0:1.0:140.0
+    pm_male_theory = [maturity(0, log(sz)) for sz in size_eval]
+    pm_female_theory = [maturity(1, log(sz)) for sz in size_eval]
 
     p = plot(
-        cw_eval,
+        size_eval,
         pm_male_theory,
         label = "Theoretical Male (L50=91.8 mm)",
         linewidth = 2.5,
         color = :blue,
-        xlabel = "Carapace Width (mm)",
+        xlabel = "Carapace Size (mm)",
         ylabel = "Proportion Mature",
         title = "Snow Crab Maturity Ogives: Simulation vs Theory",
         legend = :bottomright,
@@ -525,7 +535,7 @@ function plot_maturity_ogives(model; cw_bins = 20.0:10.0:140.0)
 
     plot!(
         p,
-        cw_eval,
+        size_eval,
         pm_female_theory,
         label = "Theoretical Female (L50=51.6 mm)",
         linewidth = 2.5,
@@ -533,8 +543,8 @@ function plot_maturity_ogives(model; cw_bins = 20.0:10.0:140.0)
         linestyle = :dash
     )
 
-    cm_m, pm_m = compute_empirical_ogive(model, male, cw_bins)
-    cm_f, pm_f = compute_empirical_ogive(model, female, cw_bins)
+    cm_m, pm_m = compute_empirical_ogive(model, male, size_bins)
+    cm_f, pm_f = compute_empirical_ogive(model, female, size_bins)
 
     if !isempty(cm_m)
         scatter!(p, cm_m, pm_m, label = "Simulated Males",
@@ -558,10 +568,10 @@ biological and ecological indicators of the snow crab simulation.
 
 # Panels Included
 1. **Panel A**: Abundance & demographic stage timeseries.
-2. **Panel B**: Instar demographic distribution by sex.
+2. **Panel B**: Stage demographic distribution by sex.
 3. **Panel C**: Carapace width distribution by sex (dimorphism).
 4. **Panel D**: Spatial habitat distribution over bottom temperature.
-5. **Panel E**: Instar allometry compared with empirical curves.
+5. **Panel E**: Stage allometry compared with empirical curves.
 6. **Panel F**: Cumulative recruitment and egg production.
 
 # Arguments
@@ -597,9 +607,9 @@ function plot_simulation_dashboard(
               linewidth = 2, color = :crimson)
     end
 
-    # Panel 2: Instar distribution
-    p2 = plot_instar_distribution(model)
-    plot!(p2, title = "B: Instar Structure")
+    # Panel 2: Stage distribution
+    p2 = plot_stage_distribution(model)
+    plot!(p2, title = "B: Stage Structure")
 
     # Panel 3: Size distribution by sex
     p3 = plot_size_by_sex(model)
@@ -609,8 +619,8 @@ function plot_simulation_dashboard(
     p4 = plot_spatial_habitat(model)
     plot!(p4, title = "D: Spatial Distribution")
 
-    # Panel 5: Instar allometry
-    p5 = plot_instar_allometry(model)
+    # Panel 5: Stage allometry
+    p5 = plot_stage_allometry(model)
     plot!(p5, title = "E: Allometric Scaling")
 
     # Panel 6: Cumulative recruitment
@@ -620,19 +630,26 @@ function plot_simulation_dashboard(
             model_df.total_recruits_settled,
             xlabel = "Time (Days)",
             ylabel = "Count",
-            title = "F: Benthic Recruitment (Instar 4)",
+            title = "F: Benthic Recruitment (Stage 4)",
             label = "Cumulative Recruits",
             linewidth = 2,
             color = :teal
         )
     else
+        mean_size_series = if :safe_mean_size in propertynames(agent_df)
+            agent_df.safe_mean_size
+        elseif :mean_size in propertynames(agent_df)
+            agent_df.mean_size
+        else
+            zeros(nrow(agent_df))
+        end
         plot(
             agent_df.time,
-            agent_df.safe_mean_size_mm,
+            mean_size_series,
             xlabel = "Time (Days)",
-            ylabel = "CW (mm)",
+            ylabel = "Size (mm)",
             title = "F: Mean Body Size",
-            label = "Mean CW",
+            label = "Mean Size",
             linewidth = 2,
             color = :orange
         )
@@ -712,7 +729,7 @@ function plot_stock_recruitment(
         s_vals,
         r_vals,
         xlabel = "Spawning Stock Index (10³ eggs / biomass)",
-        ylabel = "Benthic Recruits (Instar 4 Count)",
+        ylabel = "Benthic Recruits (Stage 4 Count)",
         title = "A: Stock-Recruitment Curves",
         label = "Simulation Observations (N=$(n))",
         markersize = 5.0,
@@ -862,9 +879,9 @@ function export_all_plots(
     savefig(p_dyn, fn_dyn)
     push!(generated_files, fn_dyn)
 
-    # 2. Instar Distribution
-    fn_inst = joinpath(output_dir, "instar_distribution.$(ext)")
-    p_inst = plot_instar_distribution(model)
+    # 2. Stage Distribution
+    fn_inst = joinpath(output_dir, "stage_distribution.$(ext)")
+    p_inst = plot_stage_distribution(model)
     savefig(p_inst, fn_inst)
     push!(generated_files, fn_inst)
 
@@ -874,9 +891,9 @@ function export_all_plots(
     savefig(p_sex, fn_sex)
     push!(generated_files, fn_sex)
 
-    # 4. Instar Allometry
-    fn_allo = joinpath(output_dir, "instar_allometry.$(ext)")
-    p_allo = plot_instar_allometry(model)
+    # 4. Stage Allometry
+    fn_allo = joinpath(output_dir, "stage_allometry.$(ext)")
+    p_allo = plot_stage_allometry(model)
     savefig(p_allo, fn_allo)
     push!(generated_files, fn_allo)
 
@@ -1251,7 +1268,7 @@ function plot_retrospective_analysis(
         ann.legal_numbers,
         label = "Observed Legal Numbers",
         xlabel = "Assessment Year",
-        ylabel = "Legal Abundance (CW ≥ 95mm)",
+        ylabel = "Legal Abundance (Size ≥ 95mm)",
         title = "B: Fishable Stock (Mohn's ρ = " * rho_f_str * ")",
         markersize = 5.0,
         color = :seagreen,
@@ -1427,19 +1444,19 @@ function plot_stage_specific_dynamics(
     years = fit.years
     T = length(years)
 
-    # Panel 1: Stage Abundance Trajectories (Key Instars)
+    # Panel 1: Stage Abundance Trajectories (Key Stages)
     p1 = plot(
         xlabel = "Year",
         ylabel = "Abundance (Numbers)",
-        title = "A: Stage Abundance Dynamics Across Instars",
+        title = "A: Stage Abundance Dynamics Across Stages",
         legend = :outertopright,
         linewidth = 2.0
     )
 
-    plot!(p1, years, fit.observed_stages[1, :], label = "Instar 4 (Recruit)",
+    plot!(p1, years, fit.observed_stages[1, :], label = "Stage 4 (Recruit)",
           linewidth = 2.5, color = :seagreen, marker = :circle, markersize = 4.0)
     if S >= 2
-        plot!(p1, years, fit.observed_stages[2, :], label = "Instar 5 (Juv)",
+        plot!(p1, years, fit.observed_stages[2, :], label = "Stage 5 (Juv)",
               linewidth = 2.0, color = :teal, marker = :square, markersize = 3.5)
     end
     for st in stages
@@ -1449,7 +1466,7 @@ function plot_stage_specific_dynamics(
         end
     end
     for st in stages
-        if st.is_reproductive && (st.instar == 9 || st.instar == 11)
+        if st.is_reproductive && (st.stage == 9 || st.stage == 11)
             plot!(p1, years, fit.observed_stages[st.index, :], label = st.name * " [Repro]",
                   linewidth = 2.0, linestyle = :dash, marker = :circle, markersize = 3.5)
         end
@@ -1469,7 +1486,7 @@ function plot_stage_specific_dynamics(
         label = "Observed Mean (%)",
         color = :royalblue,
         alpha = 0.85,
-        xlabel = "Stage Index (1: Instar 4, 8-9: Legal Males, 13-15: Repro Females)",
+        xlabel = "Stage Index (1: Stage 4, 8-9: Legal Males, 13-15: Repro Females)",
         ylabel = "Proportion of Population (%)",
         title = "B: Observed vs Asymptotic Stable Stage Distribution (SSD)"
     )
@@ -1698,30 +1715,30 @@ end
 # ==============================================================================
 
 """
-    crab_color(crab::SnowCrab)
+    organism_color(org::Organism)
 
-Determine the discrete visualization color for an individual snow crab based
+Determine the discrete visualization color for an individual organism based
 on its life history stage, sex, maturity, and reproductive status:
-- Larval instars (`zoea`, `megalopa`): Amber (`#E69F00`)
+- Larval stages (`zoea`, `megalopa`): Amber (`#E69F00`)
 - Benthic immature females: Pink (`#CC79A7`)
 - Benthic immature males: Sky blue (`#56B4E9`)
 - Adult ovigerous females carrying egg clutches: Crimson (`#D55E00`)
 - Adult non-ovigerous females: Purple (`#785EF0`)
-- Commercial legal-sized adult males (CW >= 95 mm): Dark blue (`#003B73`)
+- Commercial legal-sized adult males (Size >= 95 mm): Dark blue (`#003B73`)
 - Sublegal adult males: Royal blue (`#0072B2`)
 
 # Arguments
-- `crab::SnowCrab`: Individual crab agent.
+- `org::Organism`: Individual organism agent.
 
 # Returns
 `String`: Hex color code for graphical representation.
 """
 function organism_color(org::Organism)
-    if org.stage === zoea || org.stage === megalopa || org.stage === egg
+    if org.stage in (0, 1, 2, 3) || org.sex === undifferentiated
         return "#E69F00"
-    elseif org.stage === juvenile
+    elseif !org.is_mature && org.stage < 10
         return (org.sex === female) ? "#CC79A7" : "#56B4E9"
-    elseif org.stage === adult
+    else
         if is_ovigerous(org)
             return "#D55E00"
         elseif org.sex === female
@@ -1730,15 +1747,14 @@ function organism_color(org::Organism)
             return is_legal_male(org) ? "#003B73" : "#0072B2"
         end
     end
-    return "#888888"
 end
 
 """
     crab_size(crab::SnowCrab; min_size=4.0, max_size=24.0)
 
 Compute marker display size in points scaled from individual carapace width
-(CW in mm):
-``\\text{size} = \\text{clamp}(CW / 4.0, min\\_size, max\\_size)``
+(Size in mm):
+``\\text{size} = \\min(\\max(Size / 4.0, min\\_size), max\\_size)``
 
 # Arguments
 - `crab::SnowCrab`: Individual crab agent.
@@ -1753,11 +1769,12 @@ function organism_size(
     min_size::Float64 = 4.0,
     max_size::Float64 = 24.0
 )
-    return clamp(org.size / 4.0, min_size, max_size)
+    s = org.size / 4.0
+    return min(max(s, min_size), max_size)
 end
 
 """
-    crab_marker(crab::SnowCrab)
+    organism_marker(org::Organism)
 
 Select scatter marker shape based on sex classification:
 - Female (`female`): Circle (`:circle`)
@@ -1765,7 +1782,7 @@ Select scatter marker shape based on sex classification:
 - Undifferentiated larvae (`undifferentiated`): Diamond (`:diamond`)
 
 # Arguments
-- `crab::SnowCrab`: Individual crab agent.
+- `org::Organism`: Individual organism agent.
 
 # Returns
 `Symbol`: Marker shape symbol for Makie plotting.
@@ -1780,14 +1797,15 @@ function organism_marker(org::Organism)
     end
 end
 
+
 """
-    crab_heatarray(model, field::Symbol=:temperature_field)
+    organism_heatarray(model, field::Symbol=:temperature_field)
 
 Extract a 2D matrix from the ABM spatial environment to serve as a background
 heatarray for `Agents.abmplot` or `Agents.abmvideo`.
 
 # Arguments
-- `model`: Snow crab simulation model.
+- `model`: Organism simulation model.
 - `field::Symbol`: Environmental field name (`:temperature_field` or
   `:food_availability_field`, default: `:temperature_field`).
 
@@ -1800,9 +1818,10 @@ function organism_heatarray(model, field::Symbol = :temperature_field)
     elseif field in (:food, :food_availability, :food_availability_field)
         return model.food_availability_field
     else
-        return model.temperature_field
+        error("Unknown heatarray field: $(field). Supported: :temperature, :food")
     end
 end
+
 
 """
     plot_abm_summary(model; heat_field=:temperature, output_path=nothing,
@@ -1835,17 +1854,17 @@ function plot_abm_summary(
         "Bottom Temperature (°C)"
     end
 
-    heat_fn = m -> crab_heatarray(m, field_sym)
+    heat_fn = m -> organism_heatarray(m, field_sym)
     n_crabs = nagents(model)
     sim_time = hasproperty(model, :current_time) ? model.current_time : 0.0
 
-    full_title = "$(title) (Day $(round(sim_time, digits=1)), Living Crabs: $(n_crabs))"
+    full_title = "$(title) (Day $(round(sim_time, digits=1)), Living Organisms: $(n_crabs))"
 
     fig, ax, abmobs = Agents.abmplot(
         model;
-        agent_color = crab_color,
-        agent_size = crab_size,
-        agent_marker = crab_marker,
+        agent_color = organism_color,
+        agent_size = organism_size,
+        agent_marker = organism_marker,
         heatarray = heat_fn,
         add_colorbar = true,
         colorbar_label = cbar_label,
@@ -1884,23 +1903,35 @@ over the dynamic environmental field.
 # Returns
 `String`: Absolute path to the recorded animation file.
 """
-function animate_organism_simulation(model; filepath="organism_animation.mp4",
-                                    frames=120, dt=2, framerate=15,
-                                    heat_field=:temperature, figure_size=(700, 700),
-                                    title="Organism Ecosystem Dynamics")
-    Agents.abmvideo(model;
-        filepath = filepath,
+function animate_organism_simulation(
+    model;
+    filepath = "organism_animation.mp4",
+    frames = 120,
+    dt = 2,
+    framerate = 15,
+    heat_field = :temperature,
+    figure_size = (700, 700),
+    title = "Organism Ecosystem Dynamics"
+)
+    heat_fn = m -> organism_heatarray(m, Symbol(heat_field))
+    mkpath(dirname(abspath(filepath)))
+    Agents.abmvideo(
+        filepath,
+        model;
         frames = frames,
         dt = dt,
         framerate = framerate,
-        heatarray = heat_field,
-        figure_size = figure_size,
+        heatarray = heat_fn,
+        figure = (size = figure_size,),
         title = title,
         agent_color = organism_color,
         agent_size = organism_size,
         agent_marker = organism_marker
     )
+    return filepath
 end
+
+
 function plot_functional_relationships(
     params_list::Vector{IBMParameters};
     type::Symbol = :maturity,
@@ -1912,27 +1943,39 @@ function plot_functional_relationships(
     p = plot(legend = :outertopright, size = (800, 600))
 
     if type === :maturity
-        # CW range for plotting: from 10mm to 250mm
-        cw_vals = exp.(range(log(10.0), log(250.0), length=100))
+        # Size range for plotting: from 10mm to 250mm
+        size_vals = exp.(range(log(10.0), log(250.0), length=100))
         for (i, params) in enumerate(params_list)
             # We use deterministic mode for clean functional curves
-            probs = [maturity(cw; params=params, deterministic=true) for cw in cw_vals]
-            plot!(p, cw_vals, probs, label="$(label_prefix)$i", linewidth=2.5)
+            probs = [maturity(sz; params=params, deterministic=true) for sz in size_vals]
+            plot!(p, size_vals, probs, label="$(label_prefix)$i", linewidth=2.5)
         end
-        title === nothing ? title = "Maturity Ogives (Functional Space)" : title nothing
-        xlabel === nothing ? xlabel = "Carapace Width (mm)" : xlabel nothing
-        ylabel === nothing ? ylabel = "P(Mature)" : ylabel nothing
+        if title === nothing
+            title = "Maturity Ogives (Functional Space)"
+        end
+        if xlabel === nothing
+            xlabel = "Size (mm)"
+        end
+        if ylabel === nothing
+            ylabel = "P(Mature)"
+        end
 
     elseif type === :fecundity
-        cw_vals = collect(10.0:5.0:250.0)
+        size_vals = collect(10.0:5.0:250.0)
         for (i, params) in enumerate(params_list)
             # Using primiparous method for standard comparison
-            eggs = [fecundity(cw; fecundity_parameterization="moncton", is_primiparous=true, params=params, deterministic=true) for cw in cw_vals]
-            plot!(p, cw_vals, eggs, label="$(label_prefix)$i", linewidth=2.5)
+            eggs = [fecundity(sz; fecundity_parameterization="moncton", is_primiparous=true, params=params, deterministic=true) for sz in size_vals]
+            plot!(p, size_vals, eggs, label="$(label_prefix)$i", linewidth=2.5)
         end
-        title === nothing ? title = "Fecundity Curves (Functional Space)" : title nothing
-        xlabel === nothing ? xlabel = "Carapace Width (mm)" : xlabel nothing
-        ylabel === nothing ? ylabel = "Total Eggs" : ylabel nothing
+        if title === nothing
+            title = "Fecundity Curves (Functional Space)"
+        end
+        if xlabel === nothing
+            xlabel = "Size (mm)"
+        end
+        if ylabel === nothing
+            ylabel = "Total Eggs"
+        end
 
     elseif type === :selectivity
         size_vals = collect(20.0:2.0:180.0)
@@ -1940,9 +1983,15 @@ function plot_functional_relationships(
             probs = selectivity.(size_vals; params=params)
             plot!(p, size_vals, probs, label="$(label_prefix)$i", linewidth=2.5)
         end
-        title === nothing ? title = "Fishery Selectivity (Functional Space)" : title nothing
-        xlabel === nothing ? xlabel = "Carapace Width (mm)" : xlabel nothing
-        ylabel === nothing ? ylabel = "Retention Probability" : ylabel nothing
+        if title === nothing
+            title = "Fishery Selectivity (Functional Space)"
+        end
+        if xlabel === nothing
+            xlabel = "Size (mm)"
+        end
+        if ylabel === nothing
+            ylabel = "Retention Probability"
+        end
 
     else
         error("Unsupported functional type: $type. Use :maturity, :fecundity, or :selectivity.")
@@ -1951,3 +2000,6 @@ function plot_functional_relationships(
     plot!(p, title=title, xlabel=xlabel, ylabel=ylabel)
     return p
 end
+
+const animate_snowcrab_simulation = animate_organism_simulation
+const plot_instar_allometry = plot_stage_allometry

@@ -24,7 +24,7 @@ The BIBM engine simulates the complete life history, spatial ecology, bioenerget
        [ Larval Hatching & Pelagic Drift ]
               │
               ▼ (Density-Dependent Recruitment/Settlement)
-       [ Benthic Recruits ] ──> [ Developmental Stages (Instars/Growth Steps) ]
+       [ Benthic Recruits ] ──> [ Developmental Stages (Stages/Growth Steps) ]
                                                 │
                                                 ▼ (Maturity Transition)
                                          [ Terminal Maturity ]
@@ -138,7 +138,7 @@ Parameters are managed via a three-tier precedence hierarchy:
 
 When executed with the `--plot` flag, the engine generates a suite of diagnostics including:
 *   **Executive Dashboard**: A comprehensive multi-panel overview of abundance, demographics, and spatial distribution.
-*   **Demographic Profiles**: Instar distributions, size dimorphism (male vs female), and maturity ogives.
+*   **Demographic Profiles**: Stage distributions, size dimorphism (male vs female), and maturity ogives.
 *   **Spatial Maps**: 2D heatmaps showing organism density or environmental variables (e.g., temperature).
 *   **Stock-Recruitment Plots**: Empirical fits of population dynamics to macro models.
 

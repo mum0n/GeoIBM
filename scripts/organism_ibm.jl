@@ -255,10 +255,10 @@ Print command-line usage instructions, configuration loading rules, and supporte
 function display_cli_help()
     println("""
 ================================================================================
-Snow Crab Individual-Based Model (IBM) CLI Tool
+Organism Individual-Based Model (IBM) CLI Tool
 ================================================================================
 Usage:
-    julia --project=. scripts/snowcrab_ibm.jl [OPTIONS]
+    julia --project=. scripts/organism_ibm.jl [OPTIONS]
 
 Parameter Syntax:
     Parameters are specified using '=' (e.g. --key=value).
@@ -319,7 +319,7 @@ function print_simulation_report(
 )   
     println()
     println("="^80)
-    println("                  SNOW CRAB IBM SIMULATION RESULTS                     ")
+    println("                  ORGANISM IBM SIMULATION RESULTS                     ")
     println("="^80)
     @printf(" Simulation Duration   : %d days (%.2f years)\n", days, days / 365.0)
     @printf(" Computation Time      : %.2f seconds\n", elapsed_time)
@@ -344,7 +344,7 @@ function print_simulation_report(
 
     println(" [Stage Distribution]")
     @printf("   - Planktonic Larvae (Zoea & Megalopa) : %4d\n", summary.n_larvae)
-    @printf("   - Benthic Juveniles (Instar 4+)       : %4d\n", summary.n_juveniles)
+    @printf("   - Benthic Juveniles (Stage 4+)       : %4d\n", summary.n_juveniles)
     @printf("   - Mature Adults (Terminal Molt)       : %4d\n", summary.n_adults)
     @printf("       * Adult Males                     : %4d\n", summary.n_adult_males)
     @printf("       * Adult Females                   : %4d\n", summary.n_adult_females)
@@ -367,7 +367,7 @@ function print_simulation_report(
     end
     @printf("   - Total Eggs Currently Brooded     : %d eggs\n", summary.total_eggs_brooded)
     @printf("   - Cumulative Eggs Spawned          : %d eggs\n", summary.total_eggs_spawned)
-    @printf("   - Cumulative Benthic Recruits      : %d recruits (Instar 4)\n", summary.total_recruits_settled)
+    @printf("   - Cumulative Benthic Recruits      : %d recruits (Stage 4)\n", summary.total_recruits_settled)
     println("-"^80)
 
     println(" [Biomass & Stock Assessment Metrics]")
@@ -382,18 +382,18 @@ function print_simulation_report(
     @printf("   - Legal Commercial Male Biomass    : %8.3f kg (%.4f tonnes)\n",
             summary.legal_biomass_kg, summary.legal_biomass_kg / 1000.0)
     @printf("   - Mean Individual Body Mass        : %8.2f grams\n",
-            summary.mean_weight_g)
+            summary.mean_mass)
     println("-"^80)
 
-    println(" [Size and Instar Structure]")
-    @printf("   - Mean Carapace Width (All Crabs) : %.2f mm\n", summary.mean_cw)
-    println("   - Instar Mean Carapace Width Breakdown:")
-    println("       Instar | Living Count | Mean Carapace Width (mm)")
+    println(" [Size and Stage Structure]")
+    @printf("   - Mean Carapace Size (All Organisms): %.2f mm\n", summary.mean_size)
+    println("   - Stage Mean Carapace Size Breakdown:")
+    println("       Stage | Living Count | Mean Carapace Size (mm)")
     println("       -------+--------------+-------------------------")
-    for inst in sort(collect(keys(summary.cw_by_instar)))
-        mean_size = summary.cw_by_instar[inst]
-        count_inst = summary.count_by_instar[inst]
-        @printf("         %2d   |     %4d     |        %6.2f\n", inst, count_inst, mean_size)
+    for stg in sort(collect(keys(summary.size_by_stage)))
+        mean_size = summary.size_by_stage[stg]
+        count_stg = summary.count_by_stage[stg]
+        @printf("         %2d   |     %4d     |        %6.2f\n", stg, count_stg, mean_size)
     end
     println("="^80)
     println()
@@ -491,10 +491,10 @@ function main()
         (is_adult_female, count),
         (is_legal_male, count),
         (is_ovigerous, count),
-        (weight_if_adult_female, sum),
-        (weight_if_adult_male, sum),
-        (weight_if_legal_male, sum),
-        (:instar, safe_mean)
+        (mass_if_adult_female, sum),
+        (mass_if_adult_male, sum),
+        (mass_if_legal_male, sum),
+        (:stage, safe_mean)
     ]
     mdata = [
         :total_eggs_spawned,

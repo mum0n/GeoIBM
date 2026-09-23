@@ -2,11 +2,13 @@
 Data aggregation and statistical analysis tools for snow crab IBM outputs.
 
 Provides functions to compute empirical maturity ogives, population snapshots,
-and growth metrics across instars and life stages.
+and growth metrics across stages and life stages.
 """
 
 using DataFrames
+using Distributions
 using LinearAlgebra
+using Random
 using Statistics
 
 """
@@ -16,30 +18,32 @@ Calculate the empirical proportion of morphometrically mature adult crabs within
 discrete carapace width bins for a specified sex.
 
 # Arguments
-- `df::DataFrame`: Agent data table containing `:size_mm`, `:sex`, and `:stage` columns.
+- `df::DataFrame`: Agent data table containing `:size`, `:sex`, and `:stage` columns.
 - `target_sex::CrabSex`: Sex to evaluate (`male` or `female`).
-- `bins::AbstractRange`: Carapace width bin boundaries (e.g. `20.0:5.0:120.0`).
+- `bins::AbstractRange`: Size bin boundaries (e.g. `20.0:5.0:120.0`).
 
 # Returns
 Tuple `(bin_centers, prop_mature)`:
-- `bin_centers::Vector{Float64}`: Midpoint carapace width of each evaluated bin.
+- `bin_centers::Vector{Float64}`: Midpoint size of each evaluated bin.
 - `prop_mature::Vector{Float64}`: Proportion of adult crabs in each evaluated bin.
 """
 function compute_empirical_ogive(
     df::DataFrame,
-    target_sex::CrabSex,
+    target_sex::Union{Sex, Integer},
     bins::AbstractRange
 )
-    sex_df = filter(row -> row.sex == target_sex, df)
+    s_target = (target_sex isa Integer) ? ((target_sex == 0) ? male : female) : target_sex
+    sex_df = filter(row -> row.sex == s_target, df)
     bin_centers = Float64[]
     prop_mature = Float64[]
 
+    sz_col = :size
     n_bins = length(bins) - 1
     for k in 1:n_bins
         b_min = bins[k]
         b_max = bins[k + 1]
 
-        in_bin = filter(row -> b_min <= row.size_mm < b_max, sex_df)
+        in_bin = filter(row -> b_min <= row[sz_col] < b_max, sex_df)
         if nrow(in_bin) > 0
             push!(bin_centers, (b_min + b_max) / 2.0)
             n_adults = count(s -> s == adult, in_bin.stage)
@@ -53,12 +57,12 @@ end
 """
     compute_empirical_ogive(model, target_sex, bins)
 
-Calculate the empirical proportion of mature crabs in `model` for `target_sex`.
-Accepts `target_sex` as a `CrabSex` enum (`male`, `female`) or integer (0 = male, 1 = female).
+Calculate the empirical proportion of mature organisms in `model` for `target_sex`.
+Accepts `target_sex` as a `Sex` enum (`male`, `female`) or integer (0 = male, 1 = female).
 """
 function compute_empirical_ogive(
     model,
-    target_sex::Union{CrabSex, Integer},
+    target_sex::Union{Sex, Integer},
     bins::AbstractRange
 )
     crabs = collect(allagents(model))
@@ -67,7 +71,7 @@ function compute_empirical_ogive(
     end
 
     df = DataFrame(
-        size_mm = [c.size_mm for c in crabs],
+        size = [c.size for c in crabs],
         sex = [c.sex for c in crabs],
         stage = [c.stage for c in crabs]
     )
@@ -96,7 +100,7 @@ NamedTuple with fields:
 - `male_mature_biomass_kg::Float64`: Biomass of mature males (kg).
 - `total_ssb_kg::Float64`: Total spawning stock biomass (mature males + females) in kg.
 - `legal_biomass_kg::Float64`: Commercially fishable biomass of legal males in kg.
-- `mean_weight_g::Float64`: Mean body weight across the population in grams.
+- `mean_mass::Float64`: Mean body mass across the population in grams.
 - `n_males::Int`: Total males.
 - `n_females::Int`: Total females.
 - `n_adults::Int`: Total mature adults.
@@ -104,9 +108,9 @@ NamedTuple with fields:
 - `n_adult_females::Int`: Total adult females.
 - `n_juveniles::Int`: Total benthic juveniles.
 - `n_larvae::Int`: Total planktonic larvae (zoea + megalopa).
-- `mean_cw::Float64`: Mean carapace width (mm).
-- `cw_by_instar::Dict{Int, Float64}`: Mean carapace width mapped by instar.
-- `count_by_instar::Dict{Int, Int}`: Crab count mapped by instar.
+- `mean_size::Float64`: Mean size (mm).
+- `size_by_stage::Dict{Int, Float64}`: Mean size mapped by stage.
+- `count_by_stage::Dict{Int, Int}`: Organism count mapped by stage.
 """
 function summarize_population(model)
     orgs = collect(allagents(model))
@@ -130,7 +134,7 @@ function summarize_population(model)
             total_mature_male_mass_kg = 0.0,
             total_mature_female_mass_kg = 0.0,
             total_egg_production = tot_spawned,
-            mean_weight_g = 0.0,
+            mean_mass = 0.0,
             n_males = 0,
             n_females = 0,
             n_adults = 0,
@@ -143,8 +147,8 @@ function summarize_population(model)
             n_juveniles = 0,
             n_larvae = 0,
             mean_size = 0.0,
-            cw_by_instar = Dict{Int, Float64}(),
-            count_by_instar = Dict{Int, Int}()
+            size_by_stage = Dict{Int, Float64}(),
+            count_by_stage = Dict{Int, Int}()
         )
     end
 
@@ -175,13 +179,13 @@ function summarize_population(model)
         init = 0.0
     ) / 1000.0
 
-    instars_present = unique(c.instar for c in orgs)
-    cw_by_instar = Dict{Int, Float64}()
-    count_by_instar = Dict{Int, Int}()
-    for inst in sort(instars_present)
-        inst_orgs = filter(c -> c.instar == inst, orgs)
-        cw_by_instar[inst] = mean(c.size for c in inst_orgs)
-        count_by_instar[inst] = length(inst_orgs)
+    stages_present = unique(c.stage for c in orgs)
+    size_by_stage = Dict{Int, Float64}()
+    count_by_stage = Dict{Int, Int}()
+    for stg in sort(stages_present)
+        stg_orgs = filter(c -> c.stage == stg, orgs)
+        size_by_stage[stg] = mean(c.size for c in stg_orgs)
+        count_by_stage[stg] = length(stg_orgs)
     end
 
     return (
@@ -197,7 +201,7 @@ function summarize_population(model)
         total_mature_male_mass_kg = m_mat_b,
         total_mature_female_mass_kg = f_ssb,
         total_egg_production = tot_spawned,
-        mean_weight_g = mean_wt,
+        mean_mass = mean_wt,
         n_males = n_m,
         n_females = n_f,
         n_adults = n_ad,
@@ -210,8 +214,8 @@ function summarize_population(model)
         n_juveniles = n_juv,
         n_larvae = n_larv,
         mean_size = mean_size,
-        cw_by_instar = cw_by_instar,
-        count_by_instar = count_by_instar
+        size_by_stage = size_by_stage,
+        count_by_stage = count_by_stage
     )
 end
 
@@ -228,8 +232,8 @@ If individual clutch recruitment records exist in
 - `time`: Hatch timestamp (days).
 - `spawners`: Maternal egg proxy in thousands (`eggs_count / 1000.0`).
 - `eggs_count`: Total eggs in clutch.
-- `mother_weight_g`: Maternal body weight in grams.
-- `recruits`: Settled Instar 4 benthic recruits from the clutch.
+- `mother_mass`: Maternal body mass in grams.
+- `recruits`: Settled Stage 4 benthic recruits from the clutch.
 - `recruits_per_spawner`: Ratio of recruits produced per unit spawner.
 - `density_feedback`: Benthic adult compensatory density feedback factor (1 + N/K).
 """
@@ -240,9 +244,10 @@ function extract_stock_recruitment(model)
         if nrow(raw_df) > 0
             df = DataFrame(
                 time = raw_df.hatch_time,
-                spawners = raw_df.eggs_count ./ 1000.0,
-                eggs_count = raw_df.eggs_count,
-                mother_weight_g = raw_df.mother_weight_g,
+                spawners = raw_df.egg_count ./ 1000.0,
+                egg_count = raw_df.egg_count,
+                mother_size = raw_df.mother_size,
+                mother_mass = raw_df.mother_mass,
                 recruits = raw_df.recruits_settled,
                 density_feedback = raw_df.density_feedback
             )
@@ -257,8 +262,9 @@ function extract_stock_recruitment(model)
     return DataFrame(
         time = Float64[],
         spawners = Float64[],
-        eggs_count = Int[],
-        mother_weight_g = Float64[],
+        egg_count = Int[],
+        mother_size = Float64[],
+        mother_mass = Float64[],
         recruits = Int[],
         density_feedback = Float64[],
         recruits_per_spawner = Float64[]
@@ -286,7 +292,7 @@ is paired with the resulting benthic recruitment settling in the subsequent lagg
 - `time_spawn::Float64`: Spawning cohort start time.
 - `spawners::Float64`: Thousands of eggs spawned in the cohort window.
 - `eggs_spawned::Int`: Total eggs extruded in the cohort window.
-- `recruits::Int`: Net new Instar 4 recruits settled during the lagged window.
+- `recruits::Int`: Net new Stage 4 recruits settled during the lagged window.
 - `recruits_per_spawner::Float64`: Ratio of recruits per unit spawner.
 """
 function extract_stock_recruitment(
@@ -444,7 +450,7 @@ function fit_stock_recruitment(
 
     bh_pred = s -> (alpha_bh * s) / (1.0 + beta_bh * s)
     ss_res_bh = sum((r_sub[i] - bh_pred(s_sub[i]))^2 for i in 1:n)
-    r2_bh = clamp(1.0 - (ss_res_bh / ss_tot), 0.0, 1.0)
+    r2_bh = (ss_tot > 0.0) ? max(0.0, 1.0 - (ss_res_bh / ss_tot)) : 0.0
     aic_bh = n * log(max(1e-12, ss_res_bh / n)) + 4.0
     r_max_bh = (beta_bh > 0.0) ? (alpha_bh / beta_bh) : Inf
     s_50_bh = (beta_bh > 0.0) ? (1.0 / beta_bh) : Inf
@@ -456,12 +462,12 @@ function fit_stock_recruitment(
     v_rk = -cov_s_yrk / var_s
     u_rk = y_rk_bar + v_rk * s_bar
 
-    alpha_rk = exp(clamp(u_rk, -20.0, 20.0))
+    alpha_rk = exp(u_rk)
     beta_rk = max(0.0, v_rk)
 
     rk_pred = s -> alpha_rk * s * exp(-beta_rk * s)
     ss_res_rk = sum((r_sub[i] - rk_pred(s_sub[i]))^2 for i in 1:n)
-    r2_rk = clamp(1.0 - (ss_res_rk / ss_tot), 0.0, 1.0)
+    r2_rk = (ss_tot > 0.0) ? max(0.0, 1.0 - (ss_res_rk / ss_tot)) : 0.0
     aic_rk = n * log(max(1e-12, ss_res_rk / n)) + 4.0
     s_max_rk = (beta_rk > 0.0) ? (1.0 / beta_rk) : Inf
     r_max_rk = (beta_rk > 0.0) ? (alpha_rk / (beta_rk * exp(1.0))) : Inf
@@ -1028,8 +1034,8 @@ function fit_schaefer(
         a1 = (s22 * y1 - s12 * y2) / det
         a2 = (s11 * y2 - s12 * y1) / det
         if a1 > 0.01 && a2 > 1e-8
-            r_init = clamp(a1, 0.05, 2.5)
-            k_init = clamp(a1 / a2, maximum(n_vals) * 0.5, maximum(n_vals) * 5.0)
+            r_init = a1
+            k_init = a1 / a2
         end
     end
 
@@ -1053,8 +1059,8 @@ function fit_schaefer(
     # Multi-scale grid search around initial values
     for r_scale in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
         for k_scale in [0.7, 0.85, 1.0, 1.15, 1.3, 1.6]
-            r_try = clamp(r_init * r_scale, 0.02, 3.0)
-            k_try = clamp(k_init * k_scale, maximum(n_vals) * 0.5, maximum(n_vals) * 5.0)
+            r_try = r_init * r_scale
+            k_try = k_init * k_scale
             pred_try = simulate_trajectory(r_try, k_try)
             rss_try = sum((n_vals .- pred_try) .^ 2)
             if rss_try < best_rss
@@ -1194,7 +1200,7 @@ function fit_delay_difference(
     tss = sum((n_vals[(lag + 1):end] .- mean_obs) .^ 2)
     r2 = (tss > 0.0) ? max(0.0, 1.0 - (best_rss / tss)) : 0.0
     rmse = sqrt(best_rss / n_fit)
-    m_nat = -log(clamp(best_s, 1e-4, 0.9999))
+    m_nat = (0.0 < best_s < 1.0) ? -log(best_s) : ((best_s >= 1.0) ? 0.0 : Inf)
     aic = n_fit * log(max(1e-6, best_rss / n_fit)) + 2.0 * 3.0
 
     return (
@@ -1221,7 +1227,7 @@ end
 
 Fit both the Schaefer logistic model and Deriso-Schnute delay-difference model
 to simulation results for:
-1. The **whole population** (total numbers across all instars).
+1. The **whole population** (total numbers across all stages).
 2. The **fishable component** (legal-sized adult males).
 
 # Arguments
@@ -1451,8 +1457,11 @@ function retrospective_analysis(
         error("Retrospective analysis requires at least 4 years of annual data (got $(total_years)).")
     end
 
-    # Ensure each peeled model has at least 3 data points
-    realized_peels = clamp(n_peels, 1, total_years - 3)
+    max_peels = total_years - 3
+    if n_peels < 1 || n_peels > max_peels
+        error("Requested n_peels ($(n_peels)) must be between 1 and $(max_peels).")
+    end
+    realized_peels = n_peels
 
     # 1. Base run (Peel 0: full dataset)
     base_macro = fit_population_dynamics(ann_df; lag = lag)
@@ -1624,7 +1633,7 @@ function summarize_retrospective(retro_result)
 end
 
 """
-    extract_annual_stage_matrix(source; stages=build_instar_stages())
+    extract_annual_stage_matrix(source; stages=build_stages())
 
 Extract or reconstruct an S x T stage abundance matrix from simulation results.
 Supports:
@@ -1634,7 +1643,7 @@ Supports:
 
 # Arguments
 - `source`: Data source.
-- `stages::Vector{InstarStageDefinition}`: Life-history stage definitions.
+- `stages::Vector{StageDefinition}`: Life-history stage definitions.
 
 # Returns
 Tuple `(stage_matrix, catch_matrix, years)`:
@@ -1644,7 +1653,7 @@ Tuple `(stage_matrix, catch_matrix, years)`:
 """
 function extract_annual_stage_matrix(
     source;
-    stages::Vector{InstarStageDefinition} = build_instar_stages()
+    stages::Vector{StageDefinition} = build_stages()
 )
     n_stages = length(stages)
     legal_indices = [st.index for st in stages if st.is_legal_male]
@@ -1656,9 +1665,9 @@ function extract_annual_stage_matrix(
         source
     elseif hasmethod(allagents, Tuple{typeof(source)})
         crabs = collect(allagents(source))
-        cws = [c.size_mm for c in crabs]
+        cws = [c.size for c in crabs]
         sexes = [c.sex for c in crabs]
-        counts, _ = derive_instar_proportions_kde(cws, sexes; stages=stages)
+        counts, _ = derive_stage_proportions_kde(cws, sexes; stages=stages)
         stage_mat = reshape(counts, n_stages, 1)
         catch_mat = zeros(Float64, n_stages, 1)
         return (stage_mat, catch_mat, [1])
@@ -1690,7 +1699,7 @@ function extract_annual_stage_matrix(
         decay_weights = zeros(Float64, n_stages)
         for st in stages
             if !st.is_legal_male
-                decay_weights[st.index] = exp(-0.28 * (st.instar - 4.0))
+                decay_weights[st.index] = exp(-0.28 * (st.stage - 4.0))
             end
         end
         sum_decay = sum(decay_weights)
@@ -1729,7 +1738,7 @@ end
 
 """
     fit_generalized_leslie_model(stage_matrix, catch_matrix=zeros(size(stage_matrix));
-                                 stages=build_instar_stages(),
+                                 stages=build_stages(),
                                  years=1:size(stage_matrix, 2))
 
 Fit a generalized Leslie (Lefkovitch) stage-structured transition matrix model to
@@ -1741,7 +1750,7 @@ multi-year stage abundance trajectories:
 # Arguments
 - `stage_matrix::Matrix{Float64}`: S x T matrix of stage abundances.
 - `catch_matrix::Matrix{Float64}`: S x T matrix of stage catch removals.
-- `stages::Vector{InstarStageDefinition}`: Life-history stage definitions.
+- `stages::Vector{StageDefinition}`: Life-history stage definitions.
 - `years::AbstractVector{Int}`: Time indices.
 
 # Returns
@@ -1750,7 +1759,7 @@ multi-year stage abundance trajectories:
 function fit_generalized_leslie_model(
     stage_matrix::Matrix{Float64},
     catch_matrix::Matrix{Float64} = zeros(size(stage_matrix));
-    stages::Vector{InstarStageDefinition} = build_instar_stages(),
+    stages::Vector{StageDefinition} = build_stages(),
     years::AbstractVector{Int} = 1:size(stage_matrix, 2)
 )
     S, T = size(stage_matrix)
@@ -1767,13 +1776,13 @@ function fit_generalized_leslie_model(
     repro_indices = [st.index for st in stages if st.is_reproductive]
     legal_indices = [st.index for st in stages if st.is_legal_male]
 
-    # Stage 1: Instar 4 (pooled)
+    # Stage 1: Stage 4 (pooled)
     s1 = 0.74
     gamma1 = 0.78
     A[2, 1] = s1 * gamma1
     A[1, 1] = s1 * (1.0 - gamma1)
 
-    # Stage 2: Instar 5 (pooled)
+    # Stage 2: Stage 5 (pooled)
     s2 = 0.76
     gamma2 = 0.75
     m6_idx = isempty(male_indices) ? 3 : first(male_indices)
@@ -1785,10 +1794,10 @@ function fit_generalized_leslie_model(
     # Male stages (Stages 3 to 9)
     for idx in male_indices
         st = stages[idx]
-        is_term = (st.instar == 12 || idx == last(male_indices))
+        is_term = (st.stage == 12 || idx == last(male_indices))
         s_m = st.is_legal_male ? 0.78 : 0.80
-        gamma_m = is_term ? 0.0 : max(0.15, 0.75 - 0.10 * (st.instar - 6.0))
-        p_term = (st.instar <= 6) ? 0.0 : min(0.80, 0.10 * (st.instar - 6.0)^1.3)
+        gamma_m = is_term ? 0.0 : max(0.15, 0.75 - 0.10 * (st.stage - 6.0))
+        p_term = (st.stage <= 6) ? 0.0 : min(0.80, 0.10 * (st.stage - 6.0)^1.3)
 
         if is_term
             A[idx, idx] = s_m
@@ -1802,10 +1811,10 @@ function fit_generalized_leslie_model(
     # Female stages (Stages 10 to 15)
     for idx in female_indices
         st = stages[idx]
-        is_term = (st.instar == 11 || idx == last(female_indices))
+        is_term = (st.stage == 11 || idx == last(female_indices))
         s_f = 0.80
-        gamma_f = is_term ? 0.0 : max(0.10, 0.70 - 0.12 * (st.instar - 6.0))
-        p_term_f = (st.instar <= 6) ? 0.0 : min(0.85, 0.15 * (st.instar - 6.0)^1.4)
+        gamma_f = is_term ? 0.0 : max(0.10, 0.70 - 0.12 * (st.stage - 6.0))
+        p_term_f = (st.stage <= 6) ? 0.0 : min(0.85, 0.15 * (st.stage - 6.0)^1.4)
 
         if is_term
             A[idx, idx] = s_f
@@ -1820,11 +1829,10 @@ function fit_generalized_leslie_model(
     tot_recruits = sum(stage_matrix[1, 2:T])
     tot_females = sum(stage_matrix[repro_indices, 1:(T-1)])
     fecundity_base = (tot_females > 0.0) ? (tot_recruits / tot_females) : 0.85
-    fecundity_base = clamp(fecundity_base, 0.20, 2.50)
 
     for idx in repro_indices
         st = stages[idx]
-        f_scale = (st.cw_mean / 65.0)^2.5
+        f_scale = (st.size_mean / 65.0)^2.5
         A[1, idx] = fecundity_base * f_scale
     end
 
@@ -1834,7 +1842,6 @@ function fit_generalized_leslie_model(
     sum_x = sum(X)
     sum_y = sum(Y)
     scale_factor = (sum_x > 0.0) ? (sum_y / sum_x) : 1.0
-    scale_factor = clamp(scale_factor, 0.80, 1.20)
 
     for j in 1:S
         col_sum = sum(A[i, j] for i in 2:S)
@@ -1906,7 +1913,7 @@ function fit_generalized_leslie_model(
     for t in 1:T
         for idx in legal_indices
             st = stages[idx]
-            wt_kg = st.mean_weight_g / 1000.0
+            wt_kg = st.mean_mass / 1000.0
             legal_obs[t] += stage_matrix[idx, t]
             legal_pred[t] += predicted_stages[idx, t]
             biomass_obs[t] += stage_matrix[idx, t] * wt_kg
@@ -1978,20 +1985,20 @@ function summarize_leslie_model(fit::LeslieMatrixFit)
     println(buf, "   - Model AIC Score         : ", lpad(string(round(fit.aic, digits = 2)), 8))
     println(buf, "-"^85)
     println(buf, " [STAGE STRUCTURE, STABLE DISTRIBUTION & REPRODUCTIVE VALUES]")
-    println(buf, " Idx | Stage Name          | CW Mean | Mean Wt (g) | SSD (w₁) | Repro Val (v₁) | Legal | Repro")
-    println(buf, "-----+---------------------+---------+-------------+----------+----------------+-------+------")
+    println(buf, " Idx | Stage Name          | Size Mean | Mean Mass (g) | SSD (w₁) | Repro Val (v₁) | Legal | Repro")
+    println(buf, "-----+---------------------+-----------+---------------+----------+----------------+-------+------")
     for st in fit.stages
         i = st.index
         w_str = lpad(string(round(fit.stable_stage_distribution[i] * 100.0, digits = 2)) * "%", 8)
         v_str = lpad(string(round(fit.reproductive_values[i], digits = 2)), 14)
-        cw_str = lpad(string(round(st.cw_mean, digits = 1)), 7)
-        wt_str = lpad(string(round(st.mean_weight_g, digits = 1)), 11)
+        sz_str = lpad(string(round(st.size_mean, digits = 1)), 9)
+        mass_str = lpad(string(round(st.mean_mass, digits = 1)), 13)
         leg_str = st.is_legal_male ? " YES " : "  -  "
         rep_str = st.is_reproductive ? " YES " : "  -  "
         println(buf, "  ", lpad(string(i), 2), " | ",
                 rpad(st.name, 19), " | ",
-                cw_str, " | ",
-                wt_str, " | ",
+                sz_str, " | ",
+                mass_str, " | ",
                 w_str, " | ",
                 v_str, " | ",
                 leg_str, " | ",
@@ -2029,7 +2036,7 @@ function compare_macro_models(
     if !isempty(leslie_fit.stages)
         leg_stages = filter(s -> s.is_legal_male, leslie_fit.stages)
         if !isempty(leg_stages)
-            mean_legal_wt_kg = mean([s.mean_weight_g for s in leg_stages]) / 1000.0
+            mean_legal_wt_kg = mean([s.mean_mass for s in leg_stages]) / 1000.0
         end
     end
 
@@ -2212,18 +2219,18 @@ criteria to support systematic parameter orchestration and automated model calib
 3. **Steady Size Structure (`is_size_steady`)**: Relative drift in mean carapace width over
    the final evaluation window does not exceed `max_size_drift`.
 4. **Maturity Ogive Fidelity (`is_maturity_realistic`)**: Empirical maturity schedule
-   matches theoretical logistic curves (`maturity(sex, log(cw))`) within `max_maturity_rmse`.
+   matches theoretical logistic curves (`maturity(sex, log(size))`) within `max_maturity_rmse`.
 5. **Growth Schedule Fidelity (`is_growth_realistic`)**: Observed mean carapace width per
-   instar matches reference empirical medians from `growth_schedule()` within `max_growth_rmse`.
+   stage matches reference empirical medians from `growth_schedule()` within `max_growth_rmse`.
 
 # Arguments
 - `model`: Agent-based model instance after simulation.
 - `agent_df::DataFrame`: Time-series table collected during simulation.
 - `min_population::Union{Nothing, Int}`: Minimum living crab threshold (defaults to 10% of K, min 15).
 - `max_population::Union{Nothing, Int}`: Maximum living crab ceiling (defaults to 300% of K).
-- `max_size_drift::Float64`: Maximum allowable fractional shift in mean CW over recent steps.
+- `max_size_drift::Float64`: Maximum allowable fractional shift in mean size over recent steps.
 - `max_maturity_rmse::Float64`: Maximum allowable RMSE against theoretical maturity ogive.
-- `max_growth_rmse::Float64`: Maximum allowable RMSE against empirical instar size schedule (mm).
+- `max_growth_rmse::Float64`: Maximum allowable RMSE against empirical stage size schedule (mm).
 - `window_steps::Int`: Number of recent time steps used to assess size stability.
 
 # Returns
@@ -2267,13 +2274,13 @@ function evaluate_population_criteria(
             growth_rmse = 100.0,
             composite_score = 1000.0,
             mean_cw = 0.0,
-            instar_counts = Dict{Int, Int}()
+            stage_counts = Dict{Int, Int}()
         )
     end
 
     # 2. Steady size structure (drift over recent steps)
     size_col = nothing
-    for candidate in [:size_mm_safe_mean, :mean_size_mm, :size_mm_mean, :mean_cw]
+    for candidate in [:size_safe_mean, :mean_size]
         if candidate in propertynames(agent_df)
             size_col = candidate
             break
@@ -2292,9 +2299,9 @@ function evaluate_population_criteria(
     is_size_steady = size_drift <= max_size_drift
 
     # 3. Maturity ogive fidelity
-    cw_bins = 20.0:10.0:140.0
-    cm_m, pm_m = compute_empirical_ogive(model, male, cw_bins)
-    cm_f, pm_f = compute_empirical_ogive(model, female, cw_bins)
+    size_bins = 20.0:10.0:140.0
+    cm_m, pm_m = compute_empirical_ogive(model, male, size_bins)
+    cm_f, pm_f = compute_empirical_ogive(model, female, size_bins)
 
     mat_sq_errors = Float64[]
     for i in eachindex(cm_m)
@@ -2311,36 +2318,36 @@ function evaluate_population_criteria(
 
     # 4. Growth schedule fidelity
     ref_schedule = growth_schedule()
-    instar_obs_m = Dict{Int, Vector{Float64}}()
-    instar_obs_f = Dict{Int, Vector{Float64}}()
-    instar_counts = Dict{Int, Int}()
+    stage_obs_m = Dict{Int, Vector{Float64}}()
+    stage_obs_f = Dict{Int, Vector{Float64}}()
+    stage_counts = Dict{Int, Int}()
 
     for c in living_crabs
-        inst = c.instar
-        instar_counts[inst] = get(instar_counts, inst, 0) + 1
+        stg = c.stage
+        stage_counts[stg] = get(stage_counts, stg, 0) + 1
         if c.sex == male
-            if !haskey(instar_obs_m, inst)
-                instar_obs_m[inst] = Float64[]
+            if !haskey(stage_obs_m, stg)
+                stage_obs_m[stg] = Float64[]
             end
-            push!(instar_obs_m[inst], c.size_mm)
+            push!(stage_obs_m[stg], c.size)
         else
-            if !haskey(instar_obs_f, inst)
-                instar_obs_f[inst] = Float64[]
+            if !haskey(stage_obs_f, stg)
+                stage_obs_f[stg] = Float64[]
             end
-            push!(instar_obs_f[inst], c.size_mm)
+            push!(stage_obs_f[stg], c.size)
         end
     end
 
     growth_sq_errors = Float64[]
-    for (inst, sizes) in instar_obs_m
-        if 1 <= inst <= nrow(ref_schedule)
-            ref_med = ref_schedule.cwm_med[inst]
+    for (stg, sizes) in stage_obs_m
+        if 1 <= stg <= nrow(ref_schedule)
+            ref_med = ref_schedule.size_male_med[stg]
             push!(growth_sq_errors, (mean(sizes) - ref_med)^2)
         end
     end
-    for (inst, sizes) in instar_obs_f
-        if 1 <= inst <= nrow(ref_schedule)
-            ref_med = ref_schedule.cwf_med[inst]
+    for (stg, sizes) in stage_obs_f
+        if 1 <= stg <= nrow(ref_schedule)
+            ref_med = ref_schedule.size_female_med[stg]
             push!(growth_sq_errors, (mean(sizes) - ref_med)^2)
         end
     end
@@ -2358,7 +2365,7 @@ function evaluate_population_criteria(
                       15.0 * maturity_rmse +
                       1.0 * growth_rmse
 
-    mean_cw_all = mean([c.size_mm for c in living_crabs])
+    mean_size_all = mean([c.size for c in living_crabs])
 
     return (
         passed_all = passed_all,
@@ -2372,7 +2379,614 @@ function evaluate_population_criteria(
         maturity_rmse = maturity_rmse,
         growth_rmse = growth_rmse,
         composite_score = composite_score,
-        mean_cw = mean_cw_all,
-        instar_counts = instar_counts
+        mean_size = mean_size_all,
+        stage_counts = stage_counts
     )
 end
+
+# -----------------------------------------------------------------------------
+# Empirical Biological Model Calibration, KDE, and Trait Sampling
+# -----------------------------------------------------------------------------
+
+"""
+    gaussian_kde(data; eval_points=nothing, bandwidth=nothing)
+
+Compute 1D Gaussian Kernel Density Estimation (KDE) for numerical vector `data`.
+
+# Mathematical Formulation
+```math
+\\hat{f}(x) = \\frac{1}{n h} \\sum_{i=1}^n \\frac{1}{\\sqrt{2\\pi}} \\exp\\left(-\\frac{(x - X_i)^2}{2 h^2}\\right)
+```
+
+Bandwidth ``h`` defaults to Silverman's rule of thumb:
+```math
+h = 1.06 \\cdot \\min\\left(\\hat{\\sigma}, \\frac{\\text{IQR}}{1.34}\\right) \\cdot n^{-1/5}
+```
+with safety bounds preventing zero bandwidth when variance is tiny.
+
+# Arguments
+- `data::AbstractVector{<:Real}`: Sample data observations.
+- `eval_points`: Evaluation coordinates (defaults to 200 points spanning [min - 3h, max + 3h]).
+- `bandwidth`: Optional manual smoothing parameter h.
+
+# Returns
+Tuple `(grid, density)`:
+- `grid::Vector{Float64}`: Abscissa coordinates.
+- `density::Vector{Float64}`: Evaluated probability density values.
+"""
+function gaussian_kde(
+    data::AbstractVector{<:Real};
+    eval_points = nothing,
+    bandwidth = nothing
+)
+    n = length(data)
+    if n == 0
+        return (Float64[], Float64[])
+    end
+    x_clean = Float64.(data)
+    s_dev = (n > 1) ? std(x_clean) : 1.0
+    h = if bandwidth !== nothing
+        Float64(bandwidth)
+    else
+        iqr_val = (n >= 4) ? (quantile(x_clean, 0.75) - quantile(x_clean, 0.25)) / 1.34 : s_dev
+        spread = (iqr_val > 0.0 && iqr_val < s_dev) ? iqr_val : s_dev
+        1.06 * max(spread, 0.5) * (n^(-0.20))
+    end
+    h = max(h, 0.1)
+    grid = if eval_points !== nothing
+        collect(Float64, eval_points)
+    else
+        x_min = minimum(x_clean) - 3.0 * h
+        x_max = maximum(x_clean) + 3.0 * h
+        range(x_min, x_max, length = 200) |> collect
+    end
+    inv_h = 1.0 / h
+    inv_norm = 1.0 / (sqrt(2.0 * π) * n * h)
+    density = zeros(Float64, length(grid))
+    for (k, x) in enumerate(grid)
+        sum_k = 0.0
+        for xi in x_clean
+            u = (x - xi) * inv_h
+            sum_k += exp(-0.5 * u * u)
+        end
+        density[k] = sum_k * inv_norm
+    end
+    return (grid, density)
+end
+
+"""
+    derive_stage_proportions_kde(sizes, sexes=nothing; stages=build_stages())
+
+Derive the proportion and count of individuals in each discrete stage
+from continuous size observations using empirical growth-stage intervals.
+"""
+function derive_stage_proportions_kde(
+    sizes::AbstractVector{<:Real},
+    sexes = nothing;
+    stages::Vector{StageDefinition} = build_stages()
+)
+    n_orgs = length(sizes)
+    n_stages = length(stages)
+    counts = zeros(Float64, n_stages)
+    if n_orgs == 0
+        return (counts, zeros(Float64, n_stages))
+    end
+    has_sex = (sexes !== nothing && length(sexes) == n_orgs)
+    for i in 1:n_orgs
+        sz = Float64(sizes[i])
+        if sz <= 0.0
+            continue
+        end
+        if sz < 22.0
+            if sz < 14.5
+                counts[1] += 1.0
+            else
+                counts[2] += 1.0
+            end
+        else
+            is_fem = if has_sex
+                sx = sexes[i]
+                (sx == 1 || sx == :female || Symbol(sx) == :female)
+            else
+                rand() < 0.50
+            end
+            target_sex = is_fem ? female : male
+            matched = false
+            for st in stages
+                if st.sex === target_sex
+                    b_min, b_max = st.size_range
+                    if b_min <= sz < b_max || (sz >= b_min && st.stage == 12)
+                        counts[st.index] += 1.0
+                        matched = true
+                        break
+                    end
+                end
+            end
+            if !matched
+                candidates = filter(s -> s.sex === target_sex, stages)
+                if !isempty(candidates)
+                    dists = [abs(sz - s.size_mean) for s in candidates]
+                    best_st = candidates[argmin(dists)]
+                    counts[best_st.index] += 1.0
+                end
+            end
+        end
+    end
+    total = sum(counts)
+    proportions = (total > 0.0) ? (counts ./ total) : zeros(Float64, n_stages)
+    return (counts, proportions)
+end
+
+"""
+    _fit_ols(x::Vector{Float64}, y::Vector{Float64})
+
+Internal linear regression helper computing intercept, slope, residual standard
+error, and coefficient of determination R².
+"""
+function _fit_ols(x::Vector{Float64}, y::Vector{Float64})
+    n = length(x)
+    x_bar = mean(x)
+    y_bar = mean(y)
+    ss_xx = sum((x .- x_bar).^2)
+    ss_xy = sum((x .- x_bar) .* (y .- y_bar))
+    slope = (ss_xx > 1e-12) ? (ss_xy / ss_xx) : 0.0
+    intercept = y_bar - slope * x_bar
+    residuals = y .- (intercept .+ slope .* x)
+    ss_res = sum(residuals.^2)
+    ss_tot = sum((y .- y_bar).^2)
+    r2 = (ss_tot > 1e-12) ? max(0.0, 1.0 - ss_res / ss_tot) : 0.0
+    sigma = (n > 2) ? sqrt(ss_res / (n - 2)) : std(residuals)
+    return (intercept, slope, sigma, r2)
+end
+
+"""
+    _fit_irls_logistic(cw_vec::Vector{Float64}, temp_vec::Vector{Float64}, y_vec::Vector{Float64})
+
+Internal iteratively reweighted least squares (IRLS) logistic regression for
+maturity ogive estimation with thermal sensitivity.
+"""
+function _fit_irls_logistic(
+    cw_vec::Vector{Float64},
+    temp_vec::Vector{Float64},
+    y_vec::Vector{Float64}
+)
+    n = length(y_vec)
+    has_temp_var = std(temp_vec) > 0.1
+    X = has_temp_var ?
+        hcat(ones(n), log.(cw_vec), temp_vec .- 4.0) :
+        hcat(ones(n), log.(cw_vec))
+    p_dim = size(X, 2)
+    theta = zeros(p_dim)
+    theta[1] = -20.0
+    theta[2] = 5.0
+    if p_dim == 3
+        theta[3] = -0.05
+    end
+    for _ in 1:30
+        eta = X * theta
+        mu = _logistic_safe.(eta)
+        w = max.(mu .* (1.0 .- mu), 1e-6)
+        z = eta .+ (y_vec .- mu) ./ w
+        H = (X' .* w') * X + 1e-4 * I
+        g = (X' .* w') * z
+        theta_next = H \ g
+        if norm(theta_next - theta) < 1e-5
+            theta = theta_next
+            break
+        end
+        theta = 0.5 .* theta .+ 0.5 .* theta_next
+    end
+    slope = max(0.5, theta[2])
+    l50 = exp(-theta[1] / slope)
+    temp_coef = (p_dim == 3) ? theta[3] : -0.05
+    mean_y = mean(y_vec)
+    p_mean = min(max(mean_y, 1e-6), 1.0 - 1e-6)
+    ll_null = sum(y_vec .* log(p_mean) .+ (1.0 .- y_vec) .* log(1.0 - p_mean))
+    p_pred = min.(max.(_logistic_safe.(X * theta), 1e-6), 1.0 - 1e-6)
+    ll_fit = sum(y_vec .* log.(p_pred) .+ (1.0 .- y_vec) .* log.(1.0 .- p_pred))
+    pseudo_r2 = (abs(ll_null) > 1e-6) ? max(0.0, 1.0 - ll_fit / ll_null) : 0.0
+    return (l50, slope, temp_coef, pseudo_r2)
+end
+
+"""
+    generate_mock_survey_data(; n_samples=500, rng=Random.default_rng(), behavior=default_species_behavior())
+
+Generate a synthetic research survey `DataFrame` representing observational
+field records for model calibration.
+"""
+function generate_mock_survey_data(;
+    n_samples::Int = 500,
+    rng::AbstractRNG = Random.default_rng(),
+    behavior::SpeciesBehavior = default_species_behavior()
+)
+    sizes = zeros(Float64, n_samples)
+    sexes = zeros(Int, n_samples)
+    mats = zeros(Int, n_samples)
+    masses = zeros(Float64, n_samples)
+    temps = zeros(Float64, n_samples)
+    fecs = zeros(Float64, n_samples)
+    stages_arr = zeros(Int, n_samples)
+    shell_ages = zeros(Float64, n_samples)
+    stage_weights = [0.18, 0.16, 0.15, 0.14, 0.12, 0.10, 0.08, 0.05, 0.02]
+    stage_choices = 4:12
+    for i in 1:n_samples
+        cum_r = rand(rng)
+        acc = 0.0
+        chosen_stage = 4
+        for (idx, w) in enumerate(stage_weights)
+            acc += w
+            if cum_r <= acc || idx == length(stage_weights)
+                chosen_stage = stage_choices[idx]
+                break
+            end
+        end
+        s = rand(rng) < 0.50 ? 1 : 0
+        t = rand(rng, truncated(Normal(3.5, 1.5), 0.5, 8.0))
+        sz = get_stage_size(behavior, chosen_stage, s; type = :random, rng = rng)
+        p_mat = maturity(behavior, s, log(sz); temp = t, rng = rng)
+        mat = (rand(rng) < p_mat) ? 1 : 0
+        age = (mat == 0) ? rand(rng, Uniform(0.2, 1.0)) : rand(rng, Uniform(1.0, 5.0))
+        wt = calculate_mass(behavior, sz, s; mat = mat, stochastic = true, rng = rng)
+        fec = 0.0
+        if s == 1 && mat == 1
+            fec = Float64(fecundity(
+                behavior, sz;
+                is_primiparous = (age <= 2.0),
+                shell_age = age,
+                rng = rng
+            ))
+        end
+        sizes[i] = sz
+        sexes[i] = s
+        mats[i] = mat
+        masses[i] = wt
+        temps[i] = t
+        fecs[i] = fec
+        stages_arr[i] = chosen_stage
+        shell_ages[i] = age
+    end
+    return DataFrame(
+        size = sizes,
+        sex = sexes,
+        maturity = mats,
+        mass = masses,
+        temp_c = temps,
+        fecundity = fecs,
+        stage = stages_arr,
+        shell_age = shell_ages
+    )
+end
+
+"""
+    fit_empirical_biology_model(data::DataFrame)
+
+Calibrate an `EmpiricalBiologicalModel` from empirical observational or research
+survey data.
+"""
+function fit_empirical_biology_model(data::DataFrame)
+    required_cols = [:size, :sex, :maturity, :mass, :temp_c, :fecundity]
+    for col in required_cols
+        if !(col in propertynames(data))
+            error("Data must contain required column: $(col)")
+        end
+    end
+    n_records = nrow(data)
+    if n_records < 10
+        error("At least 10 observations required to fit empirical model, got $(n_records)")
+    end
+    mass_params = Dict{Symbol, Tuple{Float64, Float64, Float64}}()
+    maturity_params = Dict{Symbol, Tuple{Float64, Float64, Float64}}()
+    fecundity_params = Dict{Symbol, Tuple{Float64, Float64, Float64}}()
+    stage_modals = Dict{Int, Tuple{Float64, Float64}}()
+    r2_scores = Dict{Symbol, Float64}()
+
+    # 1. Allometric Mass Parameters
+    strata_definitions = [
+        (:male_imm, (data.sex .== 0) .&& (data.maturity .== 0), (0.0002665, 3.098, 0.08)),
+        (:male_mat, (data.sex .== 0) .&& (data.maturity .== 1), (0.0001830, 3.160, 0.08)),
+        (:female_imm, (data.sex .== 1) .&& (data.maturity .== 0), (0.0003440, 2.980, 0.08)),
+        (:female_mat, (data.sex .== 1) .&& (data.maturity .== 1), (0.0004500, 2.920, 0.08))
+    ]
+    for (strat_sym, mask, fallback) in strata_definitions
+        sub_sz = data.size[mask]
+        sub_wt = data.mass[mask]
+        valid = (sub_sz .> 0.0) .&& (sub_wt .> 0.0)
+        if count(valid) >= 5
+            x = log.(Float64.(sub_sz[valid]))
+            y = log.(Float64.(sub_wt[valid]))
+            intercept, slope, sigma, r2 = _fit_ols(x, y)
+            mass_params[strat_sym] = (exp(intercept), slope, sigma)
+            r2_scores[strat_sym] = r2
+        else
+            mass_params[strat_sym] = fallback
+            r2_scores[strat_sym] = 0.95
+        end
+    end
+
+    # 2. Logistic Maturity Parameters
+    for (sex_sym, s_code, fallback) in [
+        (:male, 0, (91.8, 6.9957, -0.05)),
+        (:female, 1, (51.6, 12.9812, -0.08))
+    ]
+        mask = (data.sex .== s_code) .&& (data.size .>= 35.0)
+        sub_sz = data.size[mask]
+        sub_temp = data.temp_c[mask]
+        sub_mat = Float64.(data.maturity[mask])
+        if count(mask) >= 10 && length(unique(sub_mat)) > 1
+            l50, slope, temp_coef, pseudo_r2 = _fit_irls_logistic(
+                Float64.(sub_sz),
+                Float64.(sub_temp),
+                sub_mat
+            )
+            maturity_params[sex_sym] = (l50, slope, temp_coef)
+            r2_scores[Symbol("maturity_", sex_sym)] = pseudo_r2
+        else
+            maturity_params[sex_sym] = fallback
+            r2_scores[Symbol("maturity_", sex_sym)] = 0.85
+        end
+    end
+
+    # 3. Fecundity Parameters
+    has_shell_age = :shell_age in propertynames(data)
+    fem_mat_mask = (data.sex .== 1) .&& (data.maturity .== 1) .&& (data.fecundity .> 0.0)
+    for (par_sym, par_mask, fallback) in [
+        (
+            :primiparous,
+            has_shell_age ?
+                (fem_mat_mask .&& (data.shell_age .<= 2.0)) :
+                (fem_mat_mask .&& (data.size .< 65.0)),
+            (-0.7229, 2.94, 0.090)
+        ),
+        (
+            :multiparous,
+            has_shell_age ?
+                (fem_mat_mask .&& (data.shell_age .> 2.0)) :
+                (fem_mat_mask .&& (data.size .>= 65.0)),
+            (0.0158, 2.5811, 0.145)
+        )
+    ]
+        sub_sz = data.size[par_mask]
+        sub_fec = data.fecundity[par_mask]
+        valid = (sub_sz .> 0.0) .&& (sub_fec .> 0.0)
+        if count(valid) >= 5
+            x = log10.(Float64.(sub_sz[valid]))
+            y = log10.(Float64.(sub_fec[valid]))
+            intercept, slope, sigma, r2 = _fit_ols(x, y)
+            fecundity_params[par_sym] = (intercept, slope, sigma)
+            r2_scores[par_sym] = r2
+        else
+            fecundity_params[par_sym] = fallback
+            r2_scores[par_sym] = 0.80
+        end
+    end
+
+    # 4. Stage Modal Dimensions
+    stage_col = (:stage in propertynames(data)) ? data.stage : nothing
+    for stg in 4:12
+        if stage_col !== nothing && count(stage_col .== stg) >= 3
+            szs_stg = Float64.(data.size[stage_col .== stg])
+            stage_modals[stg] = (mean(szs_stg), max(0.5, std(szs_stg)))
+        else
+            mid_sz = 0.5 * (llbm(stg) + llbm(stg + 1))
+            sd_sz = max(0.8, 0.5 * (llbm(stg + 1) - llbm(stg)) / 3.0)
+            stage_modals[stg] = (mid_sz, sd_sz)
+        end
+    end
+
+    # 5. Trait Covariance Matrix
+    trait_names = [:size, :mass, :maturity, :fecundity]
+    trait_matrix = zeros(Float64, n_records, length(trait_names))
+    trait_matrix[:, 1] = Float64.(data.size)
+    trait_matrix[:, 2] = Float64.(data.mass)
+    trait_matrix[:, 3] = Float64.(data.maturity)
+    trait_matrix[:, 4] = Float64.(data.fecundity)
+    raw_cov = cov(trait_matrix)
+    sym_cov = Matrix(Hermitian(raw_cov + 1e-4 * I))
+
+    return EmpiricalBiologicalModel(
+        mass_params,
+        maturity_params,
+        fecundity_params,
+        stage_modals,
+        trait_names,
+        sym_cov,
+        r2_scores,
+        n_records
+    )
+end
+
+"""
+    estimate_demographics(model::EmpiricalBiologicalModel; size, sex, temp=4.0, shell_age=1.0, rng=Random.default_rng())
+
+Predict demographic traits for an individual from an empirical model.
+"""
+function estimate_demographics(
+    model::EmpiricalBiologicalModel;
+    size::Real,
+    sex,
+    temp::Real = 4.0,
+    shell_age::Real = 1.0,
+    rng::AbstractRNG = Random.default_rng()
+)
+    if size <= 0.0
+        return (
+            maturity_prob = 0.0,
+            is_mature = 0,
+            mass = 0.0,
+            fecundity = 0.0,
+            estimated_stage = 4
+        )
+    end
+    is_fem = (sex == 1 || sex == :female || Symbol(sex) == :female)
+    sex_sym = is_fem ? :female : :male
+    p_mat = if size < 35.0
+        0.0
+    else
+        l50, slope, t_coef = model.maturity_params[sex_sym]
+        eff_l50 = max(35.0, l50 - 2.0 * (temp - 4.0))
+        lin_pred = slope * (log(size) - log(eff_l50)) + t_coef * (temp - 4.0)
+        _logistic_safe(lin_pred)
+    end
+    mat_val = (rand(rng) < p_mat) ? 1 : 0
+    strat = if !is_fem
+        (mat_val == 1) ? :male_mat : :male_imm
+    else
+        (mat_val == 1) ? :female_mat : :female_imm
+    end
+    alpha, beta_val, sigma = model.mass_params[strat]
+    base_mass = alpha * (Float64(size)^beta_val)
+    mass_val = base_mass * exp(rand(rng, Normal(0.0, sigma)) - 0.5 * sigma^2)
+
+    fecundity_val = 0.0
+    if is_fem && mat_val == 1
+        par_sym = (shell_age <= 2.0) ? :primiparous : :multiparous
+        a, b, sig = model.fecundity_params[par_sym]
+        log10_fec = a + b * log10(size) + rand(rng, Normal(0.0, sig))
+        senescence = (par_sym === :multiparous && shell_age > 3.0) ?
+            max(0.60, 1.0 - 0.08 * (shell_age - 3.0)) : 1.0
+        fecundity_val = max(0.0, round(10.0^log10_fec * senescence))
+    end
+
+    best_stage = 4
+    min_dist = Inf
+    for (stg, (m, _)) in model.stage_modals
+        d = abs(size - m)
+        if d < min_dist
+            min_dist = d
+            best_stage = stg
+        end
+    end
+
+    return (
+        maturity_prob = p_mat,
+        is_mature = mat_val,
+        mass = mass_val,
+        fecundity = fecundity_val,
+        estimated_stage = best_stage,
+    )
+end
+
+function sample_organism_traits(
+    model::EmpiricalBiologicalModel;
+    size::Real,
+    sex,
+    temp::Real = 4.0,
+    shell_age::Real = 1.0,
+    rng::AbstractRNG = Random.default_rng()
+)
+    return estimate_demographics(
+        model;
+        size = size,
+        sex = sex,
+        temp = temp,
+        shell_age = shell_age,
+        rng = rng
+    )
+end
+
+const sample_crab_traits = sample_organism_traits
+
+"""
+    summarize_empirical_model(model::EmpiricalBiologicalModel; io::IO=stdout)
+
+Print a comprehensive summary of an `EmpiricalBiologicalModel`.
+"""
+function summarize_empirical_model(
+    model::EmpiricalBiologicalModel;
+    io::IO = stdout
+)
+    println(io, "="^78)
+    println(io, "  Empirical Biological Model Summary (N = $(model.sample_size) records)")
+    println(io, "="^78)
+    println(io, "\n--- Allometric Mass Parameters (W = α * Size^β) ---")
+    println(io, rpad("Stratum", 14), rpad("α", 12), rpad("β", 10), rpad("σ", 10), "R²")
+    println(io, "-"^56)
+    for strat in [:male_imm, :male_mat, :female_imm, :female_mat]
+        if haskey(model.mass_params, strat)
+            a, b, s = model.mass_params[strat]
+            r2 = get(model.r2_scores, strat, 0.0)
+            println(
+                io,
+                rpad(string(strat), 14),
+                rpad(string(round(a, digits = 7)), 12),
+                rpad(string(round(b, digits = 3)), 10),
+                rpad(string(round(s, digits = 4)), 10),
+                string(round(r2, digits = 3))
+            )
+        end
+    end
+    println(io, "\n--- Morphometric Maturity Ogives (Logit) ---")
+    println(
+        io,
+        rpad("Sex", 10),
+        rpad("L50 (mm)", 12),
+        rpad("Slope (β)", 12),
+        rpad("Temp Coef", 12),
+        "Pseudo-R²"
+    )
+    println(io, "-"^56)
+    for s_sym in [:male, :female]
+        if haskey(model.maturity_params, s_sym)
+            l50, slp, tc = model.maturity_params[s_sym]
+            pr2 = get(model.r2_scores, Symbol("maturity_", s_sym), 0.0)
+            println(
+                io,
+                rpad(string(s_sym), 10),
+                rpad(string(round(l50, digits = 1)), 12),
+                rpad(string(round(slp, digits = 3)), 12),
+                rpad(string(round(tc, digits = 3)), 12),
+                string(round(pr2, digits = 3))
+            )
+        end
+    end
+    println(io, "\n--- Brood Fecundity Scaling (log10(Eggs) = a + b * log10(Size)) ---")
+    println(
+        io,
+        rpad("Parity", 16),
+        rpad("Intercept (a)", 16),
+        rpad("Slope (b)", 12),
+        rpad("σ", 10),
+        "R²"
+    )
+    println(io, "-"^64)
+    for p_sym in [:primiparous, :multiparous]
+        if haskey(model.fecundity_params, p_sym)
+            a, b, s = model.fecundity_params[p_sym]
+            r2 = get(model.r2_scores, p_sym, 0.0)
+            println(
+                io,
+                rpad(string(p_sym), 16),
+                rpad(string(round(a, digits = 4)), 16),
+                rpad(string(round(b, digits = 3)), 12),
+                rpad(string(round(s, digits = 4)), 10),
+                string(round(r2, digits = 3))
+            )
+        end
+    end
+    println(io, "\n--- Stage Modal Dimensions ---")
+    println(io, rpad("Stage", 10), rpad("Mean Size (mm)", 16), "SD Size (mm)")
+    println(io, "-"^38)
+    for stg in sort(collect(keys(model.stage_modals)))
+        m_sz, sd_sz = model.stage_modals[stg]
+        println(
+            io,
+            rpad(string(stg), 10),
+            rpad(string(round(m_sz, digits = 2)), 16),
+            string(round(sd_sz, digits = 2))
+        )
+    end
+    println(io, "\n--- Trait Covariance Matrix ---")
+    col_width = 16
+    col_headers = join([rpad(string(n), col_width) for n in model.trait_names], "")
+    println(io, rpad("Trait", col_width), col_headers)
+    println(io, "-"^(col_width + col_width * length(model.trait_names)))
+    for (i, row_name) in enumerate(model.trait_names)
+        vals = join([
+            rpad(string(round(model.trait_cov[i, j], sigdigits = 4)), col_width)
+            for j in 1:length(model.trait_names)
+        ], "")
+        println(io, rpad(string(row_name), col_width), vals)
+    end
+    println(io, "="^78)
+end
+

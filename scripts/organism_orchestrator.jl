@@ -18,7 +18,7 @@ multi-attribute biological and ecological criteria are achieved:
   3. Steady Size Structure: Relative drift in mean carapace width <= tolerance.
   4. Maturity Ogive Fidelity: Empirical maturity schedule matches empirical
      logistic curves (L50 ≈ 91.8 mm males, 51.6 mm females).
-  5. Growth Schedule Fidelity: Instar sizes match empirical reference medians
+  5. Growth Schedule Fidelity: Stage sizes match empirical reference medians
      from Sainte-Marie and Alunno-Bruscia growth schedules.
 ================================================================================
 """
@@ -275,7 +275,7 @@ Multi-Attribute Biological Stopping Criteria:
     - Steady Size Structure: Relative shift in mean carapace width <= 20%.
     - Maturity Ogive Fidelity: Empirical maturity schedule matches theoretical
       logistic curves (RMSE <= 0.35).
-    - Growth Schedule Fidelity: Instar sizes match empirical reference medians (RMSE <= 15.0 mm).
+    - Growth Schedule Fidelity: Stage sizes match empirical reference medians (RMSE <= 15.0 mm).
 
 Options:
     --config=<Path>, -c=<Path> Base configuration file (default: organism_ibm.config)
@@ -349,13 +349,13 @@ function execute_trial(
 
     adata = [
         (:stage, length),
-        (:size_mm, safe_mean),
-        (:weight_g, safe_mean),
+        (:size, safe_mean),
+        (:mass, safe_mean),
         (is_adult, count),
         (is_adult_male, count),
         (is_adult_female, count),
         (is_legal_male, count),
-        (:instar, safe_mean)
+        (:stage, safe_mean)
     ]
     mdata = [
         :total_eggs_spawned,
