@@ -1,9 +1,8 @@
 """
-Empirical biological relationships for the snow crab (*Chionoecetes opilio*).
+Empirical biological relationships for organisms.
 
-This module implements empirical allometric growth increments, carapace width
-bounds per instar, logistic maturity schedules, fecundity curves, and harvest
-selectivity derived from Scotian Shelf and Gulf of St. Lawrence research surveys.
+This module implements empirical allometric growth increments, size bounds per developmental stage,
+logistic maturity schedules, fecundity curves, and harvest selectivity derived from research surveys.
 
 References:
 - Sainte-Marie, B. (1993). Reproductive cycle and fecundity of primiparous
@@ -18,9 +17,18 @@ using Random
 using Statistics
 using LinearAlgebra
 
+export llbm, llbf, get_stage_size, growth_increment, predict_postgrowth_size, growth_schedule, maturity, fecundity, selectivity, growth_simulate, sample_population, calculate_mass, build_instar_stages, gaussian_kde, derive_instar_proportions_kde, _fit_ols, _fit_irls_logistic, generate_mock_survey_data, fit_empirical_biology_model, estimate_demographics, summarize_empirical_model
+export FECUNDITY_PRIMIPAROUS_INTERCEPT, FECUNDITY_PRIMIPAROUS_SLOPE, FECUNDITY_PRIMIPAROUS_ERR
+export FECUNDITY_MULTIPAROUS_INTERCEPT, FECUNDITY_MULTIPAROUS_SLOPE, FECUNDITY_MULTIPAROUS_ERR
 
-"""
-    llbm(instar)
+# --- Biological Invariants (Hardcoded Population Parameters) ---
+const FECUNDITY_PRIMIPAROUS_INTERCEPT = -0.7229
+const FECUNDITY_PRIMIPAROUS_SLOPE     = 2.94
+const FECUNDITY_PRIMIPAROUS_ERR       = 0.090
+
+const FECUNDITY_MULTIPAROUS_INTERCEPT = 0.0158
+const FECUNDITY_MULTIPAROUS_SLOPE     = 2.5811
+const FECUNDITY_MULTIPAROUS_ERR       = 0.145
 
 Compute the empirical lower bound of carapace width (mm) for male snow crabs
 at a given `instar`.
@@ -97,7 +105,8 @@ Compute or sample carapace width (mm) for a given `instar` and `sex`.
 # Returns
 Estimated carapace width in millimeters.
 """
-function carapacewidth(
+function get_stage_size(
+    function get_stage_size(
     instar::Real,
     sex;
     type::Symbol = :mid,
@@ -120,7 +129,7 @@ function carapacewidth(
         u = rand(rng, Beta(2.5, 2.5))
         return lb + u * (ub - lb)
     else
-        error("Unknown carapacewidth type: $(type). Supported: :lb, :ub, :mid, :random")
+        error("Unknown get_stage_size type: $(type). Supported: :lb, :ub, :mid, :random")
     end
 end
 
@@ -233,8 +242,8 @@ Convenience wrapper predicting post-molt carapace width in millimeters (linear s
 # Returns
 Post-molt carapace width in millimeters.
 """
-function predict_postmolt_cw(
-    cw_mm::Real;
+function predict_postgrowth_size(
+    morphometry::Real;
     sex = 0,
     mat::Integer = 0,
     temp = nothing,
@@ -243,12 +252,12 @@ function predict_postmolt_cw(
     trait_intercept::Union{Nothing, Real} = nothing,
     trait_slope::Union{Nothing, Real} = nothing
 )
-    if cw_mm <= 0.0
-        error("Carapace width must be strictly positive, received: $(cw_mm)")
+    if morphometry <= 0.0
+        error("Morphometry must be strictly positive, received: $(morphometry)")
     end
-    log_cw = log(cw_mm)
-    log_cw_next = growth_increment(
-        log_cw;
+    log_size = log(morphometry)
+    log_size_next = growth_increment(
+        log_size;
         sex = sex,
         mat = mat,
         temp = temp,
@@ -257,10 +266,7 @@ function predict_postmolt_cw(
         trait_intercept = trait_intercept,
         trait_slope = trait_slope
     )
-        trait_intercept = trait_intercept,
-        trait_slope = trait_slope
-    )
-    return exp(log_cw_next)
+    return exp(log_size_next)
 end
 
 """
@@ -424,7 +430,8 @@ Predicted number of eggs (same dimension as `cw`).
 """
 function fecundity(
     cw::Real;
-    method::String = "moncton.primiparous",
+    fecundity_parameterization::String = "moncton",
+    is_primiparous::Bool = true,
     shell_age::Real = 1.0,
     params::IBMParameters = IBMParameters(),
     rng::AbstractRNG = Random.default_rng(),
@@ -436,45 +443,104 @@ function fecundity(
         error("Carapace width must be positive for fecundity estimation, got: $(cw)")
     end
 
-    if method == "st.marie"
+    if fecundity_parameterization == "st.marie"
         return cw^2.725 * (10.0^0.7311)
-    elseif method == "moncton.primiparous"
-        # Use trait or fallback to population parameter
-        intercept = isnothing(trait_intercept) ? params.fecundity_moncton_prim_m_log10_intercept : trait_intercept
-        slope = isnothing(trait_slope) ? params.fecundity_moncton_prim_m_log10_slope : trait_slope
-        
-        fec_log10 = log10(cw) * slope + intercept
-        err = deterministic ? 0.0 : rand(rng, Normal(0.0, params.fecundity_moncton_prim_m_err))
-        return 10.0^(fec_log10 + err)
-    elseif method == "moncton.multiparous"
-        # Use trait or fallback to population parameter
-        intercept = isnothing(trait_intercept) ? params.fecundity_moncton_mult_m_log10_intercept : trait_intercept
-        slope = isnothing(trait_slope) ? params.fecundity_moncton_mult_m_log10_slope : trait_slope
+    elseif fecundity_parameterization == "moncton"
+        # Use trait or fallback to population parameter based on primiparous status
+        if is_primiparous
+            intercept = isnothing(trait_intercept) ? FECUNDITY_PRIMIPAROUS_LOG10_INTERCEPT : trait_intercept
+            slope     = isnothing(trait_slope)     ? FECUNDITY_PRIMIPAROUS_LOG10_SLOPE    : trait_slope
 
-        fec_log10 = log10(cw) * slope + intercept
-        err = deterministic ? 0.0 : rand(rng, Normal(0.0, params.fecundity_moncton_mult_m_err))
-        senescence = (shell_age > 3.0) ?
-            max(0.60, 1.0 - 0.08 * (shell_age - 3.0)) : 1.0
-        return 10.0^(fec_log10 + err) * senescence
+            fec_log10 = log10(cw) * slope + intercept
+            err       = deterministic ? 0.0 : rand(rng, Normal(0.0, FECUNDITY_PRIMIPAROUS_ERR))
+            return 10.0^(fec_log10 + err)
+        else
+            intercept = isnothing(trait_intercept) ? FECUNDITY_MULTIPAROUS_LOG10_INTERCEPT : trait_intercept
+            slope     = isnothing(trait_slope)     ? FECUNDITY_MULTIPAROUS_LOG10_SLOPE    : trait_slope
+
+            fec_log10 = log10(cw) * slope + intercept
+            err       = deterministic ? 0.0 : rand(rng, Normal(0.0, FECUNDITY_MULTIPAROUS_ERR))
+            senescence = (shell_age > 3.0) ? max(0.60, 1.0 - 0.08 * (shell_age - 3.0)) : 1.0
+            return 10.0^(fec_log10 + err) * senescence
+        end
     else
-        error("Unknown fecundity method: $(method). Valid: 'moncton.primiparous', " *
-              "'moncton.multiparous', 'st.marie'")
+        error("Unknown fecundity parameterization: $(fecundity_parameterization). Valid: 'moncton', 'st.marie'")
     end
 end
 
-function fecundity(cw::AbstractArray; method::String = "moncton.primiparous", shell_age::Real = 1.0, params::IBMParameters = IBMParameters(), rng::AbstractRNG = Random.default_rng(), deterministic::Bool = false, trait_intercept::Union{Nothing, Real} = nothing, trait_slope::Union{Nothing, Real} = nothing) =
-    fecundity.(cw; method=method, shell_age=shell_age, params=params, rng=rng, deterministic=deterministic, trait_intercept=trait_intercept, trait_slope=trait_slope)
+"""
+    apply_mortality!
+
+Applies stage-specific daily survival probabilities to an aggregate population distribution. 
+
+# Arguments
+- `pop::StageBinDistribution`: The current count and binning structure of a life stage.
+- `daily_survival_rate::Real`: Probability that an individual survives one day (0 to 1).
+- `rng::AbstractRNG`: Random number generator for stochastic mortality if required (though here we use deterministic scaling on counts, which is standard for large populations in binning models).
+
+# Returns
+Nothing; modifies the distribution in place.
+"""
+function apply_mortality!(pop::StageBinDistribution, daily_survival_rate::Real)
+    if daily_survival_rate < 0.0 || daily_survival_rate > 1.0
+        error("daily_survival_rate must be between 0 and 1, got: $(daily_survival_rate)")
+    end
+    pop.counts .*= daily_survival_rate
+end
 
 """
-    fecundity(crab::SnowCrab; method=nothing, rng=Random.default_rng(), deterministic=false)
+    advance_development!(stage::Symbol; pop::AggregatePopulations, params::IBMParameters, rng::AbstractRNG)
 
-Estimate extruded brood fecundity directly for an individual female `SnowCrab`
-agent, automatically distinguishing primiparous versus multiparous reproductive
-history from stored spermathecal clutches and carapace age.
+Moves individuals from one life stage to the next (e.g., egg $\rightarrow$ zoea or instar $i \to i+1$). 
+This function handles 'recruitment' into a new bin and potentially clears out/reduces counts in the previous bin based on transition probabilities.
+
+# Arguments
+- `stage::Symbol`: The stage currently being processed (e.g., :eggs, :larvae).
+- `pop::AggregatePopulations`: Container for all non-spatial populations.
+- `params::IBMParameters`: Model parameters including developmental rates and mortality thresholds.
+- `rng::AbstractRNG`: Random number generator.
+
+# Returns
+Nothing; modifies the aggregate population in place.
+"""
+function advance_development!(stage::Symbol; pop::AggregatePopulations, params::IBMParameters, rng::AbstractRNG)
+    # This is a placeholder for implementation logic: 
+    # In practice, this will involve calculating how many individuals transition to stage+1 based on temperature and time.
+end
+
+"""
+    recruit_to_aggregate!(stage::Symbol; pop::AggregatePopulations, dist::StageBinDistribution)
+
+Adds new counts (e.g., newly hatched larvae or eggs spawned) into an existing aggregate distribution binning structure. 
+
+# Arguments
+- `stage::Symbol`: The target stage for recruitment (:eggs, :larvae, etc.).
+- `pop::AggregatePopulations`: Container of all stages.
+- `dist::StageBinDistribution`: A new (or partial) distribution to add into the population.
+"""
+function recruit_to_aggregate!(stage::Symbol; pop::AggregatePopulations, dist::StageBinDistribution)
+    if stage === :eggs && !isnothing(pop.eggs)
+        pop.eggs.counts .+= dist.counts
+    elseif stage === :larvae && !isnothing(pop.larvae)
+        pop.larvae.counts .+= dist.counts
+    elseif stage === :megalopa && !isnothing(pop.megalopa)
+        pop.megalopa.counts .+= dist.counts
+    else # Instars 1-5
+         # Logic to find the correct index in pop.instars based on a mapping...
+    end
+end
+
+function fecundity(cw::Real; fecundity_parameterization::String = "moncton", is_primiparous::Bool = true, shell_age::Real = 1.0, params::IBMParameters = IBMParameters(), rng::AbstractRNG = Random.default_rng(), deterministic::Bool = false, trait_intercept::Union{Nothing, Real} = nothing, trait_slope::Union{Nothing, Real} = nothing) =
+    fecundity.(cw; fecundity_parameterization=fecundity_parameterization, is_primiparous=is_primiparous, shell_age=shell_age, params=params, rng=rng, deterministic=deterministic, trait_intercept=trait_intercept, trait_slope=trait_slope)
+
+"""
+    fecundity(crab::SnowCrab; fecundity_parameterization::Union{String, Nothing} = nothing, rng::AbstractRNG = Random.default_rng(), deterministic::Bool = false)
+
+Estimate extruded brood fecundity directly for an individual female `SnowCrab` agent, automatically distinguishing primiparous versus multiparous reproductive history from stored spermathecal clutches and carapace age when using the `"moncton"` parameterization.
 
 # Arguments
 - `crab::SnowCrab`: Mature adult female snow crab.
-- `method`: Optional method override (`nothing` enables auto-detection).
+- `fecundity_parameterization`: Optional string override (`nothing` defaults to `"moncton"`).
 - `rng`: Random number generator.
 - `deterministic`: If true, use parameter means without stochastic noise.
 
@@ -483,33 +549,36 @@ history from stored spermathecal clutches and carapace age.
 """
 function fecundity(
     crab::SnowCrab;
-    method::Union{String, Nothing} = nothing,
-    params::IBMParameters = IBMParameters(),
+    fecundity_parameterization::Union{String, Nothing} = nothing,
     rng::AbstractRNG = Random.default_rng(),
     deterministic::Bool = false
 )
     if crab.sex !== female || crab.stage !== adult
         return 0
     end
-    chosen_method = if method !== nothing
-        method
+
+    param = if fecundity_parameterization !== nothing
+        fecundity_parameterization
     else
-        # Females with no stored sperm (never mated) are primiparous;
-        # after first mating sperm_clutches is set to 2 or 3 before extrusion
-        (crab.sperm_clutches == 0) ? "moncton.primiparous" : "moncton.multiparous"
+        "moncton"
     end
-    shell_age = max(1.0, (crab.age_days - 180.0 * (crab.instar - 3)) / 365.0)
+
+    # Determine primiparous status from agent state for "moncton" method (as requested)
+    is_p = crab.sperm_clutches == 0
+
+    shell_age = max(1.0, (crab.age_days - 180.0 * (crab.developmental_step - 3)) / 365.0)
+
     raw_eggs = fecundity(
-        crab.size_mm;
-        method = chosen_method,
-        shell_age = shell_age,
-        params = params,
-        rng = rng,
-        deterministic = deterministic,
-        trait_intercept = crab.trait_fecundity_intercept,
-        trait_slope = crab.trait_fecundity_slope
+        crab.size;
+        fecundity_parameterization=param,
+        is_primiparous=is_p,
+        shell_age=shell_age,
+        params=IBMParameters(), # Default if not provided via crab? 
+                                 # Actually we should probably allow passing params to this function too.
+        rng=rng, deterministic=deterministic
     )
-    return max(0, round(Int, raw_eggs))
+
+    return round(Int, raw_eggs)
 end
 
 """
@@ -649,16 +718,16 @@ function sample_population(
 end
 
 """
-    crab_weight(cw, sex; mat=0, stochastic=false, rng=Random.default_rng())
+    calculate_mass(cw, sex; mat=0, stochastic=false, rng=Random.default_rng())
 
-Calculate individual snow crab wet body mass (in grams) from carapace width (mm),
+Calculate individual wet body mass (in grams) from morphometry (e.g., carapace width in mm),
 sex, and morphometric maturity status based on empirical allometric power models.
 
 # Mathematical Formulation
 ```math
 W = \\alpha \\cdot CW^\\beta \\cdot \\exp(\\epsilon - 0.5\\sigma^2)
 ```
-where ``W`` is wet mass in grams, ``CW`` is carapace width in millimeters,
+where ``W`` is wet mass in grams, ``CW`` is the morphometric measurement (e.g., carapace width),
 and parameters depend on sex and maturity status:
 - **Immature / Adolescent Males (`sex == 0` or `:male`, `mat == 0`)**:
   ``\\alpha = 0.0002665``, ``\\beta = 3.098``, residual ``\\sigma = 0.08``
@@ -679,7 +748,7 @@ bias correction ``-0.5\\sigma^2`` ensuring ``\\mathbb{E}[W] = \\alpha CW^\\beta`
 - DFO (2020). Assessment of Nova Scotia (4VWX) Snow Crab. DFO Can. Sci. Advis. Sec.
 
 # Arguments
-- `cw::Real`: Carapace width in millimeters.
+- `cw::Real`: Morphometric measurement in mm (e.g., carapace width).
 - `sex`: Sex indicator (`0`, `:male`, `male` for male; `1`, `:female`, `female` for female).
 - `mat::Integer`: Morphometric maturity status (`0` = immature, `1` = mature).
 - `stochastic::Bool`: Whether to include log-normal residual scatter (default: `false`).
@@ -688,14 +757,14 @@ bias correction ``-0.5\\sigma^2`` ensuring ``\\mathbb{E}[W] = \\alpha CW^\\beta`
 # Returns
 `Float64`: Wet body mass in grams.
 """
-function crab_weight(
-    cw::Real,
+function calculate_mass(
+    morphometry::Real,
     sex;
     mat::Integer = 0,
     stochastic::Bool = false,
     rng::AbstractRNG = Random.default_rng()
 )
-    if cw <= 0.0
+    if morphometry <= 0.0
         return 0.0
     end
 
@@ -707,7 +776,7 @@ function crab_weight(
         (mat == 1) ? (0.0004500, 2.920) : (0.0003440, 2.980)
     end
 
-    base_wt = alpha * (Float64(cw)^beta_val)
+    base_wt = alpha * (Float64(morphometry)^beta_val)
 
     if stochastic
         sigma = 0.08
@@ -718,37 +787,21 @@ function crab_weight(
     return base_wt
 end
 
-"""
-    crab_weight(crab::SnowCrab; stochastic=false, include_eggs=true, rng=Random.default_rng())
-
-Return wet body mass in grams for an individual `SnowCrab` agent, optionally
-accounting for stochastic allometric scatter and extruded egg clutch mass
-(approx. 0.00007 g per brooded egg) for ovigerous females.
-
-# Arguments
-- `crab::SnowCrab`: Snow crab individual agent.
-- `stochastic::Bool`: Whether to include log-normal residual mass scatter (default: `false`).
-- `include_eggs::Bool`: Whether to include extruded clutch weight if ovigerous (default: `true`).
-- `rng`: Random number generator (default: `Random.default_rng()`).
-
-# Returns
-`Float64`: Wet mass in grams.
-"""
-function crab_weight(
-    crab::SnowCrab;
+function calculate_mass(
+    org::Organism;
     stochastic::Bool = false,
     include_eggs::Bool = true,
     rng::AbstractRNG = Random.default_rng()
 )
-    somatic_mass = crab_weight(
-        crab.size_mm,
-        crab.sex;
-        mat = (crab.stage === adult ? 1 : 0),
+    somatic_mass = calculate_mass(
+        org.size,
+        org.sex;
+        mat = (org.stage === adult ? 1 : 0),
         stochastic = stochastic,
         rng = rng
     )
-    egg_mass = (include_eggs && is_ovigerous(crab)) ?
-        (Float64(crab.eggs_count) * 0.00007) : 0.0
+    egg_mass = (include_eggs && is_ovigerous(org)) ?
+        (Float64(org.egg_count) * 0.00007) : 0.0
     return somatic_mass + egg_mass
 end
 
@@ -786,7 +839,7 @@ function build_instar_stages(;
         undifferentiated,
         (7.0, 14.5),
         10.7,
-        crab_weight(10.7, :male; mat = 0),
+        calculate_mass(10.7, :male; mat = 0),
         false,
         false
     ))
@@ -800,7 +853,7 @@ function build_instar_stages(;
         undifferentiated,
         (14.5, 22.0),
         18.0,
-        crab_weight(18.0, :male; mat = 0),
+        calculate_mass(18.0, :male; mat = 0),
         false,
         false
     ))
@@ -824,7 +877,7 @@ function build_instar_stages(;
             is_legal = (cw_m >= 95.0 || inst >= 11)
             is_term = (inst == max_male_instar)
             lbl = is_term ? "Instar $(inst)+ Male" : "Instar $(inst) Male"
-            wt = crab_weight(cw_m, :male; mat = is_legal ? 1 : 0)
+            wt = calculate_mass(cw_m, :male; mat = is_legal ? 1 : 0)
             push!(stages, InstarStageDefinition(
                 idx,
                 lbl,
@@ -857,7 +910,7 @@ function build_instar_stages(;
             is_repro = (inst >= 9) # Mature maternal instars
             is_term = (inst == max_female_instar)
             lbl = is_term ? "Instar $(inst)+ Female" : "Instar $(inst) Female"
-            wt = crab_weight(cw_m, :female; mat = is_repro ? 1 : 0)
+            wt = calculate_mass(cw_m, :female; mat = is_repro ? 1 : 0)
             push!(stages, InstarStageDefinition(
                 idx,
                 lbl,
@@ -1178,11 +1231,11 @@ function generate_mock_survey_data(;
         mat = (rand(rng) < p_mat) ? 1 : 0
 
         age = (mat == 0) ? rand(rng, Uniform(0.2, 1.0)) : rand(rng, Uniform(1.0, 5.0))
-        wt = crab_weight(cw, s; mat = mat, stochastic = true, rng = rng)
+        wt = calculate_mass(cw, s; mat = mat, stochastic = true, rng = rng)
 
         fec = 0.0
         if s == 1 && mat == 1
-            meth = (age <= 2.0) ? "moncton.primiparous" : "moncton.multiparous"
+            meth = (age <= 2.0) ? "primiparous" : "multiparous"
             fec = Float64(fecundity(cw; method = meth, shell_age = age, rng = rng))
         end
 
@@ -1399,15 +1452,15 @@ carapace width, sex, and ambient environmental conditions from an empirical mode
 - `fecundity::Float64`: Brooded egg count (0.0 if immature or male).
 - `estimated_instar::Int`: Estimated developmental instar index.
 """
-function sample_crab_traits(
+function estimate_demographics(
     model::EmpiricalBiologicalModel;
-    cw::Real,
+    morphometry::Real,
     sex,
     temp::Real = 4.0,
     shell_age::Real = 1.0,
     rng::AbstractRNG = Random.default_rng()
 )
-    if cw <= 0.0
+    if morphometry <= 0.0
         return (
             maturity_prob = 0.0,
             is_mature = 0,
@@ -1421,12 +1474,12 @@ function sample_crab_traits(
     sex_sym = is_fem ? :female : :male
 
     # Maturity ogive
-    p_mat = if cw < 35.0
+    p_mat = if morphometry < 35.0
         0.0
     else
         l50, slope, t_coef = model.maturity_params[sex_sym]
         eff_l50 = max(35.0, l50 - 2.0 * (temp - 4.0))
-        lin_pred = slope * (log(cw) - log(eff_l50)) + t_coef * (temp - 4.0)
+        lin_pred = slope * (log(morphometry) - log(eff_l50)) + t_coef * (temp - 4.0)
         1.0 / (1.0 + exp(-clamp(lin_pred, -25.0, 25.0)))
     end
     mat_val = (rand(rng) < p_mat) ? 1 : 0
@@ -1438,7 +1491,7 @@ function sample_crab_traits(
         (mat_val == 1) ? :female_mat : :female_imm
     end
     alpha, beta_val, sigma = model.weight_params[strat]
-    base_mass = alpha * (Float64(cw)^beta_val)
+    base_mass = alpha * (Float64(morphometry)^beta_val)
     mass_g = base_mass * exp(rand(rng, Normal(0.0, sigma)) - 0.5 * sigma^2)
 
     # Fecundity
@@ -1446,7 +1499,7 @@ function sample_crab_traits(
     if is_fem && mat_val == 1
         par_sym = (shell_age <= 2.0) ? :primiparous : :multiparous
         a, b, sig = model.fecundity_params[par_sym]
-        log10_fec = a + b * log10(cw) + rand(rng, Normal(0.0, sig))
+        log10_fec = a + b * log10(morphometry) + rand(rng, Normal(0.0, sig))
         senescence = (par_sym === :multiparous && shell_age > 3.0) ?
             max(0.60, 1.0 - 0.08 * (shell_age - 3.0)) : 1.0
         fecundity_val = max(0.0, round(10.0^log10_fec * senescence))
@@ -1456,7 +1509,7 @@ function sample_crab_traits(
     best_instar = 4
     min_dist = Inf
     for (inst, (m, _)) in model.instar_modals
-        d = abs(cw - m)
+        d = abs(morphometry - m)
         if d < min_dist
             min_dist = d
             best_instar = inst

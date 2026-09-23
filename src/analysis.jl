@@ -109,8 +109,8 @@ NamedTuple with fields:
 - `count_by_instar::Dict{Int, Int}`: Crab count mapped by instar.
 """
 function summarize_population(model)
-    crabs = collect(allagents(model))
-    total = length(crabs)
+    orgs = collect(allagents(model))
+    total = length(orgs)
 
     props = abmproperties(model)
     tot_spawned = get(props, :total_eggs_spawned, 0)
@@ -118,7 +118,7 @@ function summarize_population(model)
 
     if total == 0
         return (
-            total_crabs = 0,
+            total_organisms = 0,
             total_biomass_kg = 0.0,
             female_ssb_kg = 0.0,
             male_mature_biomass_kg = 0.0,
@@ -142,50 +142,50 @@ function summarize_population(model)
             total_recruits_settled = tot_settled,
             n_juveniles = 0,
             n_larvae = 0,
-            mean_cw = 0.0,
+            mean_size = 0.0,
             cw_by_instar = Dict{Int, Float64}(),
             count_by_instar = Dict{Int, Int}()
         )
     end
 
-    n_m = count(c -> c.sex === male, crabs)
-    n_f = count(c -> c.sex === female, crabs)
-    n_ad = count(c -> c.stage === adult, crabs)
-    n_adm = count(c -> c.stage === adult && c.sex === male, crabs)
-    n_adf = count(c -> c.stage === adult && c.sex === female, crabs)
-    n_ovig = count(c -> c.stage === adult && c.sex === female && c.eggs_count > 0, crabs)
-    tot_eggs = sum(c.eggs_count for c in crabs; init = 0)
-    n_juv = count(c -> c.stage === juvenile, crabs)
-    n_larv = count(c -> c.stage === zoea || c.stage === megalopa, crabs)
+    n_m = count(c -> c.sex === male, orgs)
+    n_f = count(c -> c.sex === female, orgs)
+    n_ad = count(c -> c.stage === adult, orgs)
+    n_adm = count(c -> c.stage === adult && c.sex === male, orgs)
+    n_adf = count(c -> c.stage === adult && c.sex === female, orgs)
+    n_ovig = count(c -> c.stage === adult && c.sex === female && c.egg_count > 0, orgs)
+    tot_eggs = sum(c.egg_count for c in orgs; init = 0)
+    n_juv = count(c -> c.stage === juvenile, orgs)
+    n_larv = count(c -> c.stage === zoea || c.stage === megalopa, orgs)
 
-    mean_size = mean(c.size_mm for c in crabs)
-    mean_wt = mean(c.weight_g for c in crabs)
+    mean_size = mean(c.size for c in orgs)
+    mean_wt = mean(c.mass for c in orgs)
 
     # Stock biomass metrics (converted from grams to kilograms)
-    tot_biomass = sum(c.weight_g for c in crabs) / 1000.0
-    f_ssb = sum((c.weight_g for c in crabs if c.stage === adult && c.sex === female);
+    tot_biomass = sum(c.mass for c in orgs) / 1000.0
+    f_ssb = sum((c.mass for c in orgs if c.stage === adult && c.sex === female);
                 init = 0.0) / 1000.0
-    m_mat_b = sum((c.weight_g for c in crabs if c.stage === adult && c.sex === male);
+    m_mat_b = sum((c.mass for c in orgs if c.stage === adult && c.sex === male);
                   init = 0.0) / 1000.0
     tot_ssb = f_ssb + m_mat_b
 
     leg_b = sum(
-        (c.weight_g for c in crabs if c.stage === adult && c.sex === male &&
-         c.size_mm >= model.params.legal_size_male);
+        (c.mass for c in orgs if c.stage === adult && c.sex === male &&
+         c.size >= model.params.legal_size_male);
         init = 0.0
     ) / 1000.0
 
-    instars_present = unique(c.instar for c in crabs)
+    instars_present = unique(c.instar for c in orgs)
     cw_by_instar = Dict{Int, Float64}()
     count_by_instar = Dict{Int, Int}()
     for inst in sort(instars_present)
-        inst_crabs = filter(c -> c.instar == inst, crabs)
-        cw_by_instar[inst] = mean(c.size_mm for c in inst_crabs)
-        count_by_instar[inst] = length(inst_crabs)
+        inst_orgs = filter(c -> c.instar == inst, orgs)
+        cw_by_instar[inst] = mean(c.size for c in inst_orgs)
+        count_by_instar[inst] = length(inst_orgs)
     end
 
     return (
-        total_crabs = total,
+        total_organisms = total,
         total_biomass_kg = tot_biomass,
         female_ssb_kg = f_ssb,
         male_mature_biomass_kg = m_mat_b,
@@ -209,7 +209,7 @@ function summarize_population(model)
         total_recruits_settled = tot_settled,
         n_juveniles = n_juv,
         n_larvae = n_larv,
-        mean_cw = mean_size,
+        mean_size = mean_size,
         cw_by_instar = cw_by_instar,
         count_by_instar = count_by_instar
     )
@@ -1460,7 +1460,7 @@ function retrospective_analysis(
     # 2. Containers for retrospective peels
     peel_indices = collect(1:realized_peels)
     terminal_years = Int[]
-    
+
     whole_peel_fits = []
     whole_term_peeled = Float64[]
     whole_term_base = Float64[]
@@ -1605,7 +1605,7 @@ function summarize_retrospective(retro_result)
                     "      |     ", lpad(re_str, 8))
         end
         println(buf, "------+---------------+---------------------+--------------------+------------------")
-        
+
         rho = stock.mohn_rho
         status = if abs(rho) <= 0.20
             "ACCEPTABLE (Within standard benchmark range [-0.20, +0.20])"
@@ -1614,7 +1614,7 @@ function summarize_retrospective(retro_result)
         else
             "SUBSTANTIAL NEGATIVE BIAS (Retrospective underestimation < -0.20)"
         end
-        
+
         rho_sign = (rho >= 0 ? "+" : "")
         rho_str = rho_sign * string(round(rho, digits = 4))
         println(buf, " Mohn's Rho (ρ): ", rho_str, " --> Diagnostic Status: ", status)
@@ -2195,7 +2195,7 @@ end
 # ==============================================================================
 
 """
-    evaluate_population_criteria(model, agent_df;
+    evaluate_population_criteria(model, agent_df;   
                                 min_population = nothing,
                                 max_population = nothing,
                                 max_size_drift::Float64 = 0.20,
@@ -2376,5 +2376,3 @@ function evaluate_population_criteria(
         instar_counts = instar_counts
     )
 end
-
-

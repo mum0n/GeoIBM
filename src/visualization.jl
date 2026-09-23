@@ -1716,18 +1716,18 @@ on its life history stage, sex, maturity, and reproductive status:
 # Returns
 `String`: Hex color code for graphical representation.
 """
-function crab_color(crab::SnowCrab)
-    if crab.stage === zoea || crab.stage === megalopa || crab.stage === egg
+function organism_color(org::Organism)
+    if org.stage === zoea || org.stage === megalopa || org.stage === egg
         return "#E69F00"
-    elseif crab.stage === juvenile
-        return (crab.sex === female) ? "#CC79A7" : "#56B4E9"
-    elseif crab.stage === adult
-        if is_ovigerous(crab)
+    elseif org.stage === juvenile
+        return (org.sex === female) ? "#CC79A7" : "#56B4E9"
+    elseif org.stage === adult
+        if is_ovigerous(org)
             return "#D55E00"
-        elseif crab.sex === female
+        elseif org.sex === female
             return "#785EF0"
         else
-            return is_legal_male(crab) ? "#003B73" : "#0072B2"
+            return is_legal_male(org) ? "#003B73" : "#0072B2"
         end
     end
     return "#888888"
@@ -1748,12 +1748,12 @@ Compute marker display size in points scaled from individual carapace width
 # Returns
 `Float64`: Display marker diameter in points.
 """
-function crab_size(
-    crab::SnowCrab;
+function organism_size(
+    org::Organism;
     min_size::Float64 = 4.0,
     max_size::Float64 = 24.0
 )
-    return clamp(crab.size_mm / 4.0, min_size, max_size)
+    return clamp(org.size / 4.0, min_size, max_size)
 end
 
 """
@@ -1770,10 +1770,10 @@ Select scatter marker shape based on sex classification:
 # Returns
 `Symbol`: Marker shape symbol for Makie plotting.
 """
-function crab_marker(crab::SnowCrab)
-    if crab.sex === female
+function organism_marker(org::Organism)
+    if org.sex === female
         return :circle
-    elseif crab.sex === male
+    elseif org.sex === male
         return :rect
     else
         return :diamond
@@ -1794,7 +1794,7 @@ heatarray for `Agents.abmplot` or `Agents.abmvideo`.
 # Returns
 `Matrix{Float64}`: 2D spatial property array.
 """
-function crab_heatarray(model, field::Symbol = :temperature_field)
+function organism_heatarray(model, field::Symbol = :temperature_field)
     if field in (:temperature, :temp, :temperature_field)
         return model.temperature_field
     elseif field in (:food, :food_availability, :food_availability_field)
@@ -1862,17 +1862,17 @@ function plot_abm_summary(
 end
 
 """
-    animate_snowcrab_simulation(model; filepath="snowcrab_animation.mp4",
+    animate_organism_simulation(model; filepath="organism_animation.mp4",
                                 frames=120, dt=2, framerate=15,
                                 heat_field=:temperature, figure_size=(700, 700),
-                                title="Snow Crab Ecosystem Dynamics")
+                                title="Organism Ecosystem Dynamics")
 
 Record an animated video or GIF of the spatial simulation evolution using
-`Agents.abmvideo`, rendering crab movement, growth, molting, and reproduction
+`Agents.abmvideo`, rendering organism movement, growth, development, and reproduction
 over the dynamic environmental field.
 
 # Arguments
-- `model`: Configured snow crab model to simulate and record.
+- `model`: Configured organism model to simulate and record.
 - `filepath::String`: Destination path for video file (`.mp4`, `.gif`, or `.webm`).
 - `frames::Int`: Number of animation frames to record (default: 120).
 - `dt::Int`: Simulation days advanced per animation frame (default: 2).
@@ -1884,6 +1884,23 @@ over the dynamic environmental field.
 # Returns
 `String`: Absolute path to the recorded animation file.
 """
+function animate_organism_simulation(model; filepath="organism_animation.mp4",
+                                    frames=120, dt=2, framerate=15,
+                                    heat_field=:temperature, figure_size=(700, 700),
+                                    title="Organism Ecosystem Dynamics")
+    Agents.abmvideo(model;
+        filepath = filepath,
+        frames = frames,
+        dt = dt,
+        framerate = framerate,
+        heatarray = heat_field,
+        figure_size = figure_size,
+        title = title,
+        agent_color = organism_color,
+        agent_size = organism_size,
+        agent_marker = organism_marker
+    )
+end
 function plot_functional_relationships(
     params_list::Vector{IBMParameters};
     type::Symbol = :maturity,
@@ -1910,7 +1927,7 @@ function plot_functional_relationships(
         cw_vals = collect(10.0:5.0:250.0)
         for (i, params) in enumerate(params_list)
             # Using primiparous method for standard comparison
-            eggs = [fecundity(cw; method="moncton.primiparous", params=params, deterministic=true) for cw in cw_vals]
+            eggs = [fecundity(cw; fecundity_parameterization="moncton", is_primiparous=true, params=params, deterministic=true) for cw in cw_vals]
             plot!(p, cw_vals, eggs, label="$(label_prefix)$i", linewidth=2.5)
         end
         title === nothing ? title = "Fecundity Curves (Functional Space)" : title nothing

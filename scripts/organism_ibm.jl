@@ -1,8 +1,8 @@
 """
-Command-Line Interface (CLI) for the Snow Crab Individual-Based Model (IBM).
+Command-Line Interface (CLI) for the Organism Individual-Based Model (IBM).
 
 Usage:
-    julia --project=. scripts/snowcrab_ibm.jl [options]
+    julia --project=. scripts/organism_ibm.jl [options]
 
 Options:
     --n_agents <Int>    Initial population size (default: 300)
@@ -89,11 +89,11 @@ function parse_cli_args(args::Vector{String})
         custom_config_path
     else
         candidates = [
-            joinpath(pwd(), "snowcrab_ibm.config"),
-            projectdir("snowcrab_ibm.config"),
-            joinpath(@__DIR__, "snowcrab_ibm.config"),
-            projectdir("scripts", "snowcrab_ibm.config"),
-            joinpath(@__DIR__, "..", "snowcrab_ibm.config")
+            joinpath(pwd(), "organism_ibm.config"),
+            projectdir("organism_ibm.config"),
+            joinpath(@__DIR__, "organism_ibm.config"),
+            projectdir("scripts", "organism_ibm.config"),
+            joinpath(@__DIR__, "..", "organism_ibm.config")
         ]
         found = ""
         for cand in candidates
@@ -437,22 +437,29 @@ function main()
     end
 
     println("="^80)
-    println(" Initializing Snow Crab IBM Simulation...")
+    println(" Initializing Organism IBM Simulation...")
     println(" Configuration:")
     cfg_display = isempty(config[:config_file]) ? "Internal Defaults" : config[:config_file]
     println("   - Config Source   : $(cfg_display)")
-    mode_str = string(get(config, :model, "simple"))
-    mode_title = (lowercase(mode_str) == "complex") ?
-        "Complex (Detailed Bioenergetics & Multi-driver)" :
-        "Simple (Distilled Baseline Dynamics)"
-    println("   - Model Mode      : $(mode_title)")
+    features = [
+        (:use_energetics, "Energetics"),
+        (:use_thermal_stress, "Thermal Stress"),
+        (:use_food_dynamics, "Food Dynamics"),
+        (:use_habitat_taxis, "Habitat Taxis"),
+        (:use_cannibalism, "Cannibalism"),
+        (:use_senescence, "Senescence")
+    ]
+    for (f, name) in features
+        status = get(config, f, false) ? "[ON]" : "[OFF]"
+        println("     * $(lpad(name, 15)) : $status")
+    end
     println(" Parameters:")
     @printf("   - Agents          : %d\n", config[:n_agents])
     @printf("   - Days            : %d (%.2f years)\n", config[:days], config[:days] / 365.0)
     @printf("   - Grid Size       : %d x %d\n", config[:grid][1], config[:grid][2])
     @printf("   - Temperature     : %.1f ± %.1f °C\n", config[:temp_base], config[:temp_amp])
     @printf("   - Harvest Prob    : %.4f daily\n", config[:fishing_prob])
-    @printf("   - Carrying Cap    : %.1f crabs\n", config[:carrying_capacity])
+    @printf("   - Carrying Cap    : %.1f organisms\n", config[:carrying_capacity])
     @printf("   - Random Seed     : %d\n", config[:seed])
     @printf("   - Save Results    : %s (%s)\n", config[:save] ? "Yes" : "No", config[:save_file])
     @printf("   - Output Frequency: %.1f days (%.2f years)\n",
@@ -468,7 +475,6 @@ function main()
 
     t_start = time()
     model = initialize_model(
-        model_mode = Symbol(lowercase(string(get(config, :model, "simple")))),
         N_agents = config[:n_agents],
         dims = config[:grid],
         dt_days = config[:dt],
@@ -478,8 +484,8 @@ function main()
 
     adata = [
         (:stage, length),
-        (:size_mm, safe_mean),
-        (:weight_g, safe_mean),
+        (:size, safe_mean),
+        (:mass, safe_mean),
         (is_adult, count),
         (is_adult_male, count),
         (is_adult_female, count),
@@ -549,7 +555,7 @@ function main()
             params = params,
             rng_seed = config[:seed]
         )
-        animate_snowcrab_simulation(
+        animate_organism_simulation(
             anim_model;
             filepath = anim_file_path,
             frames = Int(config[:anim_frames]),

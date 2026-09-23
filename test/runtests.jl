@@ -60,9 +60,9 @@ using model_agent
         @test maturity(1, log(80.0); rng=rng) > 0.90
 
         # Fecundity estimates must be biologically plausible (10^3 to 10^6 eggs)
-        fec_prim = fecundity(60.0; method="moncton.primiparous", rng=rng)
-        fec_mult = fecundity(60.0; method="moncton.multiparous", rng=rng)
-        fec_sm = fecundity(60.0; method="st.marie", rng=rng)
+        fec_prim = fecundity(60.0; fecundity_parameterization="moncton", is_primiparous=true, rng=rng)
+        fec_mult = fecundity(60.0; fecundity_parameterization="moncton", is_primiparous=false, rng=rng)
+        fec_sm   = fecundity(60.0; fecundity_parameterization="st.marie", rng=rng)
 
         @test 1000.0 < fec_prim < 500000.0
         @test 1000.0 < fec_mult < 500000.0

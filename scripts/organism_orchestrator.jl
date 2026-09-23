@@ -1,17 +1,17 @@
 #!/usr/bin/env julia
 """
 ================================================================================
-SNOW CRAB IBM SIMULATION ORCHESTRATOR & PARAMETER CALIBRATOR
+Organism IBM SIMULATION ORCHESTRATOR & CALIBRATOR
 ================================================================================
-Scientific Agent-Based Modeling System for Chionoecetes opilio
-File: scripts/snowcrab_orchestrator.jl
+Scientific Agent-Based Modeling System for Biological Populations
+File: scripts/organism_orchestrator.jl
 
 Automates systematic exploration, sensitivity analysis, and multi-criteria
-calibration of the snow crab individual-based model (IBM).
+calibration of the organism individual-based model (IBM).
 
 The orchestrator varies user-specified model parameters (over discrete grids,
 intervals, or random samples) while keeping all other parameters fixed to baseline
-values (from `snowcrab_ibm.config`). Simulations are executed until predefined
+values (from `organism_ibm.config`). Simulations are executed until predefined
 multi-attribute biological and ecological criteria are achieved:
   1. Population Persistence: Non-extinction (living population >= N_min).
   2. Population Bounds: Non-explosion (living population <= N_max).
@@ -133,7 +133,7 @@ end
 """
     parse_orchestrator_cli(args::Vector{String})
 
-Parse command-line options for the snow crab simulation orchestrator.
+Parse command-line options for the organism simulation orchestrator.
 """
 function parse_orchestrator_cli(args::Vector{String})
     config = Dict{Symbol, Any}(
@@ -248,10 +248,10 @@ Print command-line help and usage examples for the simulation orchestrator.
 function display_orchestrator_help()
     println("""
 ================================================================================
-SNOW CRAB IBM SIMULATION ORCHESTRATOR & CALIBRATOR
+Organism IBM SIMULATION ORCHESTRATOR & CALIBRATOR
 ================================================================================
 Usage:
-    julia --project=. scripts/snowcrab_orchestrator.jl [OPTIONS]
+    julia --project=. scripts/organism_orchestrator.jl [OPTIONS]
 
 Parameter Variation Syntax:
     --vary="<param1>=<v1>,<v2>,...;<param2>=<v3>,<v4>,..."
@@ -259,13 +259,13 @@ Parameter Variation Syntax:
 
 Examples:
     # 1. Vary temperature baseline and food abundance over a 2x2 parameter grid:
-    julia --project=. scripts/snowcrab_orchestrator.jl --vary="temp_base=3.5,5.0;food_max=8.0,12.0"
+    julia --project=. scripts/organism_orchestrator.jl --vary="temp_base=3.5,5.0;food_max=8.0,12.0"
 
     # 2. Step through temperature baseline across 3 to 6 °C:
-    julia --project=. scripts/snowcrab_orchestrator.jl --range="temp_base=3.0:1.0:6.0" --days=1095
+    julia --project=. scripts/organism_orchestrator.jl --range="temp_base=3.0:1.0:6.0" --days=1095
 
     # 3. Explore multi-parameter space and continue across all trials without early stop:
-    julia --project=. scripts/snowcrab_orchestrator.jl \\
+    julia --project=. scripts/organism_orchestrator.jl \\
         --vary="temp_base=4.0,5.0;food_max=8.0,12.0;carrying_capacity=250.0,350.0" \\
         --max_trials=10 --no-stop_on_first_pass
 
@@ -278,7 +278,7 @@ Multi-Attribute Biological Stopping Criteria:
     - Growth Schedule Fidelity: Instar sizes match empirical reference medians (RMSE <= 15.0 mm).
 
 Options:
-    --config=<Path>, -c=<Path> Base configuration file (default: snowcrab_ibm.config)
+    --config=<Path>, -c=<Path> Base configuration file (default: organism_ibm.config)
     --vary=<String>            Parameters to vary with candidate values
     --range=<String>           Parameter range specification (key=min:step:max)
     --strategy=<grid|random>   Search strategy (default: grid)
@@ -288,7 +288,7 @@ Options:
     --stop_on_first_pass       Stop immediately when all criteria pass (default: true)
     --no-stop_on_first_pass    Evaluate all candidate combinations to find global optimum
     --mode=<direct|cli>        Execution mode: direct in-process (fastest) or CLI subprocess
-    --save_best=<Filename>     Output filename for best configuration (default: snowcrab_orchestrated.config)
+    --save_best=<Filename>     Output filename for best configuration (default: organism_orchestrated.config)
     --plot_best                Export diagnostic figures for the winning model (default: true)
     --no-plot_best             Disable diagnostic figure generation
     --output_dir=<Path>        Target directory for results (default: outputs)
@@ -314,17 +314,21 @@ function execute_trial(
     # 1. Merge baseline configuration with trial overrides
     merged_config = copy(base_config)
     for (k, v) in trial_params
-        merged_config[k] = v
-        # Synchronize common aliases
-        if k === :temp_base
-            merged_config[:temp] = v
+        # If it's a known short-hand alias, map to the official IBMParameters name
+        target_key = if k === :temp
+            :temp_base
         elseif k === :temp_amp
-            merged_config[:temp_amplitude] = v
+            :temp_amplitude
         elseif k === :fishing_prob
-            merged_config[:fishing_probability_daily] = v
+            :fishing_probability_daily
         elseif k === :carrying_capacity
-            merged_config[:benthic_carrying_capacity] = v
+            :benthic_carrying_capacity
+        elseif k === :molt_scale
+            :molt_probability_scale
+        else
+            k
         end
+        merged_config[target_key] = v
     end
     merged_config[:days] = days
     merged_config[:n_agents] = n_agents
@@ -394,7 +398,7 @@ end
 """
     main()
 
-Main execution routine for the snow crab simulation orchestrator.
+Main execution routine for the organism simulation orchestrator.
 """
 function main()
     cli_opts = parse_orchestrator_cli(ARGS)
@@ -405,23 +409,26 @@ function main()
     end
 
     println("="^85)
-    println("      SNOW CRAB IBM SIMULATION ORCHESTRATOR & CALIBRATOR ENGINE       ")
+    println("      ORGANISM IBM SIMULATION ORCHESTRATOR & CALIBRATOR ENGINE       ")
     println("="^85)
 
     # 1. Locate and load base configuration
     base_cfg_path = cli_opts[:config_file]
     if isempty(base_cfg_path)
         candidates = [
-            joinpath(pwd(), "snowcrab_ibm.config"),
-            projectdir("snowcrab_ibm.config"),
-            joinpath(@__DIR__, "snowcrab_ibm.config"),
-            projectdir("scripts", "snowcrab_ibm.config")
+            joinpath(pwd(), "organism_ibm.config"),
+            projectdir("organism_ibm.config"),
+            joinpath(@__DIR__, "organism_ibm.config"),
+            projectdir("scripts", "organism_ibm.config")
         ]
-        for c in candidates
-            if isfile(c)
-                base_cfg_path = c
-                break
-            end
+    else
+        candidates = [base_cfg_path]
+    end
+
+    for c in candidates
+        if isfile(c)
+            base_cfg_path = c
+            break
         end
     end
 
@@ -462,7 +469,7 @@ function main()
     println(" Trial Strategy          : $(cli_opts[:strategy])")
     println(" Candidate Combinations  : $(total_grid_size) total ($(max_trials) scheduled)")
     println(" Duration Per Trial      : $(cli_opts[:days]) days (≈ $(round(cli_opts[:days]/365.0, digits=2)) years)")
-    println(" Initial Population      : $(cli_opts[:n_agents]) crabs")
+    println(" Initial Population      : $(cli_opts[:n_agents]) organisms")
     println(" Stop on First Pass      : $(cli_opts[:stop_on_first_pass] ? "Yes (Early Termination)" : "No (Exhaustive Optimization)")")
     println("-"^85)
     println(" Executing Simulation Trials...")
@@ -526,14 +533,14 @@ function main()
         println("       * Steady Size Structure             : ", crit.is_size_steady ? "PASSED" : "FAILED", " (Drift = $(round(crit.size_drift * 100.0, digits=1))%)")
         println("       * Maturity Ogive Fidelity           : ", crit.is_maturity_realistic ? "PASSED" : "FAILED", " (RMSE = $(round(crit.maturity_rmse, digits=3)))")
         println("       * Growth Schedule Fidelity          : ", crit.is_growth_realistic ? "PASSED" : "FAILED", " (RMSE = $(round(crit.growth_rmse, digits=2)) mm)")
-
+    
         # 4. Save best configuration to file
         mkpath(cli_opts[:output_dir])
         save_path = isabspath(cli_opts[:save_best]) ?
             cli_opts[:save_best] : joinpath(cli_opts[:output_dir], cli_opts[:save_best])
         save_ibm_configuration(save_path, best_result.merged_config)
         println("\n Saved calibrated configuration file to: $(save_path)")
-
+    
         # 5. Export diagnostic figures if requested
         if cli_opts[:plot_best]
             println(" Exporting diagnostic figures for winning configuration...")
