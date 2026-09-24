@@ -53,7 +53,7 @@ The simulation is organized into modular files within `src/`:
 
 ```
 model_agent/
-├── Project.toml              # Dependencies: Agents, DataFrames, Distributions, Plots, etc.
+├── Project.toml              # Dependencies: Agents, CairoMakie, GLMakie, DataFrames, etc.
 ├── docs/
 │   ├── model_agent.md        # Primary documentation and API reference
 │   └── snowcrab_ibm_research_paper.md 
@@ -64,7 +64,8 @@ model_agent/
 │   ├── snowcrab.jl           # Snow crab parameters, empirical allometry, phenology, reproduction
 │   ├── simulation.jl         # Spatial GridSpace, core steppers, config loaders
 │   ├── analysis.jl           # Summary statistics, stock-recruitment, and macro models
-│   └── visualization.jl      # Diagnostic plots, interactive dashboards, and animations
+│   ├── visualization.jl      # Diagnostic plots and animations (CairoMakie)
+│   └── gui.jl                # Real-time interactive 3-dashboard GUI (GLMakie)
 ├── scripts/
 │   ├── organism_ibm.config   # Default TOML configuration file
 │   ├── organism_ibm.jl       # Standalone simulation CLI tool

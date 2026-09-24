@@ -838,13 +838,14 @@ function step_aggregate_groups!(
 
         n_benthic = get(abmproperties(model), :n_benthic_organisms, 0)
         density_feedback = 1.0 + (n_benthic / max(1.0, k_cap))
-        daily_hazard = (base_m * density_feedback) * dt
+        hazard_rate = base_m * density_feedback
+        cumulative_hazard = hazard_rate * dt
 
-        if daily_hazard < 0.0 || daily_hazard > 1.0
-            error("Aggregate daily mortality hazard $(daily_hazard) out of [0, 1] bounds.")
+        if cumulative_hazard < 0.0
+            error("Aggregate cumulative mortality hazard $(cumulative_hazard) cannot be negative.")
         end
 
-        surv_prob = exp(-daily_hazard)
+        surv_prob = exp(-cumulative_hazard)
         n_curr = round(Int, grp.abundance)
         n_surv = if n_curr > 0
             rand(abmrng(model), Binomial(n_curr, surv_prob))

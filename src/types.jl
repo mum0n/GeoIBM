@@ -354,6 +354,8 @@ Base.@kwdef struct EnvironmentParams
     benthic_carrying_capacity::Float64 = 300.0
     half_saturation_food::Float64 = 2.0
     assimilation_efficiency::Float64 = 0.75
+    habitat_quality_mean::Float64 = 1.0
+    habitat_quality_sd::Float64 = 0.1
 end
 
 Base.@kwdef struct OrganismParams

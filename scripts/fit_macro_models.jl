@@ -19,7 +19,7 @@ Options:
 """
 
 using DataFrames
-using Plots
+using CairoMakie
 using Printf
 using Random
 using Statistics

@@ -14,6 +14,7 @@ Options:
     --seed <Int>        Random number generator seed (default: 1234)
     --plot              Generate and save visualization plots
     --animate, --video  Generate and record Agents.jl spatial animation video
+    --gui, --interactive Launch real-time interactive GUI dashboard
     --output_dir <Path> Directory to save generated figures (default: outputs)
     --help, -h          Print this help message
 """
@@ -22,7 +23,7 @@ using Printf
 using Random
 using Statistics
 using DataFrames
-using Plots
+using CairoMakie
 
 # Activate environment and load model_agent
 using DrWatson
@@ -51,6 +52,7 @@ function parse_cli_args(args::Vector{String})
     config[:help] = false
     config[:config_file] = ""
     config[:output_dir] = projectdir("outputs")
+    config[:gui] = false
 
     # Helper function to extract (key, val, next_idx) from token or token pair
     function extract_key_val(idx::Int)
@@ -144,6 +146,10 @@ function parse_cli_args(args::Vector{String})
             config[:animate] = false
             idx += 1
             continue
+        elseif arg == "--gui" || arg == "--interactive"
+            config[:gui] = true
+            idx += 1
+            continue
         end
 
         k_str, v_str, next_idx = extract_key_val(idx)
@@ -180,6 +186,8 @@ function parse_cli_args(args::Vector{String})
             config[:save] = (lowercase(v_str) in ("true", "1", "yes"))
         elseif k_str in ("animate", "video")
             config[:animate] = (lowercase(v_str) in ("true", "1", "yes"))
+        elseif k_str in ("gui", "interactive")
+            config[:gui] = (lowercase(v_str) in ("true", "1", "yes"))
         elseif k_str in ("animation_file", "anim_file")
             config[:animation_file] = v_str
         elseif k_str in ("anim_frames", "frames")
@@ -516,6 +524,23 @@ function main()
 
     if config[:help]
         display_cli_help()
+        return 0
+    end
+
+    if config[:gui]
+        println("="^80)
+        println(" Launching Organism IBM Interactive Real-Time Dashboard...")
+        println("="^80)
+        fig, state = launch_organism_gui(
+            config;
+            display_window = false
+        )
+        println(" GUI launched. Close the window to terminate.")
+        try
+            screen = display(fig)
+            wait(screen)
+        catch
+        end
         return 0
     end
 

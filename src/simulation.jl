@@ -368,6 +368,7 @@ function initialize_model(;
     dims::Tuple{Int, Int} = (50, 50),
     temp_map::Union{Nothing, Matrix{Float64}} = nothing,
     food_map::Union{Nothing, Matrix{Float64}} = nothing,
+    habitat_map::Union{Nothing, Matrix{Float64}} = nothing,
     dt_days::Float64 = 1.0,
     params::IBMParameters = IBMParameters(),
     behavior::SpeciesBehavior = default_species_behavior(),
@@ -375,6 +376,12 @@ function initialize_model(;
     kwargs...
 )
     space = GridSpace(dims)
+
+    rng = if rng_seed === nothing
+        Random.default_rng()
+    else
+        Random.Xoshiro(rng_seed)
+    end
 
     initial_temp = if temp_map === nothing
         fill(params.environment.temp_base, dims)
@@ -388,10 +395,19 @@ function initialize_model(;
         copy(food_map)
     end
 
+    initial_habitat = if habitat_map === nothing
+        μ = params.environment.habitat_quality_mean
+        σ = params.environment.habitat_quality_sd
+        clamp.(randn(rng, dims) .* σ .+ μ, 0.0, 1.0)
+    else
+        copy(habitat_map)
+    end
+
     properties = Dict{Symbol, Any}(
         :current_time => 0.0,
         :temperature_field => initial_temp,
         :food_availability_field => initial_food,
+        :habitat_quality_field => initial_habitat,
         :dt => dt_days,
         :params => params,
         :total_eggs_spawned => 0,
@@ -421,12 +437,6 @@ function initialize_model(;
         :species_behavior => behavior,
         :step_callback => get(kwargs, :step_callback, nothing)
     )
-
-    rng = if rng_seed === nothing
-        Random.default_rng()
-    else
-        Random.Xoshiro(rng_seed)
-    end
 
     model = StandardABM(
         Organism,
@@ -602,8 +612,11 @@ function organism_disperse!(
 
         # Hyperbolic food suitability
         s_food = cfood / (cfood + half_sat)
+        
+        # Substrate/Refuge quality
+        chabitat = model.habitat_quality_field[cx, cy]
 
-        u = s_temp * (1.0 + 0.5 * s_food)
+        u = chabitat * s_temp * (1.0 + 0.5 * s_food)
         push!(utilities, u)
     end
 

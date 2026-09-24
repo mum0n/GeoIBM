@@ -83,7 +83,8 @@ model_agent/
 │   ├── snowcrab.jl           # Snow crab parameters, allometry, phenology, reproduction
 │   ├── simulation.jl         # Grid initialization, agent/model steppers, simulation runner
 │   ├── analysis.jl           # KDE, OLS/IRLS estimation, Leslie matrices, macro models
-│   └── visualization.jl      # Diagnostic plots, interactive dashboards, Makie animations
+│   ├── visualization.jl      # Diagnostic figures and video animations (CairoMakie)
+│   └── gui.jl                # Real-time interactive 3-dashboard GUI (GLMakie)
 ├── scripts/
 │   ├── organism_ibm.config   # Default TOML simulation configuration
 │   ├── organism_ibm.jl       # CLI simulation application
@@ -101,7 +102,8 @@ model_agent/
 | [`src/snowcrab.jl`](file:///c:/home/jae/projects/model_agent/src/snowcrab.jl) | Implements `SnowCrabParams`, `SnowCrabBehavior`, empirical Hiatt increments, log-logistic maturity schedules, allometric fecundity, thermal ecdysial thresholds, and primiparous/multiparous reproductive cycles. |
 | [`src/simulation.jl`](file:///c:/home/jae/projects/model_agent/src/simulation.jl) | Manages model instantiation (`initialize_model`), environmental field generation, scheduled time stepping (`agent_step!`, `model_step!`), and batch execution (`run_simulation`). |
 | [`src/analysis.jl`](file:///c:/home/jae/projects/model_agent/src/analysis.jl) | Computes kernel density estimations (KDE), iterative logistic fits (IRLS), demographic summaries, Schaefer and Delay-Difference biomass models, generalized Leslie matrices, and retrospective analyses. |
-| [`src/visualization.jl`](file:///c:/home/jae/projects/model_agent/src/visualization.jl) | Generates executive diagnostic figures, maturity ogives, stock-recruitment plots, and video animations (`animate_organism_simulation`). |
+| [`src/visualization.jl`](file:///c:/home/jae/projects/model_agent/src/visualization.jl) | Generates executive diagnostic figures, maturity ogives, stock-recruitment plots, and video animations via CairoMakie (`Figure` output). |
+| [`src/gui.jl`](file:///c:/home/jae/projects/model_agent/src/gui.jl) | Provides interactive real-time multi-dashboard steering GUI with reactive particle streaming, parameter steering, and macro-ecological model fitting via GLMakie (`launch_organism_gui`). |
 
 ---
 
@@ -499,7 +501,19 @@ High-performance inline predicates for demographic filtering:
 
 ---
 
-### 5.9 Backward Compatibility & Domain Aliases
+### 5.9 Interactive GUI Dashboard (`src/gui.jl`)
+
+- `launch_organism_gui(model=nothing; figure_size=(1600, 1000), target_fps=30)`:
+  Launches interactive multi-panel GUI window (`GLMakie.Screen`) featuring three interlinked dashboards:
+  1. **Control & Dynamics View**: Parameter steering sliders, temperature amplitude, fishing mortality, benthic carrying capacity, real-time spatial heatmaps with animated particle scatter overlays, and live population timeseries.
+  2. **Demographics & Macro Models View**: Real-time stage distribution histograms, size distributions by sex, and dynamic Schaefer logistic vs. Deriso-Schnute surplus production fits.
+  3. **Process Functions View**: Empirical maturity ogives, fishery retention selectivity, and allometric scaling curves plotted against theoretical baselines.
+- `IBMGuiState`: Reactive container managing simulation state, model stepping, and `GLMakie.Observable` signals.
+- `step_gui_simulation!(state::IBMGuiState, n_steps::Int)`: Advances model state and notifies UI subscribers.
+
+---
+
+### 5.10 Backward Compatibility & Domain Aliases
 
 To maintain compatibility with existing analytical scripts while establishing canonical naming:
 

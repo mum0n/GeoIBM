@@ -16,7 +16,7 @@ module model_agent
 using Agents
 using DataFrames
 using Distributions
-using Plots
+using CairoMakie
 using Random
 using Statistics
 
@@ -27,6 +27,8 @@ include("snowcrab.jl")
 include("simulation.jl")
 include("analysis.jl")
 include("visualization.jl")
+include("gui.jl")
+include("cli.jl")
 
 # Export types and enums
 export LifeStage, Sex, zoea, megalopa, juvenile, adult, egg
@@ -86,5 +88,8 @@ export organism_color, organism_size, organism_marker, organism_heatarray
 export crab_color, crab_size, crab_marker, crab_heatarray
 export plot_abm_summary, animate_organism_simulation, animate_snowcrab_simulation
 export plot_functional_relationships
+export launch_organism_gui, IBMGuiState, step_gui_simulation!
+export parse_cli_args, run_ibm_cli, julia_main
+export Figure
 
 end # module model_agent

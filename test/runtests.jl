@@ -7,7 +7,6 @@ using Random
 using Statistics
 using DataFrames
 using Agents
-using Plots
 using LinearAlgebra
 
 # Activate package
@@ -175,41 +174,41 @@ using model_agent
 
         # 1. Population timeseries
         p_pop = plot_population_timeseries(agent_df; model_df = model_df)
-        @test p_pop isa Plots.Plot
+        @test p_pop isa Figure
 
         # 2. Stage distribution
         p_inst = plot_stage_distribution(model)
-        @test plot_instar_distribution(model) isa Plots.Plot
-        @test p_inst isa Plots.Plot
+        @test plot_instar_distribution(model) isa Figure
+        @test p_inst isa Figure
 
         # 3. Size distribution by sex
         p_size = plot_size_by_sex(model)
-        @test p_size isa Plots.Plot
+        @test p_size isa Figure
 
         # 4. Stage allometry
         p_allo = plot_stage_allometry(model)
-        @test plot_instar_allometry(model) isa Plots.Plot
-        @test p_allo isa Plots.Plot
+        @test plot_instar_allometry(model) isa Figure
+        @test p_allo isa Figure
 
         # 5. Reproduction dynamics
         p_rep = plot_reproduction_dynamics(agent_df, model_df)
-        @test p_rep isa Plots.Plot
+        @test p_rep isa Figure
 
         # 6. Spatial habitat
         p_spat = plot_spatial_habitat(model)
-        @test p_spat isa Plots.Plot
+        @test p_spat isa Figure
 
         # 7. Maturity ogives
         p_mat = plot_maturity_ogives(model)
-        @test p_mat isa Plots.Plot
+        @test p_mat isa Figure
 
         # 8. Executive simulation dashboard
         p_dash = plot_simulation_dashboard(model, agent_df; model_df = model_df)
-        @test p_dash isa Plots.Plot
+        @test p_dash isa Figure
 
         # 9. Stock-recruitment diagnostic figure
         p_sr = plot_stock_recruitment(model, agent_df; model_df = model_df)
-        @test p_sr isa Plots.Plot
+        @test p_sr isa Figure
 
         # 10. Batch export to temporary directory
         mktempdir() do tmp_dir
@@ -346,7 +345,7 @@ using model_agent
             year = 1:length(s_vals)
         )
         p_sr = plot_stock_recruitment(sr_df; fits = fits)
-        @test p_sr isa Plots.Plot
+        @test p_sr isa Figure
     end
 
     @testset "Probabilistic Rates & Macro-Ecological Population Dynamic Models" begin
@@ -470,7 +469,7 @@ using model_agent
         @test occursin("FISHABLE STOCK", rep)
 
         p_macro = plot_population_dynamics_fits(macro_fits)
-        @test p_macro isa Plots.Plot
+        @test p_macro isa Figure
 
         # 7. Retrospective pattern analysis and Mohn's rho
         peeled_vals = [105.0, 115.0, 120.0]
@@ -496,7 +495,7 @@ using model_agent
 
         # Retrospective 4-panel diagnostic plot
         p_retro = plot_retrospective_analysis(retro_res)
-        @test p_retro isa Plots.Plot
+        @test p_retro isa Figure
 
         rm(tmp_csv, force = true)
     end
@@ -598,7 +597,7 @@ using model_agent
         @test occursin("Repro Val (v₁)", leslie_summary)
 
         p_leslie = plot_stage_specific_dynamics(leslie_fit)
-        @test p_leslie isa Plots.Plot
+        @test p_leslie isa Figure
 
         # 7. Macro Model Comparison (Schaefer vs Delay-Diff vs Leslie)
         macro_comp = compare_macro_models(synth_ann_df, leslie_fit; lag = 1)
@@ -619,7 +618,7 @@ using model_agent
         @test occursin("Goodness of Fit R²", comp_summary)
 
         p_comp = plot_macro_model_comparison(macro_comp)
-        @test p_comp isa Plots.Plot
+        @test p_comp isa Figure
     end
 
     @testset "Configuration File Loading and CLI Overrides" begin
@@ -1295,6 +1294,27 @@ using model_agent
         # Model step executes smoothly and refreshes demographic cache
         model_step!(m_toggled)
         @test m_toggled.n_benthic_organisms == nagents(m_toggled)
+    end
+
+    @testset "Interactive GUI Dashboard" begin
+        fig, state = launch_organism_gui(
+            N_agents = 25,
+            dims = (15, 15),
+            dt_days = 1.0,
+            rng_seed = 42,
+            display_window = false
+        )
+        @test isa(fig, Figure)
+        @test isa(state, IBMGuiState)
+        @test state.current_time[] == 0.0
+        @test length(state.obs_agent_x[]) == 25
+
+        # Test stepping GUI state
+        step_gui_simulation!(state, 10.0)
+        @test state.current_time[] == 10.0
+        @test length(state.t_history) >= 2
+        @test state.t_history[end] == 10.0
+        @test length(state.obs_agent_x[]) > 0
     end
 
 end
