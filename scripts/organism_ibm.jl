@@ -37,7 +37,7 @@ Parse command-line argument vector into a configuration dictionary.
 
 Follows a strict three-tier precedence hierarchy:
 1. Internal defaults (`default_ibm_configuration()`)
-2. Configuration file overrides (default `snowcrab_ibm.config` or `--config=<path>`)
+2. Configuration file overrides (default `configs/default.toml` + `configs/snowcrab.toml` or `--config=<path>`)
 3. Explicit command-line arguments (highest priority, supporting `--key=value`)
 
 # Arguments
@@ -91,11 +91,9 @@ function parse_cli_args(args::Vector{String})
         custom_config_path
     else
         candidates = [
-            joinpath(pwd(), "organism_ibm.config"),
-            projectdir("organism_ibm.config"),
-            joinpath(@__DIR__, "organism_ibm.config"),
-            projectdir("scripts", "organism_ibm.config"),
-            joinpath(@__DIR__, "..", "organism_ibm.config")
+            joinpath(pwd(), "configs", "default.toml"),
+            projectdir("configs", "default.toml"),
+            joinpath(@__DIR__, "..", "configs", "default.toml"),
         ]
         found = ""
         for cand in candidates
@@ -104,13 +102,25 @@ function parse_cli_args(args::Vector{String})
                 break
             end
         end
-        found
+        # Also try to load species-specific config
+        species_config = if !isempty(found)
+            replace(found, "default.toml" => "snowcrab.toml")
+        else
+            ""
+        end
+        (found, species_config)
     end
 
     # 4. Load configuration file if located, overriding internal defaults
-    if !isempty(config_file_to_load) && isfile(config_file_to_load)
-        config = load_ibm_configuration(config_file_to_load; base_config = config)
-        config[:config_file] = config_file_to_load
+    default_config, species_config = config_file_to_load
+    if !isempty(default_config) && isfile(default_config)
+        config = load_ibm_configuration(default_config; base_config = config)
+        config[:config_file] = default_config
+    end
+    # Load species-specific config if available
+    if !isempty(species_config) && isfile(species_config)
+        config = load_ibm_configuration(species_config; base_config = config)
+        config[:species_config_file] = species_config
     end
 
     # 5. Second pass: Parse command-line argument overrides (highest priority)
@@ -316,7 +326,7 @@ Options:
     --no-plot                 Disable figure generation
     --animate, --video        Record spatial ABM animation video/gif using Agents.abmvideo
     --no-animate              Disable animation recording
-    --animation_file=<Name>   Animation output filename (default: snowcrab_animation.mp4)
+    --animation_file=<Name>   Animation output filename (default: organism_animation.mp4)
     --anim_frames=<Int>       Total animation frames to record (default: 120)
     --anim_dt=<Int>           Days advanced per animation frame (default: 2)
     --anim_fps=<Int>          Playback framerate in fps (default: 15)
@@ -345,8 +355,7 @@ function print_simulation_report(
     @printf(" Simulation Duration   : %d days (%.2f years)\n", days, days / 365.0)
     @printf(" Computation Time      : %.2f seconds\n", elapsed_time)
     @printf(" Initial Population    : %d organisms\n", init_agents)
-    total_orgs = hasproperty(summary, :total_organisms) ? summary.total_organisms :
-                 (hasproperty(summary, :total_crabs) ? summary.total_crabs : 0)
+    total_orgs = hasproperty(summary, :total_organisms) ? summary.total_organisms : 0
     @printf(" Final Living Organisms : %d organisms\n", total_orgs)
 
     survival_pct = (init_agents > 0) ? (total_orgs / init_agents * 100.0) : 0.0

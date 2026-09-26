@@ -41,7 +41,8 @@ Compute the empirical lower bound of morphometric size for a given species, stag
 and sex.
 """
 function stage_size_lower_bound(behavior::SpeciesBehavior, stage::Real, sex)
-    error("stage_size_lower_bound not implemented for $(typeof(behavior))")
+    # Fallback - concrete implementation in species.jl
+    return stage_size_lower_bound(SpeciesBehaviorImpl(), stage, sex)
 end
 
 stage_size_lower_bound(behavior::SpeciesBehavior, stage::AbstractArray, sex) =
@@ -105,7 +106,8 @@ function growth_increment(
     log_size::Real;
     kwargs...
 )
-    error("growth_increment not implemented for behavior type $(typeof(behavior))")
+    # Dispatch to concrete implementation
+    return growth_increment(SpeciesBehaviorImpl(), log_size; kwargs...)
 end
 
 """
@@ -352,104 +354,8 @@ function build_stages(
     behavior::SpeciesBehavior;
     kwargs...
 )
-    error("build_stages not implemented for $(typeof(behavior))")
-end
-
-"""
-    min_intermolt_days(stage::Int)
-    min_intermolt_days(stage_category::LifeStage, stage::Int = 0)
-
-Calculate the minimum biological intermolt duration (in days) required before
-an individual or cohort can undergo subsequent ecdysis.
-
-# Stage Structure
-In the current snow crab parameterization, developmental `stage` directly indexes
-post-larval benthic stages (stages 1 through 16):
-- Stage 0: Pre-benthic aggregate groups, where the remaining life-history groups
-  (egg, embryo, zoea I, zoea II, megalopa) are discriminated.
-- Stages 1 to 5: Early benthic juvenile cohorts (~3.0 to ~18.0 mm carapace width),
-  represented as aggregate cohort groups (`AggregateGroup`). Stage 1 is the first
-  benthic recruit (~3.0 mm carapace width).
-- Stages 6 to 16: Individuated subadult and adult spatial agents (`Organism`).
-  Stage 6 (~21.0 mm carapace width) marks the onset of individual agent representation.
-
-# Schedule (Sainte-Marie et al. 1995)
-- Stage 0 (discriminated by `LifeStage`):
-  - `egg`: 0.0 days
-  - `zoea`: 5.0 days
-  - `megalopa`: 10.0 days
-- Benthic Stages (stages 1+):
-  - Stage 1: 60.0 days
-  - Stage 2: 90.0 days
-  - Stage 3: 120.0 days
-  - Stage 4: 160.0 days
-  - Stage 5: 200.0 days
-  - Stage 6: 250.0 days
-  - Stage 7: 280.0 days
-  - Stages 8+: 300.0 days
-
-# Arguments
-- `stage::Int`: Developmental stage index (0 to 16).
-- `stage_category::LifeStage`: Life-history stage category for discriminating stage 0.
-
-# Returns
-`Float64`: Minimum required intermolt duration in days.
-"""
-function min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
-    error("min_intermolt_days not implemented for $(typeof(behavior))")
-end
-
-
-function min_intermolt_days(
-    behavior::SpeciesBehavior,
-    stage_cat::LifeStage,
-    stage::Int = 0
-)
-    if stage_cat === egg
-        return 0.0
-    elseif stage_cat === zoea
-        return 5.0
-    elseif stage_cat === megalopa
-        return 10.0
-    else
-        return min_intermolt_days(behavior, stage)
-    end
-end
-
-
-"""
-    required_degree_days(stage::Int)
-    required_degree_days(stage_category::LifeStage, stage::Int = 0)
-
-Calculate cumulative physiological thermal degree-days (°C·days above 0°C)
-required to complete physiological pre-ecdysial preparation for a given stage.
-
-# Arguments
-- `stage::Int`: Developmental stage index.
-- `stage_category::LifeStage`: Life-history stage category for discriminating stage 0.
-
-# Returns
-`Float64`: Required cumulative degree-days.
-"""
-function required_degree_days(behavior::SpeciesBehavior, stage::Int)
-    error("required_degree_days not implemented for $(typeof(behavior))")
-end
-
-
-function required_degree_days(
-    behavior::SpeciesBehavior,
-    stage_cat::LifeStage,
-    stage::Int = 0
-)
-    if stage_cat === egg
-        return 0.0
-    elseif stage_cat === zoea
-        return 20.0
-    elseif stage_cat === megalopa
-        return 40.0
-    else
-        return required_degree_days(behavior, stage)
-    end
+    # Dispatch to concrete implementation
+    return build_stages(SpeciesBehaviorImpl(); kwargs...)
 end
 
 

@@ -1,5 +1,5 @@
 """
-Data aggregation and statistical analysis tools for snow crab IBM outputs.
+Data aggregation and statistical analysis tools for organism IBM outputs.
 
 Provides functions to compute empirical maturity ogives, population snapshots,
 and growth metrics across stages and life stages.
@@ -12,20 +12,20 @@ using Random
 using Statistics
 
 """
-    compute_empirical_ogive(df::DataFrame, target_sex::CrabSex, bins::AbstractRange)
+    compute_empirical_ogive(df::DataFrame, target_sex::Sex, bins::AbstractRange)
 
-Calculate the empirical proportion of morphometrically mature adult crabs within
+Calculate the empirical proportion of morphometrically mature adult organisms within
 discrete carapace width bins for a specified sex.
 
 # Arguments
 - `df::DataFrame`: Agent data table containing `:size`, `:sex`, and `:stage` columns.
-- `target_sex::CrabSex`: Sex to evaluate (`male` or `female`).
+- `target_sex::Sex`: Sex to evaluate (`male` or `female`).
 - `bins::AbstractRange`: Size bin boundaries (e.g. `20.0:5.0:120.0`).
 
 # Returns
 Tuple `(bin_centers, prop_mature)`:
 - `bin_centers::Vector{Float64}`: Midpoint size of each evaluated bin.
-- `prop_mature::Vector{Float64}`: Proportion of adult crabs in each evaluated bin.
+- `prop_mature::Vector{Float64}`: Proportion of adult organisms in each evaluated bin.
 """
 function compute_empirical_ogive(
     df::DataFrame,
@@ -46,8 +46,13 @@ function compute_empirical_ogive(
         in_bin = filter(row -> b_min <= row[sz_col] < b_max, sex_df)
         if nrow(in_bin) > 0
             push!(bin_centers, (b_min + b_max) / 2.0)
-            n_adults = count(s -> s == adult, in_bin.stage)
-            push!(prop_mature, n_adults / nrow(in_bin))
+            if :is_mature in propertynames(in_bin)
+                n_mature = count(row -> row.is_mature == true, eachrow(in_bin))
+            else
+                # Fallback: use is_adult logic (stage >= 10 or is_mature flag)
+                n_mature = count(s -> s >= 10, in_bin.stage)
+            end
+            push!(prop_mature, n_mature / nrow(in_bin))
         end
     end
 
@@ -65,15 +70,16 @@ function compute_empirical_ogive(
     target_sex::Union{Sex, Integer},
     bins::AbstractRange
 )
-    crabs = collect(allagents(model))
-    if isempty(crabs)
+    organisms = collect(allagents(model))
+    if isempty(organisms)
         return (Float64[], Float64[])
     end
 
     df = DataFrame(
-        size = [c.size for c in crabs],
-        sex = [c.sex for c in crabs],
-        stage = [c.stage for c in crabs]
+        size = [c.size for c in organisms],
+        sex = [c.sex for c in organisms],
+        stage = [c.stage for c in organisms],
+        is_mature = [c.is_mature for c in organisms]
     )
 
     actual_sex = if target_sex isa Integer
@@ -94,8 +100,8 @@ including demographic stage distributions and stock biomass indicators.
 
 # Returns
 NamedTuple with fields:
-- `total_crabs::Int`: Count of alive crabs.
-- `total_biomass_kg::Float64`: Total wet biomass of living crabs in kilograms.
+- `total_organisms::Int`: Count of alive organisms.
+- `total_biomass_kg::Float64`: Total wet biomass of living organisms in kilograms.
 - `female_ssb_kg::Float64`: Spawning stock biomass of mature females (kg).
 - `male_mature_biomass_kg::Float64`: Biomass of mature males (kg).
 - `total_ssb_kg::Float64`: Total spawning stock biomass (mature males + females) in kg.
@@ -602,7 +608,7 @@ function summarize_stock_recruitment(sr_df::DataFrame; fits = nothing)
 
     buf = IOBuffer()
     println(buf, "="^70)
-    println(buf, "       SNOW CRAB STOCK-RECRUITMENT ANALYSIS REPORT       ")
+    println(buf, "       ORGANISM STOCK-RECRUITMENT ANALYSIS REPORT       ")
     println(buf, "="^70)
     println(buf, " Observations (cohorts/clutches) : ", n)
     println(buf, " Mean Spawner Index              : ", round(mean(sr_df.spawners), digits = 2))
@@ -778,7 +784,7 @@ is not customized).
 `DataFrame` with columns:
 - `year::Int`: Sample period index (1, 2, ...).
 - `time::Float64`: Elapsed days at snapshot.
-- `total_numbers::Float64`: Total living crab abundance (N_t).
+- `total_numbers::Float64`: Total living organism abundance (N_t).
 - `legal_numbers::Float64`: Legal-sized adult male abundance (N_{legal, t}).
 - `mature_females::Float64`: Total number of morphometrically mature females.
 - `mature_males::Float64`: Total number of morphometrically mature males.
@@ -840,8 +846,8 @@ function extract_annual_production(
         :count_stage
     elseif :total_organisms in propertynames(agent_df)
         :total_organisms
-    elseif :total_crabs in propertynames(agent_df)
-        :total_crabs
+    elseif :total_organisms in propertynames(agent_df)
+        :total_organisms
     elseif :total_numbers in propertynames(agent_df)
         :total_numbers
     elseif :count_is_adult in propertynames(agent_df)
@@ -1034,8 +1040,13 @@ function extract_annual_production(
     sp_total[n_samples] = sp_total[max(1, n_samples - 1)]
     sp_legal[n_samples] = sp_legal[max(1, n_samples - 1)]
 
+    # Calculate Julian day (day of year) for each snapshot
+    day_vec = [mod(t, 365.0) == 0.0 ? 365.0 : mod(t, 365.0) for t in time_vec]
+    year_int_vec = Int.(year_vec)
+
     return DataFrame(
-        year = year_vec,
+        year = year_int_vec,
+        day = day_vec,
         time = time_vec,
         total_numbers = total_n_vec,
         total_biomass_kg = total_m_vec,
@@ -1406,7 +1417,7 @@ function summarize_population_dynamics(macro_fits)
 
     buf = IOBuffer()
     println(buf, "="^75)
-    println(buf, "    SNOW CRAB MACRO-ECOLOGICAL DYNAMIC MODEL ESTIMATION REPORT    ")
+    println(buf, "    ORGANISM MACRO-ECOLOGICAL DYNAMIC MODEL ESTIMATION REPORT    ")
     println(buf, "="^75)
     println(buf, " Simulation Horizon (Years) : ", nrow(ann))
     println(buf, " Delay-Difference Lag (k)   : ", macro_fits.lag, " year(s)")
@@ -1420,9 +1431,9 @@ function summarize_population_dynamics(macro_fits)
         println(buf, "-"^75)
         println(buf, " A. Schaefer Logistic Surplus Production Model [N_{t+1} = N_t + rN_t(1 - N_t/K) - C_t]:")
         println(buf, "      Intrinsic Growth Rate (r)      : ", round(sch.r, digits = 4), " yr⁻¹")
-        println(buf, "      Carrying Capacity (K)          : ", round(sch.K, digits = 1), " crabs")
-        println(buf, "      Max Sustainable Yield (MSY)    : ", round(sch.MSY, digits = 1), " crabs/yr")
-        println(buf, "      Abundance at MSY (N_msy)       : ", round(sch.N_msy, digits = 1), " crabs")
+        println(buf, "      Carrying Capacity (K)          : ", round(sch.K, digits = 1), " organisms")
+        println(buf, "      Max Sustainable Yield (MSY)    : ", round(sch.MSY, digits = 1), " organisms/yr")
+        println(buf, "      Abundance at MSY (N_msy)       : ", round(sch.N_msy, digits = 1), " organisms")
         println(buf, "      Exploitation Rate at MSY (U_msy): ", round(sch.U_msy, digits = 4), " yr⁻¹")
         println(buf, "      Goodness of Fit R²             : ", round(sch.R2, digits = 3))
         println(buf, "      Root Mean Squared Error (RMSE) : ", round(sch.rmse, digits = 2))
@@ -1680,7 +1691,7 @@ function summarize_retrospective(retro_result)
 
     buf = IOBuffer()
     println(buf, "="^80)
-    println(buf, "       SNOW CRAB RETROSPECTIVE PATTERN & MOHN'S RHO DIAGNOSTIC REPORT       ")
+    println(buf, "       ORGANISM RETROSPECTIVE PATTERN & MOHN'S RHO DIAGNOSTIC REPORT       ")
     println(buf, "="^80)
     println(buf, " Assessment Model Evaluated : ", m_name)
     println(buf, " Total Time Series Horizon  : ", nrow(ann), " years")
@@ -1757,10 +1768,10 @@ function extract_annual_stage_matrix(
     elseif source isa DataFrame
         source
     elseif hasmethod(allagents, Tuple{typeof(source)})
-        crabs = collect(allagents(source))
-        cws = [c.size for c in crabs]
-        sexes = [c.sex for c in crabs]
-        counts, _ = derive_stage_proportions_kde(cws, sexes; stages=stages)
+        organisms = collect(allagents(source))
+        sizes = [c.size for c in organisms]
+        sexes = [c.sex for c in organisms]
+        counts, _ = derive_stage_proportions_kde(sizes, sexes; stages=stages)
         stage_mat = reshape(counts, n_stages, 1)
         catch_mat = zeros(Float64, n_stages, 1)
         return (stage_mat, catch_mat, [1])
@@ -2057,7 +2068,7 @@ eigenvalues, stable stage distribution, reproductive values, and elasticity.
 function summarize_leslie_model(fit::LeslieMatrixFit)
     buf = IOBuffer()
     println(buf, "="^85)
-    println(buf, "    SNOW CRAB GENERALIZED LESLIE (STAGE-TRANSITION) DEMOGRAPHIC REPORT   ")
+    println(buf, "    ORGANISM GENERALIZED LESLIE (STAGE-TRANSITION) DEMOGRAPHIC REPORT   ")
     println(buf, "="^85)
     println(buf, " Evaluated Years               : ", length(fit.years),
             " (Years ", first(fit.years), " to ", last(fit.years), ")")
@@ -2074,7 +2085,7 @@ function summarize_leslie_model(fit::LeslieMatrixFit)
     println(buf, "   - Damping Ratio (ρ)       : ", lpad(string(round(fit.damping_ratio, digits = 3)), 8),
             "  (Rate of convergence to SSD)")
     println(buf, "   - Fishable Stock Fit R²   : ", lpad(string(round(fit.r2, digits = 3)), 8))
-    println(buf, "   - Fishable Stock RMSE     : ", lpad(string(round(fit.rmse, digits = 2)), 8), " crabs")
+    println(buf, "   - Fishable Stock RMSE     : ", lpad(string(round(fit.rmse, digits = 2)), 8), " organisms")
     println(buf, "   - Model AIC Score         : ", lpad(string(round(fit.aic, digits = 2)), 8))
     println(buf, "-"^85)
     println(buf, " [STAGE STRUCTURE, STABLE DISTRIBUTION & REPRODUCTIVE VALUES]")
@@ -2319,8 +2330,8 @@ criteria to support systematic parameter orchestration and automated model calib
 # Arguments
 - `model`: Agent-based model instance after simulation.
 - `agent_df::DataFrame`: Time-series table collected during simulation.
-- `min_population::Union{Nothing, Int}`: Minimum living crab threshold (defaults to 10% of K, min 15).
-- `max_population::Union{Nothing, Int}`: Maximum living crab ceiling (defaults to 300% of K).
+- `min_population::Union{Nothing, Int}`: Minimum living organism threshold (defaults to 10% of K, min 15).
+- `max_population::Union{Nothing, Int}`: Maximum living organism ceiling (defaults to 300% of K).
 - `max_size_drift::Float64`: Maximum allowable fractional shift in mean size over recent steps.
 - `max_maturity_rmse::Float64`: Maximum allowable RMSE against theoretical maturity ogive.
 - `max_growth_rmse::Float64`: Maximum allowable RMSE against empirical stage size schedule (mm).
@@ -2347,8 +2358,8 @@ function evaluate_population_criteria(
     n_max = (max_population !== nothing) ? max_population : round(Int, 3.0 * k_cap)
 
     # 1. Population bounds
-    living_crabs = collect(allagents(model))
-    n_living = length(living_crabs)
+    living_organisms = collect(allagents(model))
+    n_living = length(living_organisms)
 
     is_persistent = n_living >= n_min
     is_bounded = n_living <= n_max
@@ -2415,7 +2426,7 @@ function evaluate_population_criteria(
     stage_obs_f = Dict{Int, Vector{Float64}}()
     stage_counts = Dict{Int, Int}()
 
-    for c in living_crabs
+for org in living_organisms
         stg = c.stage
         stage_counts[stg] = get(stage_counts, stg, 0) + 1
         if c.sex == male
@@ -2458,7 +2469,7 @@ function evaluate_population_criteria(
                       15.0 * maturity_rmse +
                       1.0 * growth_rmse
 
-    mean_size_all = mean([c.size for c in living_crabs])
+    mean_size_all = mean([org.size for org in living_organisms])
 
     return (
         passed_all = passed_all,
@@ -2976,8 +2987,6 @@ function sample_organism_traits(
         rng = rng
     )
 end
-
-const sample_crab_traits = sample_organism_traits
 
 """
     summarize_empirical_model(model::EmpiricalBiologicalModel; io::IO=stdout)

@@ -1,119 +1,69 @@
 # ==============================================================================
-# Snow Crab (Chionoecetes opilio) Species Module
+# Generic Species Module
+# ==============================================================================
+# Provides a configurable, species-agnostic implementation of biological processes.
+# Species-specific parameters are loaded from TOML configuration files.
 #
-# Centralizes all species-specific parameters, structs, empirical allometry,
-# developmental thresholds, phenology, and reproductive behaviors for the
-# snow crab.
-#
-# Primary references:
-# - Sainte-Marie, B. (1993). Reproductive cycle and fecundity of primiparous
-#   and multiparous female snow crab. CJFAS, 50(10), 2147-2156.
-# - Sainte-Marie, B., Raymond, S., & Brêthes, J. C. (1995). Growth and maturation
-#   of the benthic stages of male snow crab. CJFAS, 52(5), 903-924.
-# - DFO (2020). Assessment of Nova Scotia (4VWX) Snow Crab. DFO Can. Sci. Advis. Sec.
+# To implement a new species:
+# 1. Create a config file (e.g., configs/myspecies.toml) overriding default.toml
+# 2. The SpeciesBehavior will use those parameters automatically
 # ==============================================================================
 
 """
-    SnowCrabParams <: SpeciesParams
+    SpeciesBehaviorImpl <: SpeciesBehavior
 
-Biological and allometric parameter container for snow crab (*Chionoecetes opilio*).
-"""
-Base.@kwdef struct SnowCrabParams <: SpeciesParams
-    # Maturity (Log-Logistic Ogives)
-    maturity_l50_male::Float64 = 91.8
-    maturity_l50_male_sd::Float64 = 1.2
-    maturity_slope_male::Float64 = 6.9957
-    maturity_slope_male_sd::Float64 = 0.25
-
-    maturity_l50_female::Float64 = 51.6
-    maturity_l50_female_sd::Float64 = 0.8
-    maturity_slope_female::Float64 = 12.9812
-    maturity_slope_female_sd::Float64 = 0.40
-
-    # Fecundity (Empirical Models)
-    fecundity_parameterization::String = "moncton"
-    fecundity_primiparous_intercept::Float64 = -0.7229
-    fecundity_primiparous_slope::Float64 = 2.94
-    fecundity_primiparous_err::Float64 = 0.090
-    fecundity_multiparous_intercept::Float64 = 0.0158
-    fecundity_multiparous_slope::Float64 = 2.5811
-    fecundity_multiparous_err::Float64 = 0.145
-
-    # Growth (Bivariate Normal: Intercept & Slope)
-    growth_int_female::Float64 = 0.1931
-    growth_beta1_female::Float64 = 0.0545
-    growth_slp_female::Float64 = 1.0372
-    growth_beta2_female::Float64 = -0.017376
-    growth_beta3_female::Float64 = 0.005068
-
-    growth_int_male::Float64 = 0.30153
-    growth_beta1_male::Float64 = 0.02198
-    growth_slp_male::Float64 = 1.00027
-    growth_beta2_male::Float64 = -0.00643655
-    growth_beta3_male::Float64 = 0.0017492
-
-    # Gear Selectivity
-    selectivity_s50::Float64 = 95.0
-    selectivity_s50_sigma::Float64 = 5.0
-end
-
-"""
-    SnowCrabBehavior <: SpeciesBehavior
-
-Concrete species behavior implementation for the snow crab (*Chionoecetes opilio*).
+Concrete species behavior implementation using config-driven parameters.
 Holds parameter definitions and dispatches all biological processes.
 """
-struct SnowCrabBehavior <: SpeciesBehavior
-    params::SnowCrabParams
+struct SpeciesBehaviorImpl <: SpeciesBehavior
+    params::SpeciesParams
 end
 
-SnowCrabBehavior() = SnowCrabBehavior(SnowCrabParams())
+SpeciesBehaviorImpl() = SpeciesBehaviorImpl(SpeciesParams())
 
 """
     default_species_behavior()
 
-Return the default concrete `SpeciesBehavior` implementation (`SnowCrabBehavior`).
+Return the default concrete `SpeciesBehavior` implementation.
 """
-default_species_behavior() = SnowCrabBehavior()
+default_species_behavior() = SpeciesBehaviorImpl()
 
-"""
-    const SnowCrab = Organism
-
-Type alias designating individual `Organism` agents as snow crab agents.
-"""
-const SnowCrab = Organism
-
-# --- Empirical Biological Invariants ---
-const FECUNDITY_PRIMIPAROUS_INTERCEPT = -0.7229
-const FECUNDITY_PRIMIPAROUS_SLOPE     = 2.94
-const FECUNDITY_PRIMIPAROUS_ERR       = 0.090
-const FECUNDITY_MULTIPAROUS_INTERCEPT = 0.0158
-const FECUNDITY_MULTIPAROUS_SLOPE     = 2.5811
-const FECUNDITY_MULTIPAROUS_ERR       = 0.145
+# --- Empirical Biological Invariants (from config, with fallbacks) ---
+# These constants provide backward compatibility and fallbacks
+const DEFAULT_FECUNDITY_PRIMIPAROUS_INTERCEPT = -0.7229
+const DEFAULT_FECUNDITY_PRIMIPAROUS_SLOPE     = 2.94
+const DEFAULT_FECUNDITY_PRIMIPAROUS_ERR       = 0.090
+const DEFAULT_FECUNDITY_MULTIPAROUS_INTERCEPT = 0.0158
+const DEFAULT_FECUNDITY_MULTIPAROUS_SLOPE     = 2.5811
+const DEFAULT_FECUNDITY_MULTIPAROUS_ERR       = 0.145
 
 # -----------------------------------------------------------------------------
 # Morphometrics and Allometric Growth
 # -----------------------------------------------------------------------------
 
 """
-    stage_size_lower_bound(behavior::SnowCrabBehavior, stage::Real, sex)
+    stage_size_lower_bound(behavior::SpeciesBehaviorImpl, stage::Real, sex)
 
 Compute the empirical lower bound of morphometric size (carapace width in mm)
-for snow crab developmental stage and sex.
+for a given developmental stage and sex.
+
+Uses the theoretical growth curves defined by the species parameters.
 """
-function stage_size_lower_bound(behavior::SnowCrabBehavior, stage::Real, sex)
+function stage_size_lower_bound(behavior::SpeciesBehaviorImpl, stage::Real, sex)
     is_female = (sex == 1 || sex == :female || Symbol(sex) == :female)
     if is_female
         if stage < 4.0
             return (stage <= 1.5) ? 0.95 : (stage <= 2.5 ? 1.45 : 2.50)
         end
         i = stage - 4.0
+        # Female: ln(CW) = 2.198848 + 0.315026 * (stage - 4)
         return exp(2.198848 + 0.315026 * i)
     else
         if stage < 4.0
             return (stage <= 1.5) ? 0.95 : (stage <= 2.5 ? 1.45 : 2.50)
         end
         i = stage - 3.0
+        # Male: ln(CW) = 1.917564 + 0.298914 * (stage - 3)
         return exp(1.917564 + 0.298914 * i)
     end
 end
@@ -121,39 +71,39 @@ end
 """
     llbm(stage)
 
-Compute empirical size lower bound (mm) for male snow crab at developmental `stage`.
+Compute empirical size lower bound (mm) for male at developmental `stage`.
 """
-llbm(stage) = stage_size_lower_bound(SnowCrabBehavior(), stage, :male)
+llbm(stage) = stage_size_lower_bound(SpeciesBehaviorImpl(), stage, :male)
 
 """
     llbf(stage)
 
-Compute empirical size lower bound (mm) for female snow crab at developmental `stage`.
+Compute empirical size lower bound (mm) for female at developmental `stage`.
 """
-llbf(stage) = stage_size_lower_bound(SnowCrabBehavior(), stage, :female)
+llbf(stage) = stage_size_lower_bound(SpeciesBehaviorImpl(), stage, :female)
 
 """
     get_stage_size(stage::Real, sex; kwargs...)
 
-Convenience method computing or sampling snow crab carapace width (mm) for `stage` and `sex`.
+Convenience method computing or sampling carapace width (mm) for `stage` and `sex`.
 """
 get_stage_size(stage::Real, sex; kwargs...) =
-    get_stage_size(SnowCrabBehavior(), stage, sex; kwargs...)
+    get_stage_size(SpeciesBehaviorImpl(), stage, sex; kwargs...)
 
 """
-    growth_increment(behavior::SnowCrabBehavior, log_size::Real; kwargs...)
+    growth_increment(behavior::SpeciesBehaviorImpl, log_size::Real; kwargs...)
 
 Predict the natural logarithm of post-molt carapace width, ln(CW_{t+1}),
 given pre-molt natural logarithm ln(CW_t), sex, maturity transition status,
-nutritional condition factor, and ambient bottom temperature for snow crab.
+nutritional condition factor, and ambient bottom temperature.
 
 Mathematical formulation:
 ```math
-\\ln(CW_{t+1}) = \\beta_0 + \\beta_1 \\ln(CW_t) + \\delta_{mat} + \\Delta_{cond} + \\Delta_{temp} + \\epsilon
+\$\\ln(CW_{t+1}) = \\beta_0 + \\beta_1 \\ln(CW_t) + \\delta_{mat} + \\Delta_{cond} + \\Delta_{temp} + \\epsilon\$
 ```
 """
 function growth_increment(
-    behavior::SnowCrabBehavior,
+    behavior::SpeciesBehaviorImpl,
     log_size::Real;
     sex = 0,
     mat::Integer = 0,
@@ -201,25 +151,25 @@ function growth_increment(
 end
 
 growth_increment(log_size::Real; kwargs...) =
-    growth_increment(SnowCrabBehavior(), log_size; kwargs...)
+    growth_increment(SpeciesBehaviorImpl(), log_size; kwargs...)
 
 predict_postgrowth_size(size::Real; kwargs...) =
-    predict_postgrowth_size(SnowCrabBehavior(), size; kwargs...)
+    predict_postgrowth_size(SpeciesBehaviorImpl(), size; kwargs...)
 
-growth_schedule() = growth_schedule(SnowCrabBehavior())
+growth_schedule() = growth_schedule(SpeciesBehaviorImpl())
 
 # -----------------------------------------------------------------------------
 # Maturity, Fecundity, and Fishery Selectivity
 # -----------------------------------------------------------------------------
 
 """
-    maturity(behavior::SnowCrabBehavior, sex, log_size::Real; temp=nothing, ...)
+    maturity(behavior::SpeciesBehaviorImpl, sex, log_size::Real; temp=nothing, ...)
 
-Calculate probability of morphometric maturity during molt for snow crab.
+Calculate probability of morphometric maturity during molt.
 Minimum size gate: Stages 4-6 (size < 35 mm) cannot undergo terminal molt.
 """
 function maturity(
-    behavior::SnowCrabBehavior,
+    behavior::SpeciesBehaviorImpl,
     sex,
     log_size::Real;
     temp = nothing,
@@ -298,7 +248,7 @@ function maturity(
 end
 
 maturity(sex, log_size::Real; kwargs...) =
-    maturity(SnowCrabBehavior(), sex, log_size; kwargs...)
+    maturity(SpeciesBehaviorImpl(), sex, log_size; kwargs...)
 
 function maturity(
     size::Real;
@@ -306,18 +256,18 @@ function maturity(
     params::Union{Nothing, SpeciesParams} = nothing,
     kwargs...
 )
-    behavior = (params === nothing) ? SnowCrabBehavior() : SnowCrabBehavior(params)
+    behavior = (params === nothing) ? SpeciesBehaviorImpl() : SpeciesBehaviorImpl(params)
     return maturity(behavior, sex, log(size); kwargs...)
 end
 
 """
-    fecundity(behavior::SnowCrabBehavior, size::Real; ...)
+    fecundity(behavior::SpeciesBehaviorImpl, size::Real; ...)
 
-Estimate brood fecundity for female snow crab from carapace size (mm).
+Estimate brood fecundity for female from carapace size (mm).
 Supports 'moncton' (Sainte-Marie 1993) and 'st.marie' parameterizations.
 """
 function fecundity(
-    behavior::SnowCrabBehavior,
+    behavior::SpeciesBehaviorImpl,
     size::Real;
     is_primiparous::Bool = true,
     method::Union{Nothing, String} = nothing,
@@ -393,21 +343,21 @@ function fecundity(
     params::Union{Nothing, SpeciesParams} = nothing,
     kwargs...
 )
-    behavior = (params === nothing) ? SnowCrabBehavior() : SnowCrabBehavior(params)
+    behavior = (params === nothing) ? SpeciesBehaviorImpl() : SpeciesBehaviorImpl(params)
     return fecundity(behavior, size; kwargs...)
 end
 
 fecundity(size::AbstractArray; kwargs...) =
-    fecundity.(Ref(SnowCrabBehavior()), size; kwargs...)
+    fecundity.(Ref(SpeciesBehaviorImpl()), size; kwargs...)
 
 """
-    selectivity(behavior::SnowCrabBehavior, size::Real; s50=nothing, s50_sigma=nothing)
+    selectivity(behavior::SpeciesBehaviorImpl, size::Real; s50=nothing, s50_sigma=nothing)
 
 Calculate gear selectivity or harvest probability as a logistic function
-of crab size (mm) for snow crab.
+of organism size (mm).
 """
 function selectivity(
-    behavior::SnowCrabBehavior,
+    behavior::SpeciesBehaviorImpl,
     size::Real;
     s50::Union{Nothing, Real} = nothing,
     s50_sigma::Union{Nothing, Real} = nothing
@@ -428,7 +378,7 @@ function selectivity(
 end
 
 function selectivity(
-    behavior::SnowCrabBehavior,
+    behavior::SpeciesBehaviorImpl,
     size::AbstractArray;
     s50::Union{Nothing, Real} = nothing,
     s50_sigma::Union{Nothing, Real} = nothing
@@ -443,17 +393,17 @@ function selectivity(
     return 1.0 ./ (1.0 .+ exp.(-diff))
 end
 
-selectivity(size::Real; kwargs...) = selectivity(SnowCrabBehavior(), size; kwargs...)
-selectivity(size::AbstractArray; kwargs...) = selectivity(SnowCrabBehavior(), size; kwargs...)
+selectivity(size::Real; kwargs...) = selectivity(SpeciesBehaviorImpl(), size; kwargs...)
+selectivity(size::AbstractArray; kwargs...) = selectivity(SpeciesBehaviorImpl(), size; kwargs...)
 
 """
-    calculate_mass(behavior::SnowCrabBehavior, size::Real, sex; mat=0, stochastic=false, rng=...)
+    calculate_mass(behavior::SpeciesBehaviorImpl, size::Real, sex; mat=0, stochastic=false, rng=...)
 
 Compute wet body mass (grams) from size (mm), sex, and maturity status
-based on empirical allometric equations for snow crab (Sainte-Marie et al. 1995; DFO 2020).
+based on empirical allometric equations.
 """
 function calculate_mass(
-    behavior::SnowCrabBehavior,
+    behavior::SpeciesBehaviorImpl,
     size::Real,
     sex;
     mat::Integer = 0,
@@ -464,14 +414,17 @@ function calculate_mass(
         return 0.0
     end
     is_fem = (sex == 1 || sex == :female || Symbol(sex) == :female)
+    params = behavior.params
     alpha, beta_val = if !is_fem
-        (mat == 1) ? (0.0001830, 3.160) : (0.0002665, 3.098)
+        (mat == 1) ? (params.mass_alpha_male_mature, params.mass_beta_male_mature) :
+                     (params.mass_alpha_male_immature, params.mass_beta_male_immature)
     else
-        (mat == 1) ? (0.0004500, 2.920) : (0.0003440, 2.980)
+        (mat == 1) ? (params.mass_alpha_female_mature, params.mass_beta_female_mature) :
+                     (params.mass_alpha_female_immature, params.mass_beta_female_immature)
     end
     base_wt = alpha * (Float64(size)^beta_val)
     if stochastic
-        sigma = 0.08
+        sigma = params.mass_sigma
         residual = rand(rng, Normal(0.0, sigma))
         return base_wt * exp(residual - 0.5 * sigma^2)
     end
@@ -479,16 +432,16 @@ function calculate_mass(
 end
 
 calculate_mass(size::Real, sex; kwargs...) =
-    calculate_mass(SnowCrabBehavior(), size, sex; kwargs...)
+    calculate_mass(SpeciesBehaviorImpl(), size, sex; kwargs...)
 
 """
-    build_stages(behavior::SnowCrabBehavior; max_male_stage=12, max_female_stage=11)
+    build_stages(behavior::SpeciesBehaviorImpl; max_male_stage=12, max_female_stage=11)
 
 Construct the discrete stage hierarchy for generalized Leslie stage-transition
-modeling guided by empirical snow crab growth-stage relationships.
+modeling guided by empirical growth-stage relationships.
 """
 function build_stages(
-    behavior::SnowCrabBehavior;
+    behavior::SpeciesBehaviorImpl;
     max_male_stage::Int = 12,
     max_female_stage::Int = 11
 )
@@ -585,18 +538,18 @@ function build_stages(
     return stages
 end
 
-build_stages(; kwargs...) = build_stages(SnowCrabBehavior(); kwargs...)
+build_stages(; kwargs...) = build_stages(SpeciesBehaviorImpl(); kwargs...)
 
 # -----------------------------------------------------------------------------
 # Life History and Ecdysis Thresholds
 # -----------------------------------------------------------------------------
 
 """
-    min_intermolt_days(behavior::SnowCrabBehavior, stage::Int)
+    min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
 
-Return the minimum required intermolt duration in days for snow crab at `stage`.
+Return the minimum required intermolt duration in days for given stage.
 """
-function min_intermolt_days(behavior::SnowCrabBehavior, stage::Int)
+function min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
     if stage <= 0
         return 60.0
     elseif stage == 1
@@ -618,17 +571,17 @@ function min_intermolt_days(behavior::SnowCrabBehavior, stage::Int)
     end
 end
 
-min_intermolt_days(stage::Int) = min_intermolt_days(SnowCrabBehavior(), stage)
+min_intermolt_days(stage::Int) = min_intermolt_days(SpeciesBehaviorImpl(), stage)
 min_intermolt_days(stage_cat::LifeStage, stage::Int = 0) =
-    min_intermolt_days(SnowCrabBehavior(), stage_cat, stage)
+    min_intermolt_days(SpeciesBehaviorImpl(), stage_cat, stage)
 
 """
-    required_degree_days(behavior::SnowCrabBehavior, stage::Int)
+    required_degree_days(behavior::SpeciesBehavior, stage::Int)
 
 Calculate cumulative physiological thermal degree-days (°C·days above 0°C)
-required to complete pre-ecdysial preparation for snow crab at `stage`.
+required to complete pre-ecdysial preparation at `stage`.
 """
-function required_degree_days(behavior::SnowCrabBehavior, stage::Int)
+function required_degree_days(behavior::SpeciesBehavior, stage::Int)
     if stage <= 0
         return 150.0
     elseif stage == 1
@@ -650,20 +603,20 @@ function required_degree_days(behavior::SnowCrabBehavior, stage::Int)
     end
 end
 
-required_degree_days(stage::Int) = required_degree_days(SnowCrabBehavior(), stage)
+required_degree_days(stage::Int) = required_degree_days(SpeciesBehaviorImpl(), stage)
 required_degree_days(stage_cat::LifeStage, stage::Int = 0) =
-    required_degree_days(SnowCrabBehavior(), stage_cat, stage)
+    required_degree_days(SpeciesBehaviorImpl(), stage_cat, stage)
 
 # -----------------------------------------------------------------------------
 # Dynamic Behaviors: Development and Reproduction
 # -----------------------------------------------------------------------------
 
 """
-    perform_development!(behavior::SnowCrabBehavior, org::Organism, model)
+    perform_development!(behavior::SpeciesBehavior, org::Organism, model)
 
-Advance physiological development and ecdysis for a snow crab agent.
+Advance physiological development and ecdysis for an organism agent.
 """
-function perform_development!(::SnowCrabBehavior, org::Organism, model)
+function perform_development!(::SpeciesBehavior, org::Organism, model)
     if !model.params.toggles.use_molting || org.is_mature
         return nothing
     end
@@ -690,12 +643,12 @@ function perform_development!(::SnowCrabBehavior, org::Organism, model)
 end
 
 """
-    perform_reproduction!(behavior::SnowCrabBehavior, org::Organism, model)
+    perform_reproduction!(behavior::SpeciesBehavior, org::Organism, model)
 
 Execute annual reproductive behaviors (copulation, brood extrusion, hatching release)
-for a female snow crab agent.
+for a mature female organism agent.
 """
-function perform_reproduction!(::SnowCrabBehavior, org::Organism, model)
+function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
     if !model.params.toggles.use_reproduction
         return nothing
     end
@@ -781,21 +734,3 @@ function perform_reproduction!(::SnowCrabBehavior, org::Organism, model)
     end
     return nothing
 end
-
-# -----------------------------------------------------------------------------
-# Convenience Methods and Aliases for Snow Crab Workflows
-# -----------------------------------------------------------------------------
-
-
-crab_color(args...; kwargs...) = organism_color(args...; kwargs...)
-crab_size(args...; kwargs...) = organism_size(args...; kwargs...)
-crab_marker(args...; kwargs...) = organism_marker(args...; kwargs...)
-crab_heatarray(args...; kwargs...) = organism_heatarray(args...; kwargs...)
-crab_disperse!(args...; kwargs...) = organism_disperse!(args...; kwargs...)
-weight_if_adult_female(args...; kwargs...) = mass_if_adult_female(args...; kwargs...)
-weight_if_adult_male(args...; kwargs...) = mass_if_adult_male(args...; kwargs...)
-weight_if_legal_male(args...; kwargs...) = mass_if_legal_male(args...; kwargs...)
-
-sample_population(year::Int = -1; kwargs...) =
-    sample_population(default_species_behavior(), year; kwargs...)
-sample_crab_traits(args...; kwargs...) = sample_organism_traits(args...; kwargs...)

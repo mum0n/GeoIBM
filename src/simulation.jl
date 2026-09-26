@@ -145,10 +145,12 @@ function save_ibm_configuration(filepath::String, config::AbstractDict)
         "simulation" => Dict{String, Any}(),
         "environment" => Dict{String, Any}(),
         "organism" => Dict{String, Any}(),
+        "species" => Dict{String, Any}(),
         "phenology" => Dict{String, Any}(),
         "fishery" => Dict{String, Any}(),
         "output" => Dict{String, Any}(),
-        "animation" => Dict{String, Any}()
+        "animation" => Dict{String, Any}(),
+        "leslie" => Dict{String, Any}()
     )
 
     section_map = Dict{Symbol, String}(
@@ -198,6 +200,44 @@ function save_ibm_configuration(filepath::String, config::AbstractDict)
         :brood_duration_base => "phenology",
         :egg_survival_base => "phenology",
 
+        # Species-specific biological parameters
+        :maturity_l50_male => "species",
+        :maturity_l50_male_sd => "species",
+        :maturity_slope_male => "species",
+        :maturity_slope_male_sd => "species",
+        :maturity_l50_female => "species",
+        :maturity_l50_female_sd => "species",
+        :maturity_slope_female => "species",
+        :maturity_slope_female_sd => "species",
+        :fecundity_parameterization => "species",
+        :fecundity_primiparous_intercept => "species",
+        :fecundity_primiparous_slope => "species",
+        :fecundity_primiparous_err => "species",
+        :fecundity_multiparous_intercept => "species",
+        :fecundity_multiparous_slope => "species",
+        :fecundity_multiparous_err => "species",
+        :growth_int_female => "species",
+        :growth_beta1_female => "species",
+        :growth_slp_female => "species",
+        :growth_beta2_female => "species",
+        :growth_beta3_female => "species",
+        :growth_int_male => "species",
+        :growth_beta1_male => "species",
+        :growth_slp_male => "species",
+        :growth_beta2_male => "species",
+        :growth_beta3_male => "species",
+        :selectivity_s50 => "species",
+        :selectivity_s50_sigma => "species",
+        :mass_alpha_male_immature => "species",
+        :mass_beta_male_immature => "species",
+        :mass_alpha_male_mature => "species",
+        :mass_beta_male_mature => "species",
+        :mass_alpha_female_immature => "species",
+        :mass_beta_female_immature => "species",
+        :mass_alpha_female_mature => "species",
+        :mass_beta_female_mature => "species",
+        :mass_sigma => "species",
+
         :legal_size_male => "fishery",
         :fishing_probability_daily => "fishery",
         :fishing_season_start => "fishery",
@@ -216,6 +256,31 @@ function save_ibm_configuration(filepath::String, config::AbstractDict)
         :anim_dt => "animation",
         :anim_fps => "animation",
         :anim_field => "animation"
+
+        # Leslie matrix model parameters
+        :survival_stage1 => "leslie"
+        :gamma_stage1 => "leslie"
+        :survival_stage2 => "leslie"
+        :gamma_stage2 => "leslie"
+        :male_split_fraction => "leslie"
+        :female_split_fraction => "leslie"
+        :survival_male_legal => "leslie"
+        :survival_male_sublegal => "leslie"
+        :gamma_male_base => "leslie"
+        :gamma_male_decay => "leslie"
+        :p_term_male_base => "leslie"
+        :p_term_male_exponent => "leslie"
+        :survival_female => "leslie"
+        :gamma_female_base => "leslie"
+        :gamma_female_decay => "leslie"
+        :p_term_female_base => "leslie"
+        :p_term_female_exponent => "leslie"
+        :fecundity_base => "leslie"
+        :fecundity_size_exponent => "leslie"
+        :fecundity_size_reference => "leslie"
+        :col_sum_cap => "leslie"
+        :col_sum_scale_low => "leslie"
+        :col_sum_scale_high => "leslie"
     )
 
     for (k, v) in config
@@ -358,6 +423,7 @@ Construct and populate an `Agents.StandardABM` representing the organism ecosyst
 - `food_map::Union{Nothing, Matrix{Float64}}`: Optional initial food density field.
 - `dt_days::Float64`: Time step in days (default: 1.0).
 - `params::IBMParameters`: Parameters and process toggles.
+- `behavior::Union{Nothing, SpeciesBehavior}`: Optional custom species behavior. If nothing, created from params.species.
 - `rng_seed::Union{Nothing, Int}`: Optional RNG seed.
 
 # Returns
@@ -371,10 +437,15 @@ function initialize_model(;
     habitat_map::Union{Nothing, Matrix{Float64}} = nothing,
     dt_days::Float64 = 1.0,
     params::IBMParameters = IBMParameters(),
-    behavior::SpeciesBehavior = default_species_behavior(),
+    behavior::Union{Nothing, SpeciesBehavior} = nothing,
     rng_seed::Union{Nothing, Int} = nothing,
     kwargs...
 )
+    # Create species behavior from params if not provided
+    if behavior === nothing
+        behavior = SpeciesBehaviorImpl(params.species)
+    end
+    
     space = GridSpace(dims)
 
     rng = if rng_seed === nothing
@@ -527,7 +598,6 @@ function initialize_model(;
     end
 
     properties[:n_benthic_organisms] = benthic_cnt
-    properties[:n_benthic_crabs] = benthic_cnt
     properties[:n_mature_males] = mat_m
     properties[:n_mature_females] = mat_f
     properties[:n_legal_males] = leg_m
@@ -724,7 +794,6 @@ function update_demographic_caches!(model)
         end
     end
     model.n_benthic_organisms = benthic_count
-    model.n_benthic_crabs = benthic_count
     model.n_mature_males = mat_males
     model.n_mature_females = mat_females
     model.n_legal_males = legal_males

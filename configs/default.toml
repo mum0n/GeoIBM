@@ -1,0 +1,231 @@
+# ==============================================================================
+# Biological Individual-Based Model (BIBM) Default Configuration
+# ==============================================================================
+# This file defines the complete set of parameters for the BIBM engine.
+# It is organized by functional group to facilitate customization and
+# species-specific modeling.
+#
+# Structure:
+#   [simulation]        - Core execution, time stepping, and feature toggles
+#   [environment]       - External drivers (temperature, food)
+#   [organism]          - Generic morphometric and energetic parameters
+#   [species]           - Species-specific biological rules
+#   [phenology]         - Seasonal windows for life-history events
+#   [mortality]         - Drivers of individual death/removal
+#   [fishery]           - Human interaction and harvest parameters
+#   [output]            - Data serialization and visualization settings
+#   [leslie]            - Stage-structured matrix model parameters
+# ==============================================================================
+
+[simulation]
+# --- Feature Toggles (Modular Architecture) ---
+use_energetics      = true
+use_thermal_stress  = true
+use_food_dynamics   = true
+use_habitat_taxis   = true
+use_cannibalism     = false
+use_senescence      = true
+use_reproduction    = true
+use_recruitment     = true
+use_degree_days     = true
+use_molting         = true
+use_movement        = true
+use_directed_movement = true
+use_fishery         = true
+use_spermatheca     = true
+
+# --- Execution Parameters ---
+dt                  = 1.0         # Time step in days
+seed                = 1234        # RNG seed for reproducibility
+n_agents            = 300         # Initial population size (for adult/juvenile agents)
+days                = 730         # Total simulation duration (days)
+grid_nx             = 100         # Spatial grid width
+grid_ny             = 100         # Spatial grid height
+
+[binning]
+use_bins            = true        # Use aggregate distributions for early stages?
+n_age_bins          = 50          # Number of age bins (for non-spatial populations)
+n_size_bins         = 20          # Number of size/length bins
+min_size            = 1.0         # Minimum bin edge [mm]
+max_size            = 100.0       # Maximum bin edge for early stages [mm]
+
+[environment]
+# --- Thermal Regime ---
+temp_base           = 5.0         # Annual baseline temperature (°C)
+temp_amplitude      = 4.0         # Seasonal oscillation amplitude (°C)
+temp_noise_sd       = 0.5         # Spatial thermal stochasticity (SD)
+habitat_quality_mean = 1.0        # Mean habitat quality [0-1]
+habitat_quality_sd  = 0.1         # Spatial habitat quality stochasticity (SD)
+temp_base_degreedays = 0.0        # Base threshold for degree-day accumulation
+
+# --- Food & Resource Dynamics ---
+food_max            = 10.0        # Maximum local benthic food density
+food_replenishment_rate = 0.1     # Daily replenishment increment per cell
+benthic_carrying_capacity = 300.0 # Regional carrying capacity target
+half_saturation_food = 2.0        # Half-saturation constant for intake
+assimilation_efficiency = 0.75    # Efficiency of food to energy conversion
+
+[organism]
+# --- Generic Morphometry & Energy ---
+max_size_male       = 160.0       # Max size (mm)
+max_size_female     = 95.0        # Max size (mm)
+max_stage_male      = 16          # Maximum developmental stage for males
+max_stage_female    = 14          # Maximum developmental stage for females
+maturity_size_mid   = 60.0        # Median size at maturity (mm)
+
+metabolic_rate_base = 0.01        # Basal metabolic coefficient
+intake_rate_base    = 0.05        # Saturation-limit ingestion coeff (g^0.75 d^-1)
+
+energy_molt_threshold  = 50.0     # Energy required to trigger molt
+energy_molt_slope      = 1.5      # Allometric scaling of molt requirement
+molt_energy_retention  = 0.10     # Fraction of energy retained post-ecdysis
+
+min_mating_energy_fraction = 0.1  # Min energy fraction for mating eligibility
+initial_energy             = 10.0 # Starting metabolic reserve
+molt_probability_scale     = 45.0 # Scale for molt probability
+
+[species]
+# --- Maturity (Log-Logistic Ogives) ---
+# Generic defaults - override in species-specific config
+maturity_l50_male      = 91.8
+maturity_l50_male_sd   = 1.2
+maturity_slope_male    = 6.9957
+maturity_slope_male_sd = 0.25
+
+maturity_l50_female     = 51.6
+maturity_l50_female_sd  = 0.8
+maturity_slope_female   = 12.9812
+maturity_slope_female_sd = 0.40
+
+# --- Fecundity (Empirical Models) ---
+fecundity_parameterization = "moncton"
+fecundity_primiparous_intercept = -0.7229
+fecundity_primiparous_slope     = 2.94
+fecundity_primiparous_err       = 0.090
+fecundity_multiparous_intercept = 0.0158
+fecundity_multiparous_slope     = 2.5811
+fecundity_multiparous_err       = 0.145
+
+# --- Growth (Bivariate Normal: Intercept & Slope) ---
+growth_int_female    = 0.1931
+growth_beta1_female  = 0.0545
+growth_slp_female    = 1.0372
+growth_beta2_female  = -0.017376
+growth_beta3_female  = 0.005068
+
+growth_int_male      = 0.30153
+growth_beta1_male    = 0.02198
+growth_slp_male      = 1.00027
+growth_beta2_male    = -0.00643655
+growth_beta3_male    = 0.0017492
+
+# --- Gear Selectivity ---
+selectivity_s50       = 95.0
+selectivity_s50_sigma = 5.0
+
+# --- Allometric Mass Parameters ---
+mass_alpha_male_immature    = 0.0002665
+mass_beta_male_immature     = 3.098
+mass_alpha_male_mature      = 0.0001830
+mass_beta_male_mature       = 3.160
+mass_alpha_female_immature  = 0.0003440
+mass_beta_female_immature   = 2.980
+mass_alpha_female_mature    = 0.0004500
+mass_beta_female_mature     = 2.920
+mass_sigma                  = 0.08
+
+# --- Stage Size Bounds (empirical lower bounds) ---
+# Format: stage_sex_lower_bound = "stage,sex,size" (comma-separated, pipe-delimited)
+# Male: stage 4=exp(1.917564+0.298914*(4-3))≈22.0, stage 5≈31.0, etc.
+# Female: stage 4=exp(2.198848+0.315026*(4-4))≈22.0, stage 5≈30.5, etc.
+# These define the theoretical growth curves (llbm, llbf)
+
+[phenology]
+# --- Seasonal Windows (Day of Year: 1-365) ---
+molt_season_start    = 15.0
+molt_season_end      = 140.0
+mating_season_start  = 30.0
+mating_season_end    = 120.0
+
+# --- Life History Timing & Success ---
+mating_search_radius = 5          # Search radius in grid cells
+brood_duration_base  = 365.0      # Incubation duration (days)
+egg_survival_base    = 5.0e-5     # Survival from egg to recruit
+
+[mortality]
+# --- Natural Mortality Parameters ---
+# Base instantaneous mortality rates (per day)
+mortality_base_predation     = 0.20 / 365.0
+mortality_base_starvation    = 0.20 / 365.0
+mortality_base_thermal       = 0.15 / 365.0
+mortality_base_senescence    = 0.08 / 365.0
+
+# Modifiers
+soft_shell_duration          = 30.0      # Duration of post-molt vulnerability (days)
+senescence_age_threshold     = 3.0       # Age threshold for increased mortality (years)
+senescence_exp_rate          = 0.80      # Exponential rate for senescence
+temp_thermal_stress          = 8.0       # Temperature onset for thermal stress (°C)
+predation_size_exponent      = 0.03      # Size-dependent predation decay
+
+# --- Aggregate Stage Mortality ---
+# Hazard rate parameters for pre-individuation stages
+aggregate_stage_hazard_molt  = 0.35      # Molt transition hazard scale
+aggregate_stage_hazard_dd    = 0.15      # Degree-day deficit hazard scale
+
+[fishery]
+legal_size_male             = 95.0       # Minimum legal size (mm)
+fishing_probability_daily   = 0.0        # Daily harvest probability
+fishing_season_start        = 90.0       # Opening day of year
+fishing_season_end          = 150.0      # Closing day of year
+
+[output]
+save             = true
+save_file        = "simulation_results.csv"
+snapshot_day     = 274.0         # Day for annual survey snapshot
+frequency_days   = 365.0         # Output sampling interval (days)
+plot             = false
+output_dir       = "outputs"
+animate          = false
+animation_file   = "organism_animation.mp4"
+anim_frames      = 120
+anim_dt          = 2
+anim_fps         = 15
+anim_field       = "temperature"
+
+[leslie]
+# --- Stage Transition Parameters (for generalized Leslie model) ---
+# These are used by fit_generalized_leslie_model as initial values
+# Stage 1 (Recruit, stage 4)
+survival_stage1       = 0.74
+gamma_stage1          = 0.78
+
+# Stage 2 (Juvenile, stage 5)
+survival_stage2       = 0.76
+gamma_stage2          = 0.75
+male_split_fraction   = 0.50
+female_split_fraction = 0.50
+
+# Male stages (3-9)
+survival_male_legal       = 0.78
+survival_male_sublegal    = 0.80
+gamma_male_base           = 0.75
+gamma_male_decay          = 0.10
+p_term_male_base          = 0.10
+p_term_male_exponent      = 1.3
+
+# Female stages (3-9)
+survival_female           = 0.80
+gamma_female_base         = 0.70
+gamma_female_decay        = 0.12
+p_term_female_base        = 0.15
+p_term_female_exponent    = 1.4
+
+# Fecundity
+fecundity_base            = 0.85
+fecundity_size_exponent   = 2.5
+fecundity_size_reference  = 65.0
+
+# Trajectory refinement
+col_sum_cap               = 0.95
+col_sum_scale_low         = 0.85
+col_sum_scale_high        = 0.15

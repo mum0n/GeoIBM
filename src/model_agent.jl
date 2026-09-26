@@ -1,12 +1,11 @@
 """
     model_agent
 
-End-to-end individual- and agent-based simulation model (IBM) for the snow crab
-(*Chionoecetes opilio*).
+End-to-end individual- and agent-based simulation model (IBM) for biological populations.
 
 This package provides:
 - Agent definitions and life history stage tracking with explicit developmental `stage`.
-- Empirical biological rules (stage bounds, Hiatt growth increments, logistic maturity
+- Configurable biological rules (stage bounds, growth increments, logistic maturity
   schedules, allometric fecundity, and fishery selectivity).
 - Bioenergetics and dynamic spatial simulation in discrete grid environments.
 - High-level execution and statistical analysis utilities.
@@ -23,7 +22,7 @@ using Statistics
 # Include submodules and components
 include("types.jl")
 include("organism_dynamics.jl")
-include("snowcrab.jl")
+include("species.jl")
 include("simulation.jl")
 include("analysis.jl")
 include("visualization.jl")
@@ -33,13 +32,12 @@ include("cli.jl")
 # Export types and enums
 export LifeStage, Sex, zoea, megalopa, juvenile, adult, egg
 export male, female, undifferentiated
-export Organism, SnowCrab, IBMParameters, ProcessToggles
-export SnowCrabBehavior, SnowCrabParams, default_species_behavior
+export Organism, IBMParameters, ProcessToggles
+export SpeciesBehavior, SpeciesParams, default_species_behavior
 export AggregateGroup, AggregatePopulations
 export is_adult, is_adult_male, is_adult_female, is_ovigerous
 export is_legal_male, is_legal
 export mass_if_adult_female, mass_if_adult_male, mass_if_legal_male
-export weight_if_adult_female, weight_if_adult_male, weight_if_legal_male
 export StageDefinition
 export LeslieMatrixFit, MacroModelComparison, EmpiricalBiologicalModel
 
@@ -51,7 +49,7 @@ export sample_population, calculate_mass
 export build_stages, gaussian_kde, derive_stage_proportions_kde
 export generate_mock_survey_data, fit_empirical_biology_model
 export estimate_demographics, summarize_empirical_model
-export sample_organism_traits, sample_crab_traits
+export sample_organism_traits
 export FECUNDITY_PRIMIPAROUS_INTERCEPT, FECUNDITY_PRIMIPAROUS_SLOPE, FECUNDITY_PRIMIPAROUS_ERR
 export FECUNDITY_MULTIPAROUS_INTERCEPT, FECUNDITY_MULTIPAROUS_SLOPE, FECUNDITY_MULTIPAROUS_ERR
 
@@ -63,7 +61,7 @@ export step_aggregate_groups!, perform_development!, perform_reproduction!
 
 # Export simulation engine
 export initialize_model, agent_step!, model_step!, run_simulation
-export organism_disperse!, crab_disperse!, nagents, allagents, abmrng, safe_mean
+export organism_disperse!, nagents, allagents, abmrng, safe_mean
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
 
 # Export analysis tools
@@ -79,14 +77,13 @@ export summarize_leslie_model, compare_macro_models, summarize_macro_comparison
 export evaluate_population_criteria
 
 # Export visualization tools
-export plot_population_timeseries, plot_stage_distribution, plot_instar_distribution, plot_size_by_sex
-export plot_stage_allometry, plot_instar_allometry, plot_reproduction_dynamics, plot_spatial_habitat
+export plot_population_timeseries, plot_stage_distribution, plot_size_by_sex
+export plot_stage_allometry, plot_reproduction_dynamics, plot_spatial_habitat
 export plot_maturity_ogives, plot_simulation_dashboard, plot_stock_recruitment
 export plot_population_dynamics_fits, plot_retrospective_analysis, export_all_plots
 export plot_stage_specific_dynamics, plot_macro_model_comparison
 export organism_color, organism_size, organism_marker, organism_heatarray
-export crab_color, crab_size, crab_marker, crab_heatarray
-export plot_abm_summary, animate_organism_simulation, animate_snowcrab_simulation
+export plot_abm_summary, animate_organism_simulation
 export plot_functional_relationships
 export launch_organism_gui, IBMGuiState, step_gui_simulation!
 export parse_cli_args, run_ibm_cli, julia_main

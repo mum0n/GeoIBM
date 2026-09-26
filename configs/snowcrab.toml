@@ -1,0 +1,115 @@
+# ==============================================================================
+# Snow Crab (Chionoecetes opilio) Species-Specific Configuration
+# ==============================================================================
+# This file contains all parameters specific to snow crab biology.
+# It overrides the generic defaults in default.toml.
+#
+# References:
+# - Sainte-Marie, B. (1993). Reproductive cycle and fecundity of primiparous
+#   and multiparous female snow crab. CJFAS, 50(10), 2147-2156.
+# - Sainte-Marie, B., Raymond, S., & Brêthes, J. C. (1995). Growth and maturation
+#   of the benthic stages of male snow crab. CJFAS, 52(5), 903-924.
+# - DFO (2020). Assessment of Nova Scotia (4VWX) Snow Crab. DFO Can. Sci. Advis. Sec.
+# ==============================================================================
+
+[species]
+# --- Maturity (Log-Logistic Ogives) ---
+maturity_l50_male      = 91.8
+maturity_l50_male_sd   = 1.2
+maturity_slope_male    = 6.9957
+maturity_slope_male_sd = 0.25
+
+maturity_l50_female     = 51.6
+maturity_l50_female_sd  = 0.8
+maturity_slope_female   = 12.9812
+maturity_slope_female_sd = 0.40
+
+# --- Fecundity (Empirical Models) ---
+fecundity_parameterization = "moncton"
+fecundity_primiparous_intercept = -0.7229
+fecundity_primiparous_slope     = 2.94
+fecundity_primiparous_err       = 0.090
+fecundity_multiparous_intercept = 0.0158
+fecundity_multiparous_slope     = 2.5811
+fecundity_multiparous_err       = 0.145
+
+# --- Growth (Bivariate Normal: Intercept & Slope) ---
+growth_int_female    = 0.1931
+growth_beta1_female  = 0.0545
+growth_slp_female    = 1.0372
+growth_beta2_female  = -0.017376
+growth_beta3_female  = 0.005068
+
+growth_int_male      = 0.30153
+growth_beta1_male    = 0.02198
+growth_slp_male      = 1.00027
+growth_beta2_male    = -0.00643655
+growth_beta3_male    = 0.0017492
+
+# --- Gear Selectivity ---
+selectivity_s50       = 95.0
+selectivity_s50_sigma = 5.0
+
+# --- Allometric Mass Parameters ---
+mass_alpha_male_immature    = 0.0002665
+mass_beta_male_immature     = 3.098
+mass_alpha_male_mature      = 0.0001830
+mass_beta_male_mature       = 3.160
+mass_alpha_female_immature  = 0.0003440
+mass_beta_female_immature   = 2.980
+mass_alpha_female_mature    = 0.0004500
+mass_beta_female_mature     = 2.920
+mass_sigma                  = 0.08
+
+[organism]
+max_size_male       = 160.0
+max_size_female     = 95.0
+max_stage_male      = 16
+max_stage_female    = 14
+maturity_size_mid   = 60.0
+
+[phenology]
+molt_season_start    = 15.0
+molt_season_end      = 140.0
+mating_season_start  = 30.0
+mating_season_end    = 120.0
+mating_search_radius = 5
+brood_duration_base  = 365.0
+egg_survival_base    = 5.0e-5
+
+[mortality]
+soft_shell_duration       = 30.0
+senescence_age_threshold  = 3.0
+temp_thermal_stress       = 8.0
+
+[fishery]
+legal_size_male             = 95.0
+fishing_probability_daily   = 0.0
+fishing_season_start        = 90.0
+fishing_season_end          = 150.0
+
+[leslie]
+# Snow crab specific stage transition parameters
+survival_stage1       = 0.74
+gamma_stage1          = 0.78
+survival_stage2       = 0.76
+gamma_stage2          = 0.75
+male_split_fraction   = 0.50
+female_split_fraction = 0.50
+survival_male_legal       = 0.78
+survival_male_sublegal    = 0.80
+gamma_male_base           = 0.75
+gamma_male_decay          = 0.10
+p_term_male_base          = 0.10
+p_term_male_exponent      = 1.3
+survival_female           = 0.80
+gamma_female_base         = 0.70
+gamma_female_decay        = 0.12
+p_term_female_base        = 0.15
+p_term_female_exponent    = 1.4
+fecundity_base            = 0.85
+fecundity_size_exponent   = 2.5
+fecundity_size_reference  = 65.0
+col_sum_cap               = 0.95
+col_sum_scale_low         = 0.85
+col_sum_scale_high        = 0.15

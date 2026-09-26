@@ -184,13 +184,7 @@ end
 
 
 # Interface for species-specific biological processes
-function perform_development!(behavior::SpeciesBehavior, org::Organism, model)
-    error("perform_development! not implemented for behavior type $(typeof(behavior))")
-end
-
-function perform_reproduction!(behavior::SpeciesBehavior, org::Organism, model)
-    error("perform_reproduction! not implemented for behavior type $(typeof(behavior))")
-end
+# Concrete implementations in species.jl
 
 is_adult(org::Organism) = org.is_mature || org.stage >= 10
 is_adult_male(org::Organism) = is_adult(org) && org.sex === male
@@ -421,6 +415,104 @@ Base.@kwdef struct BinningParams
     max_size::Float64 = 100.0
 end
 
+"""
+    SpeciesParams
+
+Generic container for species-specific biological parameters.
+All values can be loaded from TOML configuration files.
+"""
+Base.@kwdef struct SpeciesParams
+    # Maturity (Log-Logistic Ogives)
+    maturity_l50_male::Float64 = 91.8
+    maturity_l50_male_sd::Float64 = 1.2
+    maturity_slope_male::Float64 = 6.9957
+    maturity_slope_male_sd::Float64 = 0.25
+
+    maturity_l50_female::Float64 = 51.6
+    maturity_l50_female_sd::Float64 = 0.8
+    maturity_slope_female::Float64 = 12.9812
+    maturity_slope_female_sd::Float64 = 0.40
+
+    # Fecundity (Empirical Models)
+    fecundity_parameterization::String = "moncton"
+    fecundity_primiparous_intercept::Float64 = -0.7229
+    fecundity_primiparous_slope::Float64 = 2.94
+    fecundity_primiparous_err::Float64 = 0.090
+    fecundity_multiparous_intercept::Float64 = 0.0158
+    fecundity_multiparous_slope::Float64 = 2.5811
+    fecundity_multiparous_err::Float64 = 0.145
+
+    # Growth (Bivariate Normal: Intercept & Slope)
+    growth_int_female::Float64 = 0.1931
+    growth_beta1_female::Float64 = 0.0545
+    growth_slp_female::Float64 = 1.0372
+    growth_beta2_female::Float64 = -0.017376
+    growth_beta3_female::Float64 = 0.005068
+
+    growth_int_male::Float64 = 0.30153
+    growth_beta1_male::Float64 = 0.02198
+    growth_slp_male::Float64 = 1.00027
+    growth_beta2_male::Float64 = -0.00643655
+    growth_beta3_male::Float64 = 0.0017492
+
+    # Gear Selectivity
+    selectivity_s50::Float64 = 95.0
+    selectivity_s50_sigma::Float64 = 5.0
+
+    # Allometric Mass Parameters
+    mass_alpha_male_immature::Float64 = 0.0002665
+    mass_beta_male_immature::Float64 = 3.098
+    mass_alpha_male_mature::Float64 = 0.0001830
+    mass_beta_male_mature::Float64 = 3.160
+    mass_alpha_female_immature::Float64 = 0.0003440
+    mass_beta_female_immature::Float64 = 2.980
+    mass_alpha_female_mature::Float64 = 0.0004500
+    mass_beta_female_mature::Float64 = 2.920
+    mass_sigma::Float64 = 0.08
+end
+
+"""
+    LeslieParams
+
+Parameters for the generalized Leslie (Lefkovitch) stage-transition matrix model.
+"""
+Base.@kwdef struct LeslieParams
+    # Stage 1 (Recruit, stage 4)
+    survival_stage1::Float64 = 0.74
+    gamma_stage1::Float64 = 0.78
+
+    # Stage 2 (Juvenile, stage 5)
+    survival_stage2::Float64 = 0.76
+    gamma_stage2::Float64 = 0.75
+    male_split_fraction::Float64 = 0.50
+    female_split_fraction::Float64 = 0.50
+
+    # Male stages (3-9)
+    survival_male_legal::Float64 = 0.78
+    survival_male_sublegal::Float64 = 0.80
+    gamma_male_base::Float64 = 0.75
+    gamma_male_decay::Float64 = 0.10
+    p_term_male_base::Float64 = 0.10
+    p_term_male_exponent::Float64 = 1.3
+
+    # Female stages (3-9)
+    survival_female::Float64 = 0.80
+    gamma_female_base::Float64 = 0.70
+    gamma_female_decay::Float64 = 0.12
+    p_term_female_base::Float64 = 0.15
+    p_term_female_exponent::Float64 = 1.4
+
+    # Fecundity
+    fecundity_base::Float64 = 0.85
+    fecundity_size_exponent::Float64 = 2.5
+    fecundity_size_reference::Float64 = 65.0
+
+    # Trajectory refinement
+    col_sum_cap::Float64 = 0.95
+    col_sum_scale_low::Float64 = 0.85
+    col_sum_scale_high::Float64 = 0.15
+end
+
 struct IBMParameters
     toggles::ProcessToggles
     simulation::SimulationParams
@@ -431,6 +523,8 @@ struct IBMParameters
     fishery::FisheryParams
     output::OutputParams
     binning::BinningParams
+    species::SpeciesParams
+    leslie::LeslieParams
 end
 
 function IBMParameters(; kwargs...)
@@ -443,6 +537,8 @@ function IBMParameters(; kwargs...)
     fishery_kwargs = Dict{Symbol, Any}()
     output_kwargs = Dict{Symbol, Any}()
     binning_kwargs = Dict{Symbol, Any}()
+    species_kwargs = Dict{Symbol, Any}()
+    leslie_kwargs = Dict{Symbol, Any}()
 
     for (k, v) in kwargs
         sym = Symbol(k)
@@ -464,6 +560,10 @@ function IBMParameters(; kwargs...)
             output_kwargs[sym] = v
         elseif sym in fieldnames(BinningParams)
             binning_kwargs[sym] = v
+        elseif sym in fieldnames(SpeciesParams)
+            species_kwargs[sym] = v
+        elseif sym in fieldnames(LeslieParams)
+            leslie_kwargs[sym] = v
         end
     end
 
@@ -476,10 +576,14 @@ function IBMParameters(; kwargs...)
     fishery = get(kwargs, :fishery, FisheryParams(; fishery_kwargs...))
     output = get(kwargs, :output, OutputParams(; output_kwargs...))
     binning = get(kwargs, :binning, BinningParams(; binning_kwargs...))
+    species = get(kwargs, :species, SpeciesParams(; species_kwargs...))
+    leslie = get(kwargs, :leslie, LeslieParams(; leslie_kwargs...))
+
+    @info "IBMParameters constructor" typeof(toggles) typeof(simulation) typeof(environment) typeof(organism) typeof(phenology) typeof(mortality) typeof(fishery) typeof(output) typeof(binning) typeof(species) typeof(leslie)
 
     return IBMParameters(
         toggles, simulation, environment, organism,
-        phenology, mortality, fishery, output, binning
+        phenology, mortality, fishery, output, binning, species, leslie
     )
 end
 
@@ -525,6 +629,10 @@ function Base.getproperty(p::IBMParameters, sym::Symbol)
         return getfield(getfield(p, :output), sym)
     elseif hasfield(BinningParams, sym)
         return getfield(getfield(p, :binning), sym)
+    elseif hasfield(SpeciesParams, sym)
+        return getfield(getfield(p, :species), sym)
+    elseif hasfield(LeslieParams, sym)
+        return getfield(getfield(p, :leslie), sym)
     else
         return getfield(p, sym)
     end

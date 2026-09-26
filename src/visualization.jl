@@ -46,12 +46,8 @@ function plot_population_timeseries(
     ax1 = Axis(
         fig[1, 1],
         title = "Snow Crab Abundance Dynamics",
-        xlabel = "Time (Days)",
+        xlabel = "Time",
         ylabel = "Count"
-    )
-    lines!(
-        ax1, agent_df.time, agent_df.length_stage,
-        label = "Total Living Crabs", linewidth = 2.0, color = :royalblue
     )
     if :count_is_adult in propertynames(agent_df)
         lines!(
@@ -78,7 +74,7 @@ function plot_population_timeseries(
     ax2 = Axis(
         fig[2, 1],
         title = "Mean Size Progression",
-        xlabel = "Time (Days)",
+        xlabel = "Time",
         ylabel = "Size (mm)"
     )
     lines!(
@@ -91,7 +87,7 @@ function plot_population_timeseries(
         ax3 = Axis(
             fig[3, 1],
             title = "Benthic Recruitment (Stage 4)",
-            xlabel = "Time (Days)",
+            xlabel = "Time",
             ylabel = "Cumulative Recruits"
         )
         lines!(
@@ -322,7 +318,7 @@ function plot_reproduction_dynamics(
     ax1 = Axis(
         fig[1, 1],
         title = "Brooding Ovigerous Females",
-        xlabel = "Time (Days)",
+        xlabel = "Time",
         ylabel = "Ovigerous Count"
     )
     if :count_is_ovigerous in propertynames(agent_df)
@@ -338,7 +334,7 @@ function plot_reproduction_dynamics(
     ax2 = Axis(
         fig[2, 1],
         title = "Cumulative Egg Production",
-        xlabel = "Time (Days)",
+        xlabel = "Time",
         ylabel = "Eggs (Millions)"
     )
     if :total_eggs_spawned in propertynames(model_df)
@@ -354,7 +350,7 @@ function plot_reproduction_dynamics(
     ax3 = Axis(
         fig[3, 1],
         title = "Cumulative Benthic Recruitment (Stage 4)",
-        xlabel = "Time (Days)",
+        xlabel = "Time",
         ylabel = "Recruits Settled"
     )
     if :total_recruits_settled in propertynames(model_df)
@@ -549,12 +545,8 @@ function plot_simulation_dashboard(
     ax1 = Axis(
         fig[1, 1],
         title = "A: Population Abundance",
-        xlabel = "Time (Days)",
+        xlabel = "Time",
         ylabel = "Count"
-    )
-    lines!(
-        ax1, agent_df.time, agent_df.length_stage,
-        label = "Total Crabs", linewidth = 2.0, color = :royalblue
     )
     if :count_is_adult in propertynames(agent_df)
         lines!(
@@ -693,7 +685,7 @@ function plot_simulation_dashboard(
         ax6 = Axis(
             fig[3, 2],
             title = "F: Benthic Recruitment (Stage 4)",
-            xlabel = "Time (Days)",
+            xlabel = "Time",
             ylabel = "Cumulative Recruits"
         )
         lines!(
@@ -705,7 +697,7 @@ function plot_simulation_dashboard(
         ax6 = Axis(
             fig[3, 2],
             title = "F: Mean Body Size",
-            xlabel = "Time (Days)",
+            xlabel = "Time",
             ylabel = "Size (mm)"
         )
         mean_sz = if :safe_mean_size in propertynames(agent_df)
@@ -1526,13 +1518,13 @@ function plot_macro_model_comparison(
     # Panel 1: Fishable Biomass Trajectories
     ax1 = Axis(
         fig[1, 1],
-        title = "A: Fishable Biomass Trajectories",
+        title = "A: Annual Biomass (Survey Period) Trajectories",
         xlabel = "Year",
         ylabel = "Biomass (kg)"
     )
     lines!(
         ax1, yrs, comp.biomass_obs_kg,
-        label = "Observed Fishable Biomass", linewidth = 2.5, color = :black
+        label = "Annual Biomass (Survey)", linewidth = 2.5, color = :black
     )
     scatter!(ax1, yrs, comp.biomass_obs_kg, markersize = 9, color = :black)
 
@@ -1920,12 +1912,3 @@ function plot_functional_relationships(
 
     return fig
 end
-
-# Backward compatibility aliases
-const crab_color = organism_color
-const crab_size = organism_size
-const crab_marker = organism_marker
-const crab_heatarray = organism_heatarray
-const animate_snowcrab_simulation = animate_organism_simulation
-const plot_instar_allometry = plot_stage_allometry
-const plot_instar_distribution = plot_stage_distribution
