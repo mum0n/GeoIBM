@@ -33,11 +33,16 @@ include("cli.jl")
 export LifeStage, Sex, zoea, megalopa, juvenile, adult, egg
 export male, female, undifferentiated
 export Organism, IBMParameters, ProcessToggles
-export SpeciesBehavior, SpeciesParams, default_species_behavior
+export SpeciesBehavior, SpeciesBehaviorImpl, SpeciesParams, default_species_behavior
+export PhenologyParams, MortalityParams, EnvironmentParams, LeslieParams
+export CriteriaParams
+export OrganismParams, ProcessToggles, SimulationParams, FisheryParams, OutputParams, BinningParams
 export AggregateGroup, AggregatePopulations
 export is_adult, is_adult_male, is_adult_female, is_ovigerous
+export is_mature_male, is_mature_female
 export is_legal_male, is_legal
-export mass_if_adult_female, mass_if_adult_male, mass_if_legal_male
+export mass_if_mature_female, mass_if_mature_male, mass_if_legal_male
+export named_predicate, NamedPredicate
 export StageDefinition
 export LeslieMatrixFit, MacroModelComparison, EmpiricalBiologicalModel
 
@@ -50,27 +55,44 @@ export build_stages, gaussian_kde, derive_stage_proportions_kde
 export generate_mock_survey_data, fit_empirical_biology_model
 export estimate_demographics, summarize_empirical_model
 export sample_organism_traits
-export FECUNDITY_PRIMIPAROUS_INTERCEPT, FECUNDITY_PRIMIPAROUS_SLOPE, FECUNDITY_PRIMIPAROUS_ERR
-export FECUNDITY_MULTIPAROUS_INTERCEPT, FECUNDITY_MULTIPAROUS_SLOPE, FECUNDITY_MULTIPAROUS_ERR
+export DEFAULT_FECUNDITY_PRIMIPAROUS_INTERCEPT, DEFAULT_FECUNDITY_PRIMIPAROUS_SLOPE, DEFAULT_FECUNDITY_PRIMIPAROUS_ERR
+export DEFAULT_FECUNDITY_MULTIPAROUS_INTERCEPT, DEFAULT_FECUNDITY_MULTIPAROUS_SLOPE, DEFAULT_FECUNDITY_MULTIPAROUS_ERR
 
 # Export organism dynamics and bioenergetics
 export calculate_energy_change, check_molt_conditions, perform_molt!
 export molt_probability, calculate_mortality_probability
+export mortality_components, dominant_mortality_cause
+export shell_age_years, individuation_stage
+export NamedAggregate, total_sum
+export total_benthic_abundance, benthic_density_feedback
 export shell_condition, min_intermolt_days, required_degree_days
 export step_aggregate_groups!, perform_development!, perform_reproduction!
 
 # Export simulation engine
 export initialize_model, agent_step!, model_step!, run_simulation
-export organism_disperse!, nagents, allagents, abmrng, safe_mean
+export default_agent_observations
+export organism_disperse!, nagents, allagents, abmrng, safe_mean, safe_sum
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
+export parameter_struct_defaults
+export config_field_types, config_field_type, coerce_config_value
+export struct_from_config, coerce_to_declared, try_coerce_to_declared, to_number
+export config_section_map, ibm_configuration_sections, parameter_structs
+export known_config_keys, runtime_config_keys, unknown_config_keys, cli_switch_keys
+export reconstruct_params, with_overrides
+export sync_grid_dimensions!
+export resolve_configuration_files
 
 # Export analysis tools
 export compute_empirical_ogive, summarize_population
+export maturity_ogive_residuals, maturity_ogive_mismatch, cumulative_maturity_curves
 export extract_stock_recruitment, fit_stock_recruitment, summarize_stock_recruitment
 export save_simulation_results, load_simulation_results, extract_annual_production
+export annual_production_targets, empty_annual_production, ANNUAL_PRODUCTION_SCHEMA
 export write_dataframe_csv, read_dataframe_csv
 export fit_schaefer, fit_delay_difference, fit_population_dynamics
 export summarize_population_dynamics
+export optimize_model, optimize_blocks, safe_objective, OBJECTIVE_PENALTY, safe_objective
+export logistic_unit, logit
 export mohn_rho, retrospective_analysis, summarize_retrospective
 export extract_annual_stage_matrix, fit_generalized_leslie_model
 export summarize_leslie_model, compare_macro_models, summarize_macro_comparison
@@ -82,11 +104,15 @@ export plot_stage_allometry, plot_reproduction_dynamics, plot_spatial_habitat
 export plot_maturity_ogives, plot_simulation_dashboard, plot_stock_recruitment
 export plot_population_dynamics_fits, plot_retrospective_analysis, export_all_plots
 export plot_stage_specific_dynamics, plot_macro_model_comparison
+export fmt_param
 export organism_color, organism_size, organism_marker, organism_heatarray
 export plot_abm_summary, animate_organism_simulation
 export plot_functional_relationships
 export launch_organism_gui, IBMGuiState, step_gui_simulation!
+export create_empty_annual_data
 export parse_cli_args, run_ibm_cli, julia_main
+export print_simulation_report, print_save_step_outputs, generate_summary_plots
+export display_cli_help
 export Figure
 
 end # module model_agent

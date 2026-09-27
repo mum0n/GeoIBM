@@ -1,7 +1,7 @@
 name = "model_agent"
 uuid = "c4601835-c3b2-4cd5-956f-7b396041e2d9"
-authors = ["Jae S. Choi"]
 version = "0.1.0"
+authors = ["Jae S. Choi"]
 
 [deps]
 Agents = "46ada45e-f475-11e8-01d0-f70cc89e6671"
@@ -12,6 +12,7 @@ DrWatson = "634d3b9d-ee7a-5ddf-bec9-22491ea816e1"
 GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 KaimonGate = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Optim = "429524aa-4258-5aef-a3af-852621145aeb"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Qdrant = "dbfca70a-f45c-4ba8-8c04-a9b96ef74a4f"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
@@ -22,4 +23,5 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 [compat]
 CairoMakie = "0.15"
 DrWatson = "2.18.0"
+Optim = "2.3.2"
 julia = "1.11.1"

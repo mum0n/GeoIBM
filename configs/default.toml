@@ -1,231 +1,356 @@
-# ==============================================================================
-# Biological Individual-Based Model (BIBM) Default Configuration
-# ==============================================================================
-# This file defines the complete set of parameters for the BIBM engine.
-# It is organized by functional group to facilitate customization and
-# species-specific modeling.
+# =============================================================================
+# Organism Individual-Based Model (IBM) — baseline configuration
+# =============================================================================
+# Every parameter the model declares, at its declared default. This file is the
+# reference: `test/runtests.jl` asserts it agrees with the parameter structs in
+# both directions, so a value here that no longer matches its struct default
+# fails the suite rather than silently differing from the code.
 #
-# Structure:
-#   [simulation]        - Core execution, time stepping, and feature toggles
-#   [environment]       - External drivers (temperature, food)
-#   [organism]          - Generic morphometric and energetic parameters
-#   [species]           - Species-specific biological rules
-#   [phenology]         - Seasonal windows for life-history events
-#   [mortality]         - Drivers of individual death/removal
-#   [fishery]           - Human interaction and harvest parameters
-#   [output]            - Data serialization and visualization settings
-#   [leslie]            - Stage-structured matrix model parameters
-# ==============================================================================
+# For a species run, layer `configs/snowcrab.toml` on top of this — the loader
+# applies the baseline first and the overlay second.
+#
+# Every parameter is also settable by exact name on the command line, e.g.
+#   --legal_size_male=80.0 --n_agents=500
+# Command-line values take precedence over this file, which takes precedence
+# over the values in the parameter structs.
 
+# -----------------------------------------------------------------------------
+# [toggles] — feature switches for modular architecture
+# -----------------------------------------------------------------------------
+[toggles]
+use_energetics        = true    # Energetic budgets (intake, metabolism, growth)
+use_thermal_stress    = true    # Mortality above temp_thermal_stress
+use_cannibalism       = false   # Large individuals eat smaller ones
+use_senescence        = true    # Mortality rising with shell age
+use_spermatheca       = true    # Females store sperm across broods
+use_movement          = true    # Dispersal and habitat-directed movement
+use_directed_movement = true    # Movement biased toward cold, food-rich cells
+use_fishery           = true    # Commercial harvest
+use_degree_days       = true    # Degree-day ecdysis gates
+use_molting           = true    # Growth by ecdysis (immature individuals only)
+use_reproduction      = true    # Mating, brooding and egg extrusion
+
+# -----------------------------------------------------------------------------
+# [simulation] — execution, time stepping, and grid
+# -----------------------------------------------------------------------------
 [simulation]
-# --- Feature Toggles (Modular Architecture) ---
-use_energetics      = true
-use_thermal_stress  = true
-use_food_dynamics   = true
-use_habitat_taxis   = true
-use_cannibalism     = false
-use_senescence      = true
-use_reproduction    = true
-use_recruitment     = true
-use_degree_days     = true
-use_molting         = true
-use_movement        = true
-use_directed_movement = true
-use_fishery         = true
-use_spermatheca     = true
+dt                      = 1.0     # Time step in days
+seed                    = 1234    # RNG seed; a run is reproducible given this
+n_agents                = 300     # Initial number of individuated agents
+days                    = 730     # Total simulated duration in days
+grid_nx                 = 100     # Grid width in cells
+grid_ny                 = 100     # Grid height in cells
+days_per_year           = 365.0   # Calendar length; day-of-year is taken modulo this
+temp_seasonal_phase_day = 80.0    # Day of year at peak temperature
 
-# --- Execution Parameters ---
-dt                  = 1.0         # Time step in days
-seed                = 1234        # RNG seed for reproducibility
-n_agents            = 300         # Initial population size (for adult/juvenile agents)
-days                = 730         # Total simulation duration (days)
-grid_nx             = 100         # Spatial grid width
-grid_ny             = 100         # Spatial grid height
-
-[binning]
-use_bins            = true        # Use aggregate distributions for early stages?
-n_age_bins          = 50          # Number of age bins (for non-spatial populations)
-n_size_bins         = 20          # Number of size/length bins
-min_size            = 1.0         # Minimum bin edge [mm]
-max_size            = 100.0       # Maximum bin edge for early stages [mm]
-
+# -----------------------------------------------------------------------------
+# [environment] — external drivers
+# -----------------------------------------------------------------------------
 [environment]
-# --- Thermal Regime ---
-temp_base           = 5.0         # Annual baseline temperature (°C)
-temp_amplitude      = 4.0         # Seasonal oscillation amplitude (°C)
-temp_noise_sd       = 0.5         # Spatial thermal stochasticity (SD)
-habitat_quality_mean = 1.0        # Mean habitat quality [0-1]
-habitat_quality_sd  = 0.1         # Spatial habitat quality stochasticity (SD)
-temp_base_degreedays = 0.0        # Base threshold for degree-day accumulation
+# --- Thermal regime ---
+temp_base             = 5.0        # Annual baseline temperature (deg C)
+temp_amplitude        = 4.0        # Seasonal oscillation amplitude (deg C)
+temp_noise_sd         = 0.5        # Spatial thermal stochasticity (SD)
+temp_base_degreedays  = 0.0        # Extra degree-days contributed by temperature
+# --- Food and habitat ---
+food_max                        = 10.0    # Maximum local benthic food density
+food_replenishment_rate         = 0.1     # Daily replenishment increment per cell
+benthic_carrying_capacity       = 300.0   # Total benthic capacity for the WHOLE
+                                            # model, not per cell
+benthic_carrying_capacity_exponent = 2.0   # Exponent in 1 + (N / K)^exponent
+half_saturation_food            = 2.0     # Half-saturation constant for intake
+assimilation_efficiency         = 0.75    # Food to energy conversion efficiency
+habitat_quality_mean            = 1.0     # Mean habitat quality on [0, 1]
+habitat_quality_sd              = 0.1     # Spatial habitat quality stochasticity
 
-# --- Food & Resource Dynamics ---
-food_max            = 10.0        # Maximum local benthic food density
-food_replenishment_rate = 0.1     # Daily replenishment increment per cell
-benthic_carrying_capacity = 300.0 # Regional carrying capacity target
-half_saturation_food = 2.0        # Half-saturation constant for intake
-assimilation_efficiency = 0.75    # Efficiency of food to energy conversion
-
+# -----------------------------------------------------------------------------
+# [organism] — generic morphometry, energetics and growth
+# -----------------------------------------------------------------------------
 [organism]
-# --- Generic Morphometry & Energy ---
-max_size_male       = 160.0       # Max size (mm)
-max_size_female     = 95.0        # Max size (mm)
-max_stage_male      = 16          # Maximum developmental stage for males
-max_stage_female    = 14          # Maximum developmental stage for females
-maturity_size_mid   = 60.0        # Median size at maturity (mm)
+# --- Size limits and stage structure ---
+max_size_male                = 160.0   # Maximum male carapace width (mm)
+max_size_female              = 95.0    # Maximum female carapace width (mm)
+max_stage_male               = 16      # Terminal developmental stage, males
+max_stage_female             = 14      # Terminal developmental stage, females
+juvenile_max_stage           = 6       # Last stage before benthic life
+# Size (mm) at or above which an individual counts as past the juvenile phase for
+# allometry and for display, even if it never matured. A size test, not a
+# reproductive one: spawning stock uses maturity, not this threshold. It also
+# replaces a hardcoded stage boundary that was specific to one species.
+adult_size_threshold         = 68.0
+# --- Metabolic and feeding coefficients ---
+metabolic_rate_base             = 0.01   # Basal metabolic coefficient
+intake_rate_base                = 0.05   # Saturation ingestion coefficient
+metabolic_mass_exponent         = 0.75   # Mass exponent on metabolic rate
+metabolic_temperature_coefficient = 0.08 # Temperature sensitivity of metabolism
+metabolic_optimal_temperature   = 3.0    # Temperature of peak scope
+metabolic_optimal_sigma         = 2.5    # Width of the scope-for-growth curve
+specific_dynamic_action         = 0.15   # Respiration / assimilation scaling
+# --- Molt energetics and hazard ---
+energy_molt_slope            = 0.03      # Energy cost slope on mass
+energy_molt_floor            = 2.0       # Energy cost floor
+molt_energy_retention        = 0.1       # Fraction of pre-molt energy retained
+molt_energy_base_fraction    = 0.85      # Baseline molt energy fraction
+molt_hazard_coefficient      = 0.15      # Coefficient on the daily molt hazard
+molt_progress_saturation     = 3.0       # Progress-ratio saturation bound
+initial_energy               = 10.0      # Energy reserve at settlement
+# --- Stage size sampling ---
+stage_size_sample_a          = 2.5       # Log-normal size-sample shape
+stage_size_sample_b          = 2.5       # Log-normal size-sample scale
+# --- Shell age inference ---
+# Shell age is inferred as
+#   (age_days - offset * (stage - first)) / days_per_year
+shell_age_stage_offset      = 180.0      # Days of offset per stage beyond first
+shell_age_first_stage       = 3          # Stage at which the inference starts
+shell_condition_days        = [30.0, 365.0, 730.0, 1277.5]  # Condition checkpoints
+# --- Eggs ---
+egg_mass_g                  = 7.0e-5     # Mass per egg (g)
+egg_size_mm                 = 0.6        # Egg diameter (mm)
+# Probability of removing an energy deficit as mortality rather than
+# suppressing it. Below 1.0 a starving individual may instead lose condition and
+# recover if food returns.
+energy_deficit_removal_probability = 0.75
 
-metabolic_rate_base = 0.01        # Basal metabolic coefficient
-intake_rate_base    = 0.05        # Saturation-limit ingestion coeff (g^0.75 d^-1)
-
-energy_molt_threshold  = 50.0     # Energy required to trigger molt
-energy_molt_slope      = 1.5      # Allometric scaling of molt requirement
-molt_energy_retention  = 0.10     # Fraction of energy retained post-ecdysis
-
-min_mating_energy_fraction = 0.1  # Min energy fraction for mating eligibility
-initial_energy             = 10.0 # Starting metabolic reserve
-molt_probability_scale     = 45.0 # Scale for molt probability
-
+# -----------------------------------------------------------------------------
+# [species] — snow crab biological rules
+# -----------------------------------------------------------------------------
+# The struct defaults already hold the snow crab reference values, so this
+# section and `configs/snowcrab.toml` currently agree. The overlay exists so
+# that changing species means editing one obvious file.
 [species]
-# --- Maturity (Log-Logistic Ogives) ---
-# Generic defaults - override in species-specific config
-maturity_l50_male      = 91.8
-maturity_l50_male_sd   = 1.2
-maturity_slope_male    = 6.9957
-maturity_slope_male_sd = 0.25
+# --- Maturity ogive (logistic in log-size) ---
+maturity_l50_male         = 91.8        # Male size at 50% maturity (mm)
+maturity_l50_male_sd      = 1.2         # Between-cohort SD of the male L50
+maturity_slope_male       = 6.9957      # Male logistic slope
+maturity_slope_male_sd    = 0.25        # SD of the male slope
+maturity_l50_female       = 51.6        # Female size at 50% maturity (mm)
+maturity_l50_female_sd    = 0.8         # Between-cohort SD of the female L50
+maturity_slope_female     = 12.9812     # Female logistic slope
+maturity_slope_female_sd  = 0.4         # SD of the female slope
+maturity_size_gate        = 35.0        # No maturation below this size (mm)
+maturity_l50_temp_slope   = -2.0        # L50 shift per deg C from reference
+maturity_temp_reference   = 4.0         # Reference temperature for that shift
+# --- Fecundity (Moncton form) ---
+fecundity_parameterization     = "moncton"    # "moncton" or "stmarie"
+fecundity_primiparous_intercept = -0.7229     # Primiparous log-eggs intercept
+fecundity_primiparous_slope     = 2.94        # Primiparous log-eggs slope
+fecundity_primiparous_err       = 0.09        # Primiparous residual SD
+fecundity_multiparous_intercept = 0.0158      # Multiparous log-eggs intercept
+fecundity_multiparous_slope     = 2.5811      # Multiparous log-eggs slope
+fecundity_multiparous_err       = 0.145       # Multiparous residual SD
+fecundity_intercept_sd          = 0.05        # SD of the intercept estimate
+# --- Fecundity (St. Mary form) ---
+fecundity_stmarie_exponent    = 2.725    # St. Mary power-law exponent
+fecundity_stmarie_coefficient = 0.7311   # St. Mary power-law coefficient
+# --- Fecundity senescence ---
+fecundity_senescence_threshold = 3.0    # Shell age at which decline starts (y)
+fecundity_senescence_floor     = 0.6    # Multiplier floor
+fecundity_senescence_rate      = 0.08   # Decline rate per year past threshold
+# --- Growth: females ---
+growth_int_female              = 0.1931     # Growth intercept
+growth_beta1_female            = 0.0545     # Size coefficient
+growth_slp_female              = 1.0372     # Temperature coefficient
+growth_beta2_female            = -0.017376  # Quadratic size term
+growth_beta3_female            = 0.005068   # Cubic size term
+# --- Growth: males ---
+growth_int_male                = 0.30153    # Growth intercept
+growth_beta1_male              = 0.02198    # Size coefficient
+growth_slp_male                = 1.00027    # Temperature coefficient
+growth_beta2_male              = -0.00643655 # Quadratic size term
+growth_beta3_male              = 0.0017492  # Cubic size term
+# --- Growth: shared ---
+growth_maturation_penalty_male_mean   = -0.13564 # Log-size penalty at maturity
+growth_maturation_penalty_male_sd     = 0.00922
+growth_maturation_penalty_female_mean = -0.131
+growth_maturation_penalty_female_sd   = 0.0252
+growth_condition_coefficient   = 0.05   # Response to a 1.0 condition factor
+growth_temperature_coefficient = -0.004 # Growth response per deg C
+growth_temperature_reference   = 4.0    # Reference temperature (deg C)
+growth_residual_sd             = 0.04   # Between-individual growth SD
+growth_min_expansion_immature  = 0.12   # Minimum fractional growth, immature
+growth_min_expansion_mature    = 0.06   # Minimum fractional growth, mature
+# --- Stage lower bounds ---
+# Pre-benthic stages come from a small lookup split at the breakpoints.
+size_lb_immature_sizes       = [0.95, 1.45, 2.5]  # Lower bounds (mm)
+size_lb_immature_breakpoints = [1.5, 2.5]          # Stage split points
+size_lb_male_intercept       = 1.917564
+size_lb_male_slope           = 0.298914
+size_lb_male_anchor_stage    = 3.0      # Stage at which the fit is anchored
+size_lb_female_intercept     = 2.198848
+size_lb_female_slope         = 0.315026
+size_lb_female_anchor_stage  = 4.0
+benthic_anchor_stage         = 4.0      # First stage with sex-specific bounds
+# --- Fishery selectivity (logistic in size) ---
+selectivity_s50       = 95.0   # Size at 50% retention (mm)
+selectivity_s50_sigma = 5.0    # Retention bandwidth (mm)
+# --- Wet-mass allometry, mass = alpha * size^beta (g) ---
+mass_alpha_male_immature   = 0.0002665
+mass_beta_male_immature    = 3.098
+mass_alpha_male_mature     = 0.000183
+mass_beta_male_mature      = 3.16
+mass_alpha_female_immature = 0.000344
+mass_beta_female_immature  = 2.98
+mass_alpha_female_mature   = 0.00045
+mass_beta_female_mature    = 2.92
+mass_sigma                 = 0.08  # Between-individual mass SD
+# --- Ecdysis schedules, indexed by benthic stage ---
+intermolt_days_schedule = [60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0]
+degree_days_schedule   = [150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0]
+# --- Larval schedules, indexed by zoea stage ---
+intermolt_days_larval = [0.0, 5.0, 10.0]
+degree_days_larval    = [0.0, 20.0, 40.0]
 
-maturity_l50_female     = 51.6
-maturity_l50_female_sd  = 0.8
-maturity_slope_female   = 12.9812
-maturity_slope_female_sd = 0.40
-
-# --- Fecundity (Empirical Models) ---
-fecundity_parameterization = "moncton"
-fecundity_primiparous_intercept = -0.7229
-fecundity_primiparous_slope     = 2.94
-fecundity_primiparous_err       = 0.090
-fecundity_multiparous_intercept = 0.0158
-fecundity_multiparous_slope     = 2.5811
-fecundity_multiparous_err       = 0.145
-
-# --- Growth (Bivariate Normal: Intercept & Slope) ---
-growth_int_female    = 0.1931
-growth_beta1_female  = 0.0545
-growth_slp_female    = 1.0372
-growth_beta2_female  = -0.017376
-growth_beta3_female  = 0.005068
-
-growth_int_male      = 0.30153
-growth_beta1_male    = 0.02198
-growth_slp_male      = 1.00027
-growth_beta2_male    = -0.00643655
-growth_beta3_male    = 0.0017492
-
-# --- Gear Selectivity ---
-selectivity_s50       = 95.0
-selectivity_s50_sigma = 5.0
-
-# --- Allometric Mass Parameters ---
-mass_alpha_male_immature    = 0.0002665
-mass_beta_male_immature     = 3.098
-mass_alpha_male_mature      = 0.0001830
-mass_beta_male_mature       = 3.160
-mass_alpha_female_immature  = 0.0003440
-mass_beta_female_immature   = 2.980
-mass_alpha_female_mature    = 0.0004500
-mass_beta_female_mature     = 2.920
-mass_sigma                  = 0.08
-
-# --- Stage Size Bounds (empirical lower bounds) ---
-# Format: stage_sex_lower_bound = "stage,sex,size" (comma-separated, pipe-delimited)
-# Male: stage 4=exp(1.917564+0.298914*(4-3))≈22.0, stage 5≈31.0, etc.
-# Female: stage 4=exp(2.198848+0.315026*(4-4))≈22.0, stage 5≈30.5, etc.
-# These define the theoretical growth curves (llbm, llbf)
-
+# -----------------------------------------------------------------------------
+# [phenology] — seasonal windows for life-history events
+# -----------------------------------------------------------------------------
 [phenology]
-# --- Seasonal Windows (Day of Year: 1-365) ---
-molt_season_start    = 15.0
-molt_season_end      = 140.0
-mating_season_start  = 30.0
-mating_season_end    = 120.0
+molt_season_start            = 15.0    # First day of the molt season
+molt_season_end              = 140.0   # Last day of the molt season
+mating_season_start          = 30.0    # First day of the mating season
+mating_season_end            = 120.0   # Last day of the mating season
+mating_search_radius         = 5       # Mate search radius in cells
+egg_survival_base            = 5.0e-5  # Baseline probability an egg survives
+brood_duration_base          = 365.0   # Brood duration at the reference temperature
+brood_temperature_reference  = 5.0     # Reference temperature for the duration
+brood_temperature_exponent   = 0.3     # Duration scales as (T_ref / T)^exponent
+brood_duration_sd            = 5.0     # Between-female SD of brood duration
+molt_season_min_stage        = 7       # Youngest stage that can molt
+molt_thermal_onset           = 10.0    # Temperature at which molting is possible
+molt_thermal_bandwidth       = 3.0     # Width of the thermal molt window
 
-# --- Life History Timing & Success ---
-mating_search_radius = 5          # Search radius in grid cells
-brood_duration_base  = 365.0      # Incubation duration (days)
-egg_survival_base    = 5.0e-5     # Survival from egg to recruit
-
+# -----------------------------------------------------------------------------
+# [mortality] — annual instantaneous rates, converted to daily hazards
+# -----------------------------------------------------------------------------
+# A daily hazard is `rate / days_per_year`, using the `days_per_year` in
+# [simulation]. It is deliberately not repeated here: the flat configuration maps
+# a key by name, so two fields with the same name cannot be set independently.
 [mortality]
-# --- Natural Mortality Parameters ---
-# Base instantaneous mortality rates (per day)
-mortality_base_predation     = 0.20 / 365.0
-mortality_base_starvation    = 0.20 / 365.0
-mortality_base_thermal       = 0.15 / 365.0
-mortality_base_senescence    = 0.08 / 365.0
+# --- Annual rates ---
+rate_baseline      = 0.2   # Background natural mortality
+rate_predation     = 0.15  # Predation mortality
+rate_soft_shell    = 0.12  # Predation on a freshly molted soft shell
+rate_starvation    = 0.2   # Starvation mortality
+rate_thermal       = 0.05  # Thermal stress mortality
+rate_senescence    = 0.08  # Senescence mortality
+rate_cannibalism   = 0.05  # Cannibalism mortality
+# --- Baseline hazard modifiers ---
+baseline_trait_sigma       = 0.25  # Between-individual baseline SD
+baseline_juvenile_multiplier = 2.5  # Juvenile baseline multiplier
+# --- Predation ---
+predation_size_reference = 5.0   # Size at which predation risk is reference
+predation_size_decay     = 0.03  # Risk decay per mm above the reference
+# --- Soft shell ---
+# Vulnerable only within `soft_shell_duration` days of the ecdysis, decaying with
+# e-folding time `soft_shell_decay_days`. Beyond the window the risk is zero.
+soft_shell_duration   = 30.0   # Vulnerability window in days
+soft_shell_decay_days = 15.0   # E-folding time of the decay
+# --- Starvation ---
+starvation_critical_fraction = 0.05  # Energy fraction that counts as starving
+# --- Thermal stress ---
+temp_thermal_stress = 8.0  # Temperature above which thermal stress applies (deg C)
+thermal_exponent    = 1.5  # Exponent on the thermal excess
+# --- Senescence ---
+# Unbounded in age, so the hazard is capped at hazard_cap.
+senescence_age_threshold = 3.0  # Shell age at which senescence starts (years)
+senescence_exp_rate      = 0.8  # Exponential rate past the threshold
+# --- Cannibalism ---
+cannibalism_size_threshold    = 35.0  # Minimum predator size (mm)
+cannibalism_density_reference = 10.0  # Reference local density
+cannibalism_density_cap       = 2.0   # Cap on the density multiplier
+# --- Aggregate (pre-individuation) groups ---
+aggregate_hazard_degree_days    = 0.15  # Death hazard from unmet degree-days
+aggregate_hazard_intermolt      = 0.2   # Death hazard from overrunning intermolt
+aggregate_transition_hazard     = 0.35  # Per-ecdysis death hazard
+aggregate_transition_saturation = 10.0  # Stage-index saturation bound
+# --- Guard ---
+# Every daily hazard is capped, because senescence is unbounded in age and a
+# terminal-molt individual never molts again. A clamped probability is not one
+# the model predicted, so reaching this cap is reported.
+hazard_cap = 1.0
 
-# Modifiers
-soft_shell_duration          = 30.0      # Duration of post-molt vulnerability (days)
-senescence_age_threshold     = 3.0       # Age threshold for increased mortality (years)
-senescence_exp_rate          = 0.80      # Exponential rate for senescence
-temp_thermal_stress          = 8.0       # Temperature onset for thermal stress (°C)
-predation_size_exponent      = 0.03      # Size-dependent predation decay
-
-# --- Aggregate Stage Mortality ---
-# Hazard rate parameters for pre-individuation stages
-aggregate_stage_hazard_molt  = 0.35      # Molt transition hazard scale
-aggregate_stage_hazard_dd    = 0.15      # Degree-day deficit hazard scale
-
+# -----------------------------------------------------------------------------
+# [fishery] — commercial harvest
+# -----------------------------------------------------------------------------
 [fishery]
-legal_size_male             = 95.0       # Minimum legal size (mm)
-fishing_probability_daily   = 0.0        # Daily harvest probability
-fishing_season_start        = 90.0       # Opening day of year
-fishing_season_end          = 150.0      # Closing day of year
+# Size at or above which a male is legally harvestable (mm). Maturity is NOT
+# required: the regulation is size-based. Harvest opportunity begins at
+# `fishing_season_start` on or after this size is reached.
+legal_size_male           = 95.0
+fishing_probability_daily = 0.0    # Daily probability a legal male is caught
+fishing_season_start      = 90.0   # First day of the fishing season
+fishing_season_end        = 150.0  # Last day of the fishing season
 
+# -----------------------------------------------------------------------------
+# [output] — sampling, serialization and figures
+# -----------------------------------------------------------------------------
 [output]
-save             = true
-save_file        = "simulation_results.csv"
-snapshot_day     = 274.0         # Day for annual survey snapshot
-frequency_days   = 365.0         # Output sampling interval (days)
-plot             = false
-output_dir       = "outputs"
-animate          = false
-animation_file   = "organism_animation.mp4"
-anim_frames      = 120
-anim_dt          = 2
-anim_fps         = 15
-anim_field       = "temperature"
+save           = true                      # Write the annual indicator CSV
+save_file      = "simulation_results.csv"  # Output filename for that CSV
+# Day of year at which each annual snapshot is taken (~1 September).
+snapshot_day   = 274.0
+# Sampling interval in days. 365.0 means one snapshot per year at `snapshot_day`;
+# anything shorter samples every `frequency_days` days and the `day` column
+# becomes a genuine day of year for each sample.
+frequency_days = 365.0
+plot           = false                      # Export the diagnostic figure set
+output_dir     = "outputs"                 # Where figures and data are written
+animate        = false                      # Record an mp4 animation
+animation_file = "organism_animation.mp4"
+anim_frames    = 120     # Frames in the animation
+anim_dt        = 2       # Days advanced per animation frame
+anim_fps       = 15      # Playback frame rate
+anim_field     = "temperature"  # Quantity the animation colour-maps
 
+# -----------------------------------------------------------------------------
+# [binning] — aggregate distributions for pre-individuation stages
+# -----------------------------------------------------------------------------
+[binning]
+use_bins     = true    # Use aggregate groups for early stages
+n_age_bins   = 50      # Age bins for non-spatial populations
+n_size_bins  = 20      # Size bins
+min_size     = 1.0     # Lower bin edge (mm)
+max_size     = 100.0   # Upper bin edge (mm)
+
+# -----------------------------------------------------------------------------
+# [leslie] — stage-structured projection rates
+# -----------------------------------------------------------------------------
 [leslie]
-# --- Stage Transition Parameters (for generalized Leslie model) ---
-# These are used by fit_generalized_leslie_model as initial values
-# Stage 1 (Recruit, stage 4)
-survival_stage1       = 0.74
-gamma_stage1          = 0.78
+survival_stage1        = 0.74  # Stage 1 survival
+gamma_stage1           = 0.78  # Stage 1 recruitment to stage 2
+survival_stage2        = 0.76  # Stage 2 survival
+gamma_stage2           = 0.75  # Stage 2 recruitment to stage 3
+male_split_fraction    = 0.5   # Fraction of recruits that are male
+female_split_fraction  = 0.5   # Fraction of recruits that are female
+survival_male_legal    = 0.78  # Survival of legal-sized males
+survival_male_sublegal = 0.8   # Survival of sublegal males
+survival_female        = 0.8   # Survival of females
+gamma_male_base        = 0.75  # Male recruitment rate
+gamma_male_decay       = 0.1   # Per-stage decay of the male rate
+gamma_female_base      = 0.7   # Female recruitment rate
+gamma_female_decay     = 0.12  # Per-stage decay of the female rate
+# Production term: p_term = base * stage^exponent
+p_term_male_base       = 0.1   # Male production coefficient
+p_term_male_exponent   = 1.3   # Male production stage exponent
+p_term_female_base     = 0.15  # Female production coefficient
+p_term_female_exponent = 1.4   # Female production stage exponent
+# Fecundity used by the projection: fecundity_base * (size / reference)^exponent
+fecundity_base        = 0.85   # Fecundity coefficient
+fecundity_size_exponent = 2.5  # Fecundity size exponent
+fecundity_size_reference = 65.0 # Size at which fecundity_base applies (mm)
+# Column-sum rescaling, used when the projection's total does not reconcile
+# with the observed catch-and-survival data.
+col_sum_cap           = 0.95  # Cap on the total column-sum multiplier
+col_sum_scale_low     = 0.85  # Multiplier when the projection is below observed
+col_sum_scale_high    = 0.15  # Additive slack above the cap
 
-# Stage 2 (Juvenile, stage 5)
-survival_stage2       = 0.76
-gamma_stage2          = 0.75
-male_split_fraction   = 0.50
-female_split_fraction = 0.50
-
-# Male stages (3-9)
-survival_male_legal       = 0.78
-survival_male_sublegal    = 0.80
-gamma_male_base           = 0.75
-gamma_male_decay          = 0.10
-p_term_male_base          = 0.10
-p_term_male_exponent      = 1.3
-
-# Female stages (3-9)
-survival_female           = 0.80
-gamma_female_base         = 0.70
-gamma_female_decay        = 0.12
-p_term_female_base        = 0.15
-p_term_female_exponent    = 1.4
-
-# Fecundity
-fecundity_base            = 0.85
-fecundity_size_exponent   = 2.5
-fecundity_size_reference  = 65.0
-
-# Trajectory refinement
-col_sum_cap               = 0.95
-col_sum_scale_low         = 0.85
-col_sum_scale_high        = 0.15
+# -----------------------------------------------------------------------------
+# [criteria] — multi-attribute evaluation criteria
+# -----------------------------------------------------------------------------
+# The floor is an absolute count and is deliberately independent of the carrying
+# capacity: the population regulates around a fraction of K, so a K-derived floor
+# reported healthy self-regulated runs as extinct. 1 means "not extinct". The
+# ceiling is a multiple of K, because "did not explode past the scale it was
+# configured for" is a statement about K.
+[criteria]
+min_population         = 1     # Persistence floor: not-extinct threshold
+max_population_multiple = 3.0  # Explosion ceiling, as a multiple of K

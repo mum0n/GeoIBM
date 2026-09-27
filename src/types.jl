@@ -186,16 +186,127 @@ end
 # Interface for species-specific biological processes
 # Concrete implementations in species.jl
 
-is_adult(org::Organism) = org.is_mature || org.stage >= 10
-is_adult_male(org::Organism) = is_adult(org) && org.sex === male
-is_adult_female(org::Organism) = is_adult(org) && org.sex === female
-is_ovigerous(org::Organism) = is_adult_female(org) && org.egg_count > 0
-is_legal_male(org::Organism; legal_size::Float64 = 95.0) = is_adult_male(org) && org.size >= legal_size
-is_legal(org::Organism; legal_size::Float64 = 95.0) = is_legal_male(org; legal_size=legal_size)
+"""
+    is_mature_male(org)
 
-mass_if_adult_female(org::Organism) = is_adult_female(org) ? org.mass : 0.0
-mass_if_adult_male(org::Organism) = is_adult_male(org) ? org.mass : 0.0
-mass_if_legal_male(org::Organism; legal_size::Float64 = 95.0) = is_legal_male(org; legal_size=legal_size) ? org.mass : 0.0
+Male that has passed the maturity process. This is the reproductive criterion:
+only mature females extrude broods, so only mature biomass belongs in spawning
+stock.
+"""
+is_mature_male(org::Organism) = org.is_mature && org.sex === male
+
+"""
+    is_mature_female(org)
+
+Female that has passed the maturity process, and therefore the only class that
+contributes eggs. Used for spawning stock biomass, so a large individual that
+never matured is excluded rather than inflating the stock.
+"""
+is_mature_female(org::Organism) = org.is_mature && org.sex === female
+
+"""
+    is_ovigerous(org)
+
+Mature female currently carrying a brood.
+"""
+is_ovigerous(org::Organism) = is_mature_female(org) && org.egg_count > 0
+
+"""
+    is_adult(org)
+
+Individual that has passed the maturity process. This is a reproductive
+criterion, not a size/allometry one: only mature individuals are considered
+adults for reproductive purposes. Size-based thresholds are handled separately
+via `adult_size_threshold` for allometry purposes.
+"""
+is_adult(org::Organism) = org.is_mature
+
+is_adult_male(org::Organism) = is_adult(org) && org.sex === male
+
+is_adult_female(org::Organism) = is_adult(org) && org.sex === female
+
+"""
+    is_legal_male(org, legal_size)
+
+Male at or above the regulated legal size. Fisheries regulations are size-based,
+so this does not require maturity, but it does require the individual to be past
+the juvenile phase. The adult size threshold comes from
+`OrganismParams.adult_size_threshold`, and the legal size comes from
+`FisheryParams.legal_size_male`. Both thresholds are mandatory: they come from
+`FisheryParams.legal_size_male` and `OrganismParams.adult_size_threshold`, and a
+hardcoded default previously caused the demographic cache and the GUI colour
+ramp to disagree with the configured value.
+"""
+is_legal_male(org::Organism, legal_size::Real, adult_size::Real) =
+    org.sex === male && org.size >= legal_size && org.size >= adult_size
+
+is_legal(org::Organism, legal_size::Real, adult_size::Real) =
+    is_legal_male(org, legal_size, adult_size)
+
+mass_if_mature_female(org::Organism) = is_mature_female(org) ? org.mass : 0.0
+mass_if_mature_male(org::Organism) = is_mature_male(org) ? org.mass : 0.0
+mass_if_legal_male(org::Organism, legal_size::Real, adult_size::Real) =
+    is_legal_male(org, legal_size, adult_size) ? org.mass : 0.0
+
+"""
+    NamedPredicate(f, name, thresholds...)
+
+Single-argument callable that applies a threshold-requiring predicate to one
+organism. Built by [`named_predicate`](@ref).
+"""
+struct NamedPredicate{F,T} <: Function
+    f::F
+    name::Symbol
+    thresholds::T
+end
+
+function (p::NamedPredicate)(org::Organism)
+    return p.f(org, p.thresholds...)
+end
+
+Base.show(io::IO, p::NamedPredicate) = print(io, p.name)
+Base.propertynames(::NamedPredicate) = ()
+Base.propertynames(::NamedPredicate, ::Bool) = ()
+
+"""
+    NamedAggregate(name, f)
+
+One-argument callable that aggregates like `f` but presents a fixed `name` to
+`Agents.dataname`.
+
+`dataname` derives a column name from the *function object*, so substituting a
+total aggregator for a partial one — `safe_sum` for `sum`, say — silently renames
+the column from `sum_mass` to `safe_sum_mass` and every downstream reader of
+`sum_mass` starts resolving to `nothing`. This wrapper keeps the schema stable
+while still being defined over an empty input.
+"""
+struct NamedAggregate{F} <: Function
+    name::Symbol
+    f::F
+end
+
+(a::NamedAggregate)(x) = a.f(x)
+
+Base.show(io::IO, a::NamedAggregate) = print(io, a.name)
+Base.propertynames(::NamedAggregate) = ()
+Base.propertynames(::NamedAggregate, ::Bool) = ()
+
+"""
+    named_predicate(f, name::Symbol, thresholds...)
+
+Bind `thresholds` to a predicate that requires them, producing a one-argument
+function suitable for an `adata` aggregation list.
+
+`Agents.dataname` derives the DataFrame column name from the function object
+itself, and appends the values of any captured properties. An anonymous closure
+would therefore yield a column such as `count_#7`, and a functor with readable
+fields would embed the configured thresholds in the name. Either way the output
+schema would depend on how the call site was written or on the configuration
+values, so downstream column lookups would silently read `nothing` and report
+zeros. This wrapper prints as `name` and reports no properties, so the column
+name is exactly the same regardless of which thresholds were bound.
+"""
+named_predicate(f, name::Symbol, thresholds...) = NamedPredicate(f, name, thresholds)
 
 """
     StageDefinition
@@ -288,6 +399,25 @@ struct MacroModelComparison
     aic_delay_diff::Float64
     aic_leslie::Float64
     preferred_model::Symbol
+    # Legend entries carrying the key estimated parameters, built once in
+    # `compare_macro_models` where the fits are in hand. A legend reading only
+    # "Schaefer" identifies the curve but not what was estimated, and the
+    # estimates are the reason the model was fitted.
+    label_observed::String
+    label_schaefer::String
+    label_delay_diff::String
+    label_leslie::String
+    # The fits are in number, so the raw count trajectories are carried alongside
+    # the rescaled biomass ones. A consumer that knows the average weight of the
+    # component being plotted can then do its own conversion, rather than being
+    # handed a biomass series built with one pooled constant.
+    numbers_observed::Vector{Float64}
+    numbers_schaefer::Vector{Float64}
+    numbers_delay_diff::Vector{Float64}
+    numbers_leslie::Vector{Float64}
+    # The single pooled mean legal mass `biomass_*_kg` were built with, kept so the
+    # rescale is auditable rather than implicit.
+    mean_component_weight_kg::Float64
 end
 
 """
@@ -336,6 +466,28 @@ Base.@kwdef struct SimulationParams
     days::Int = 730
     grid_nx::Int = 100
     grid_ny::Int = 100
+    # Calendar bookkeeping. The seasonal temperature cycle peaks on
+    # `temp_seasonal_phase_day`, and day-of-year is taken modulo
+    # `days_per_year`, so a leap-year calendar is expressed by raising it.
+    days_per_year::Float64 = 365.0
+    temp_seasonal_phase_day::Float64 = 80.0
+end
+
+Base.@kwdef struct CriteriaParams
+    # Persistence floor for `evaluate_population_criteria`, as an absolute count.
+    # The criterion this feeds asks "did the population avoid extinction?", which
+    # is a statement about the run, not about the configured carrying capacity.
+    # It was previously `max(15, 0.10 * benthic_carrying_capacity)`, so a
+    # population that self-regulated at a fraction of K was reported as not
+    # persistent — the bound was derived from the same K the model regulates
+    # around, and was therefore self-referential. 1 means "not extinct".
+    min_population::Int = 1
+
+    # Explosion guard, as a multiple of `benthic_carrying_capacity`. This one
+    # legitimately refers to K: "the population did not explode past the scale
+    # it was configured for" is exactly a statement about K. A transient
+    # overshoot is normal, hence a multiple rather than K itself.
+    max_population_multiple::Float64 = 3.0
 end
 
 Base.@kwdef struct EnvironmentParams
@@ -350,6 +502,11 @@ Base.@kwdef struct EnvironmentParams
     assimilation_efficiency::Float64 = 0.75
     habitat_quality_mean::Float64 = 1.0
     habitat_quality_sd::Float64 = 0.1
+    # Exponent of the density-dependent mortality feedback. Total benthic
+    # abundance is `individuated + aggregate`, and the feedback is
+    # `1 + (N / K)^exponent`, so a value above 1 makes the response accelerate
+    # past carrying capacity instead of remaining linear.
+    benthic_carrying_capacity_exponent::Float64 = 2.0
 end
 
 Base.@kwdef struct OrganismParams
@@ -357,15 +514,64 @@ Base.@kwdef struct OrganismParams
     max_size_female::Float64 = 95.0
     max_stage_male::Int = 16
     max_stage_female::Int = 14
-    maturity_size_mid::Float64 = 60.0
     metabolic_rate_base::Float64 = 0.01
-    intake_rate_base::Float64 = 0.15
-    energy_molt_threshold::Float64 = 50.0
-    energy_molt_slope::Float64 = 1.5
+    intake_rate_base::Float64 = 0.05
+
+    # --- Bioenergetics (Kleiber-style allometric budget) ---
+    # Metabolic cost scales as `mass^metabolic_mass_exponent`.
+    metabolic_mass_exponent::Float64 = 0.75
+    # Multiplies the metabolic cost by `exp(coefficient * temperature)`.
+    metabolic_temperature_coefficient::Float64 = 0.08
+    # Performance curve centre and width, in degrees Celsius.
+    metabolic_optimal_temperature::Float64 = 3.0
+    metabolic_optimal_sigma::Float64 = 2.5
+    # Fraction of assimilated intake spent on processing (specific dynamic
+    # action); the remainder, `1 - sda`, is available for growth and storage.
+    specific_dynamic_action::Float64 = 0.15
+
+    # --- Ecdysis energetics ---
+    # Ecdysial requirement is `max(energy_molt_floor, energy_molt_slope * size)`.
+    # The slope must be commensurate with the daily energy surplus, which the
+    # bioenergetics above produce at roughly 0.03-0.2 per day depending on size.
+    # A slope of order 1 per mm demands tens to hundreds of energy units, far more
+    # than an animal accumulates in a year, so molting becomes impossible and the
+    # whole population stalls at the first gated instar.
+    energy_molt_slope::Float64 = 0.03
+    energy_molt_floor::Float64 = 2.0
     molt_energy_retention::Float64 = 0.10
-    min_mating_energy_fraction::Float64 = 0.1
+    # Share of the ecdysial requirement pre-committed before the conditional
+    # bonus is applied: `base + (1 - base) * tanh(condition - 1)`.
+    molt_energy_base_fraction::Float64 = 0.85
+
+    # --- Molt hazard ---
+    # Daily hazard is `molt_hazard_coefficient * min(progress, saturation)`,
+    # converted to a probability with `1 - exp(-hazard * dt)`.
+    molt_hazard_coefficient::Float64 = 0.15
+    # Progress ratio beyond which the hazard stops increasing.
+    molt_progress_saturation::Float64 = 3.0
+
     initial_energy::Float64 = 10.0
-    molt_probability_scale::Float64 = 45.0
+
+    # --- Stage and shell bookkeeping ---
+    # Stage sizes are sampled from a symmetric Beta of these two parameters.
+    stage_size_sample_a::Float64 = 2.5
+    stage_size_sample_b::Float64 = 2.5
+    # Shell age is inferred as `(age_days - offset * (stage - first)) / days_per_year`.
+    shell_age_stage_offset::Float64 = 180.0
+    shell_age_first_stage::Int = 3
+    # Newmass-free shell condition index breakpoints, in days since ecdysis.
+    shell_condition_days::Vector{Float64} = [30.0, 365.0, 730.0, 1277.5]
+    # Wet mass and carapace size of a single egg.
+    egg_mass_g::Float64 = 0.00007
+    egg_size_mm::Float64 = 0.60
+    # Probability of removing an individual in a day once its reserve is depleted.
+    energy_deficit_removal_probability::Float64 = 0.75
+    # Largest stage still treated as juvenile by the baseline mortality multiplier.
+    juvenile_max_stage::Int = 6
+    # Size (mm) at or above which an individual is treated as past the juvenile
+    # phase for allometry and for display, even if it never matured. This
+    # replaces a hardcoded stage threshold that was specific to one species.
+    adult_size_threshold::Float64 = 68.0
 end
 
 
@@ -375,14 +581,76 @@ Base.@kwdef struct PhenologyParams
     mating_season_start::Float64 = 30.0
     mating_season_end::Float64 = 120.0
     mating_search_radius::Int = 5
-    brood_duration_base::Float64 = 365.0
     egg_survival_base::Float64 = 5.0e-5
+
+    # Incubation length is `brood_duration_base * (reference / T)^exponent`, so
+    # warmer water shortens the brood.
+    brood_duration_base::Float64 = 365.0
+    brood_temperature_reference::Float64 = 5.0
+    brood_temperature_exponent::Float64 = 0.30
+    brood_duration_sd::Float64 = 5.0
+
+    # First developmental stage subject to the seasonal molt gate. Stages below
+    # this molt whenever their intermolt and degree-day requirements are met,
+    # while stages at or above it are confined to the molt season. This asymmetry
+    # concentrates a cohort at the first gated stage, so it is exposed rather
+    # than hardcoded; set to 1 to make every benthic stage follow one annual cycle.
+    molt_season_min_stage::Int = 7
+    # Ecdysial thermal inhibition: the molt probability is scaled by
+    # `max(0, 1 - ((T - onset) / bandwidth)^2)`. The onset must sit above the
+    # warmest temperature reached during the molt season, otherwise inhibition
+    # silently shuts molting off for part or all of that season.
+    molt_thermal_onset::Float64 = 10.0
+    molt_thermal_bandwidth::Float64 = 3.0
 end
 
 Base.@kwdef struct MortalityParams
+    # Ceiling applied to every individual hazard and to their sum. Senescence and
+    # thermal stress grow without bound in their raw form, and a terminal-molt
+    # individual never moults again, so its time since ecdysis grows without
+    # limit. Saturation is the correct behaviour: mortality cannot exceed
+    # certainty.
+    hazard_cap::Float64 = 1.0
+
+    # --- Annual instantaneous mortality rates ---
+    # Daily hazards are derived as `rate / days_per_year`, using
+    # `SimulationParams.days_per_year`. That field used to be duplicated here,
+    # and because the flat configuration maps a key by *name*, a user setting
+    # `days_per_year` under `[simulation]` (a leap-year calendar, say) was
+    # silently configuring mortality instead while the temperature field stayed
+    # where they put it. One calendar, one field.
+    rate_baseline::Float64 = 0.20
+    rate_predation::Float64 = 0.15
+    rate_soft_shell::Float64 = 0.12
+    rate_starvation::Float64 = 0.20
+    rate_thermal::Float64 = 0.05
+    rate_senescence::Float64 = 0.08
+    rate_cannibalism::Float64 = 0.05
+
+    # --- Shape modifiers ---
+    baseline_trait_sigma::Float64 = 0.25
+    baseline_juvenile_multiplier::Float64 = 2.5
+    predation_size_reference::Float64 = 5.0
+    predation_size_decay::Float64 = 0.03
+    # Window over which a post-ecdysis individual is considered soft-shelled,
+    # and the e-folding time of that vulnerability.
     soft_shell_duration::Float64 = 30.0
-    senescence_age_threshold::Float64 = 3.0
+    soft_shell_decay_days::Float64 = 15.0
+    starvation_critical_fraction::Float64 = 0.05
+    thermal_exponent::Float64 = 1.5
     temp_thermal_stress::Float64 = 8.0
+    # Shell age (years) beyond which senescence begins, and its exponential rate.
+    senescence_age_threshold::Float64 = 3.0
+    senescence_exp_rate::Float64 = 0.80
+    cannibalism_size_threshold::Float64 = 35.0
+    cannibalism_density_reference::Float64 = 10.0
+    cannibalism_density_cap::Float64 = 2.0
+
+    # --- Aggregate (pre-individuation) cohort transition hazard ---
+    aggregate_hazard_degree_days::Float64 = 0.15
+    aggregate_hazard_intermolt::Float64 = 0.20
+    aggregate_transition_hazard::Float64 = 0.35
+    aggregate_transition_saturation::Float64 = 10.0
 end
 
 Base.@kwdef struct FisheryParams
@@ -441,6 +709,17 @@ Base.@kwdef struct SpeciesParams
     fecundity_multiparous_intercept::Float64 = 0.0158
     fecundity_multiparous_slope::Float64 = 2.5811
     fecundity_multiparous_err::Float64 = 0.145
+    # Standard deviation of the intercept when a fecundity draw is requested
+    # without an explicit quantile.
+    fecundity_intercept_sd::Float64 = 0.05
+    # Sainte-Marie allometric form: `size^exponent * 10^coefficient`.
+    fecundity_stmarie_exponent::Float64 = 2.725
+    fecundity_stmarie_coefficient::Float64 = 0.7311
+    # Reproductive senescence: fecundity is floored and then declines linearly in
+    # shell age beyond the threshold.
+    fecundity_senescence_threshold::Float64 = 3.0
+    fecundity_senescence_floor::Float64 = 0.60
+    fecundity_senescence_rate::Float64 = 0.08
 
     # Growth (Bivariate Normal: Intercept & Slope)
     growth_int_female::Float64 = 0.1931
@@ -454,6 +733,35 @@ Base.@kwdef struct SpeciesParams
     growth_slp_male::Float64 = 1.00027
     growth_beta2_male::Float64 = -0.00643655
     growth_beta3_male::Float64 = 0.0017492
+
+    # --- Growth modifiers applied to the post-molt size prediction ---
+    # Maturation carries a cost in mean and variance, drawn separately by sex.
+    growth_maturation_penalty_male_mean::Float64 = -0.13564
+    growth_maturation_penalty_male_sd::Float64 = 0.00922
+    growth_maturation_penalty_female_mean::Float64 = -0.1310
+    growth_maturation_penalty_female_sd::Float64 = 0.0252
+    # Nutritional condition and ambient temperature contributions.
+    growth_condition_coefficient::Float64 = 0.05
+    growth_temperature_coefficient::Float64 = -0.004
+    growth_temperature_reference::Float64 = 4.0
+    growth_residual_sd::Float64 = 0.040
+    # Lower bound on proportional size increase per ecdysis, by maturity status.
+    growth_min_expansion_immature::Float64 = 0.12
+    growth_min_expansion_mature::Float64 = 0.06
+
+    # --- Stage size bounds ---
+    # The empirical lower bound of carapace width per stage follows
+    # `exp(intercept + slope * (stage - anchor))` for each sex, with a pre-benthic
+    # table for stages below the benthic anchor.
+    size_lb_immature_sizes::Vector{Float64} = [0.95, 1.45, 2.50]
+    size_lb_immature_breakpoints::Vector{Float64} = [1.5, 2.5]
+    size_lb_male_intercept::Float64 = 1.917564
+    size_lb_male_slope::Float64 = 0.298914
+    size_lb_male_anchor_stage::Float64 = 3.0
+    size_lb_female_intercept::Float64 = 2.198848
+    size_lb_female_slope::Float64 = 0.315026
+    size_lb_female_anchor_stage::Float64 = 4.0
+    benthic_anchor_stage::Float64 = 4.0
 
     # Gear Selectivity
     selectivity_s50::Float64 = 95.0
@@ -469,6 +777,29 @@ Base.@kwdef struct SpeciesParams
     mass_alpha_female_mature::Float64 = 0.0004500
     mass_beta_female_mature::Float64 = 2.920
     mass_sigma::Float64 = 0.08
+
+    # Ecdysis Schedules
+    # Minimum intermolt duration (days) by developmental stage. Index 0 maps to
+    # stage 0, index `i` to stage `i`; the final entry applies to all stages
+    # at or beyond its index.
+    intermolt_days_schedule::Vector{Float64} = [
+        60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0,
+    ]
+    # Cumulative pre-ecdysial thermal requirement (degree-days) by stage, same
+    # indexing convention as `intermolt_days_schedule`.
+    degree_days_schedule::Vector{Float64} = [
+        150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0,
+    ]
+    # Pre-individuation overrides ordered as [egg, zoea, megalopa].
+    intermolt_days_larval::Vector{Float64} = [0.0, 5.0, 10.0]
+    degree_days_larval::Vector{Float64} = [0.0, 20.0, 40.0]
+
+    # Minimum size gate (mm) below which maturity cannot be attained.
+    maturity_size_gate::Float64 = 35.0
+    # Sensitivity of the maturity size-at-50 to ambient temperature (mm per °C).
+    maturity_l50_temp_slope::Float64 = -2.0
+    # Reference temperature for the maturity temperature response (°C).
+    maturity_temp_reference::Float64 = 4.0
 end
 
 """
@@ -525,6 +856,7 @@ struct IBMParameters
     binning::BinningParams
     species::SpeciesParams
     leslie::LeslieParams
+    criteria::CriteriaParams
 end
 
 function IBMParameters(; kwargs...)
@@ -539,6 +871,7 @@ function IBMParameters(; kwargs...)
     binning_kwargs = Dict{Symbol, Any}()
     species_kwargs = Dict{Symbol, Any}()
     leslie_kwargs = Dict{Symbol, Any}()
+    criteria_kwargs = Dict{Symbol, Any}()
 
     for (k, v) in kwargs
         sym = Symbol(k)
@@ -564,6 +897,8 @@ function IBMParameters(; kwargs...)
             species_kwargs[sym] = v
         elseif sym in fieldnames(LeslieParams)
             leslie_kwargs[sym] = v
+        elseif sym in fieldnames(CriteriaParams)
+            criteria_kwargs[sym] = v
         end
     end
 
@@ -578,12 +913,11 @@ function IBMParameters(; kwargs...)
     binning = get(kwargs, :binning, BinningParams(; binning_kwargs...))
     species = get(kwargs, :species, SpeciesParams(; species_kwargs...))
     leslie = get(kwargs, :leslie, LeslieParams(; leslie_kwargs...))
-
-    @info "IBMParameters constructor" typeof(toggles) typeof(simulation) typeof(environment) typeof(organism) typeof(phenology) typeof(mortality) typeof(fishery) typeof(output) typeof(binning) typeof(species) typeof(leslie)
+    criteria = get(kwargs, :criteria, CriteriaParams(; criteria_kwargs...))
 
     return IBMParameters(
         toggles, simulation, environment, organism,
-        phenology, mortality, fishery, output, binning, species, leslie
+        phenology, mortality, fishery, output, binning, species, leslie, criteria
     )
 end
 

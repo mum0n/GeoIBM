@@ -8,34 +8,53 @@ and growth metrics across stages and life stages.
 using DataFrames
 using Distributions
 using LinearAlgebra
+using Optim
+using Printf
 using Random
 using Statistics
 
 """
     compute_empirical_ogive(df::DataFrame, target_sex::Sex, bins::AbstractRange)
 
-Calculate the empirical proportion of morphometrically mature adult organisms within
-discrete carapace width bins for a specified sex.
+Calculate the empirical proportion of mature organisms within discrete carapace
+width bins for a specified sex.
+
+This is a **cross-sectional** measure: it pools every individual of the given
+size regardless of age or molt history, so it estimates the probability that an
+individual of that size *has ever* matured. The theoretical maturity function
+`maturity(sex, log(size))` is instead the probability at a *single ecdysis*.
+These are different quantities, related by `1 - (1 - p)^k` where `k` is the
+number of ecdyses an individual has had at that size, so the two curves are not
+expected to coincide and should not be compared as though they were.
+
+Bins with few individuals are returned with their counts so callers can weight or
+discard them; without the counts a proportion computed from two individuals looks
+identical to one computed from two hundred.
 
 # Arguments
-- `df::DataFrame`: Agent data table containing `:size`, `:sex`, and `:stage` columns.
+- `df::DataFrame`: Agent data table containing `:size`, `:sex`, and `:is_mature`.
 - `target_sex::Sex`: Sex to evaluate (`male` or `female`).
 - `bins::AbstractRange`: Size bin boundaries (e.g. `20.0:5.0:120.0`).
+- `min_count::Int`: Bins holding fewer than this many individuals are skipped
+  entirely, since their proportions are not interpretable.
 
 # Returns
-Tuple `(bin_centers, prop_mature)`:
-- `bin_centers::Vector{Float64}`: Midpoint size of each evaluated bin.
-- `prop_mature::Vector{Float64}`: Proportion of adult organisms in each evaluated bin.
+NamedTuple `(bin_centers, prop_mature, counts)`:
+- `bin_centers::Vector{Float64}`: Midpoint size of each reported bin.
+- `prop_mature::Vector{Float64}`: Proportion mature in each reported bin.
+- `counts::Vector{Int}`: Number of individuals behind each proportion.
 """
 function compute_empirical_ogive(
     df::DataFrame,
     target_sex::Union{Sex, Integer},
-    bins::AbstractRange
+    bins::AbstractRange;
+    min_count::Int = 1
 )
     s_target = (target_sex isa Integer) ? ((target_sex == 0) ? male : female) : target_sex
     sex_df = filter(row -> row.sex == s_target, df)
     bin_centers = Float64[]
     prop_mature = Float64[]
+    counts = Int[]
 
     sz_col = :size
     n_bins = length(bins) - 1
@@ -44,35 +63,38 @@ function compute_empirical_ogive(
         b_max = bins[k + 1]
 
         in_bin = filter(row -> b_min <= row[sz_col] < b_max, sex_df)
-        if nrow(in_bin) > 0
-            push!(bin_centers, (b_min + b_max) / 2.0)
-            if :is_mature in propertynames(in_bin)
-                n_mature = count(row -> row.is_mature == true, eachrow(in_bin))
-            else
-                # Fallback: use is_adult logic (stage >= 10 or is_mature flag)
-                n_mature = count(s -> s >= 10, in_bin.stage)
-            end
-            push!(prop_mature, n_mature / nrow(in_bin))
+        n_in_bin = nrow(in_bin)
+        n_in_bin < min_count && continue
+        push!(bin_centers, (b_min + b_max) / 2.0)
+        if :is_mature in propertynames(in_bin)
+            n_mature = count(row -> row.is_mature == true, eachrow(in_bin))
+        else
+            n_mature = count(s -> s >= 10, in_bin.stage)
         end
+        push!(prop_mature, n_mature / n_in_bin)
+        push!(counts, n_in_bin)
     end
 
-    return (bin_centers, prop_mature)
+    return (bin_centers = bin_centers, prop_mature = prop_mature, counts = counts)
 end
 
 """
-    compute_empirical_ogive(model, target_sex, bins)
+    compute_empirical_ogive(model, target_sex, bins; min_count=1)
 
-Calculate the empirical proportion of mature organisms in `model` for `target_sex`.
-Accepts `target_sex` as a `Sex` enum (`male`, `female`) or integer (0 = male, 1 = female).
+Cross-sectional maturity ogive for `model` and `target_sex`. Accepts `target_sex`
+as a `Sex` enum (`male`, `female`) or integer (0 = male, 1 = female). See the
+`DataFrame` method for the definition of the quantity returned and the meaning of
+`min_count`.
 """
 function compute_empirical_ogive(
     model,
     target_sex::Union{Sex, Integer},
-    bins::AbstractRange
+    bins::AbstractRange;
+    min_count::Int = 1
 )
     organisms = collect(allagents(model))
     if isempty(organisms)
-        return (Float64[], Float64[])
+        return (bin_centers = Float64[], prop_mature = Float64[], counts = Int[])
     end
 
     df = DataFrame(
@@ -88,9 +110,117 @@ function compute_empirical_ogive(
         target_sex
     end
 
-    return compute_empirical_ogive(df, actual_sex, bins)
+    return compute_empirical_ogive(df, actual_sex, bins; min_count = min_count)
 end
 
+
+"""
+    cumulative_maturity_curves(sizes, target_sex=nothing; stages=build_stages())
+
+Cumulative ("has ever matured") probability at each size in `sizes`, from the
+per-ecdysis `maturity` schedule. With `target_sex` given, returns a single vector
+for that sex; with `target_sex === nothing`, returns `(male, female)`.
+
+Each size is taken to have accumulated one maturity opportunity per stage whose
+representative size it is at or above, so the value is
+``1 - \\prod_{lo \\leq size} (1 - p(lo))``. This is the curve a cross-sectional ogive
+estimates, so it is the correct reference for comparing against simulated data.
+See [`maturity_ogive_residuals`](@ref).
+"""
+function cumulative_maturity_curves(
+    sizes::AbstractVector{<:Real},
+    target_sex::Union{Nothing, Sex, Integer} = nothing;
+    stages::Vector{StageDefinition} = build_stages()
+)
+    sexes = (target_sex === nothing) ? (male, female) : (target_sex,)
+    curves = map(sexes) do sx
+        s_target = (sx isa Integer) ? ((sx == 0) ? male : female) : sx
+        sex_code = (s_target === male) ? 0 : 1
+        # Each ecdysis happens at a stage's representative size, so the maturity
+        # draw for that stage is evaluated there. Stage *lower* bounds would
+        # systematically understate the accumulated probability, because every
+        # bound sits below the current size and the per-ecdysis curve rises with
+        # size.
+        midpoints = sort!([
+            Float64(st.size_mean) for st in stages
+            if st.sex === s_target || st.sex === undifferentiated
+        ])
+
+        # The ecdysis count is an integer, so the raw product is a step function
+        # of size. A cross-sectional ogive is smooth in size, and bins fall
+        # between the stage midpoints, so interpolate the cumulative values
+        # between midpoints. Monotonicity is preserved because the underlying
+        # values increase with midpoint.
+        discrete = Float64[]
+        surv = 1.0
+        for m in midpoints
+            surv *= (1.0 - maturity(sex_code, log(m); deterministic = true))
+            push!(discrete, 1.0 - surv)
+        end
+
+        map(sizes) do sz_v
+            sz = Float64(sz_v)
+            sz <= midpoints[1] && return discrete[1]
+            sz >= midpoints[end] && return discrete[end]
+            j = searchsortedlast(midpoints, sz)
+            lo, hi = midpoints[j], midpoints[j + 1]
+            w = (sz - lo) / (hi - lo)
+            return discrete[j] + w * (discrete[j + 1] - discrete[j])
+        end
+    end
+
+    return (target_sex === nothing) ? (curves[1], curves[2]) : curves[1]
+end
+
+"""
+    maturity_ogive_residuals(ogive, target_sex; stages=build_stages()) → Vector{Float64}
+
+Squared differences between a cross-sectional ogive from
+[`compute_empirical_ogive`](@ref) and the matching *cumulative* theoretical curve.
+
+`maturity(sex, log(size))` is the probability of maturing at a **single ecdysis**,
+whereas the empirical ogive pools every individual of a size regardless of age and
+therefore estimates the probability of having **ever** matured. Comparing the two
+directly is biased against realistic values by construction: an individual at size
+`s` has already ecdysed out of every earlier stage, so it has had one maturity
+opportunity per stage at or below `s`. With per-ecdysis probabilities `p_i` over
+those stages the cumulative probability is ``1 - \\prod_i (1 - p_i)``.
+
+The opportunities are derived from the stage size ranges rather than supplied as a
+constant, so the comparison stays like-for-like as the stage model changes. A bin
+with no completed stage yet falls back to the single-ecdysis probability, which is
+the only opportunity that exists at that size.
+"""
+function maturity_ogive_residuals(
+    ogive,
+    target_sex::Union{Sex, Integer};
+    stages::Vector{StageDefinition} = build_stages()
+)
+    isempty(ogive.bin_centers) && return Float64[]
+    expected = cumulative_maturity_curves(
+        ogive.bin_centers,
+        target_sex;
+        stages = stages
+    )
+    return [(ogive.prop_mature[i] - expected[i])^2 for i in eachindex(expected)]
+end
+
+"""
+    maturity_ogive_mismatch(ogive, target_sex; stages=build_stages()) → Float64
+
+RMSE between a cross-sectional maturity ogive and the matching cumulative
+theoretical curve. See [`maturity_ogive_residuals`](@ref) for why the cumulative
+curve is the like-for-like comparison. Returns `0.0` for an empty ogive, matching
+the previous treatment of "no data" as "no error".
+"""
+function maturity_ogive_mismatch(
+    ogive,
+    target_sex::Union{Sex, Integer};
+    stages::Vector{StageDefinition} = build_stages()
+)
+    sq_errors = maturity_ogive_residuals(ogive, target_sex; stages = stages)
+    return isempty(sq_errors) ? 0.0 : sqrt(mean(sq_errors))
+end
 
 """
     summarize_population(model)
@@ -167,11 +297,14 @@ function summarize_population(model)
 
     n_m = count(c -> c.sex === male, orgs)
     n_f = count(c -> c.sex === female, orgs)
-    n_ad = count(is_adult, orgs)
-    n_adm = count(is_adult_male, orgs)
-    n_adf = count(is_adult_female, orgs)
+    # Maturity-based counts. These are the reproductive classes, so they exclude
+    # large individuals that never passed the maturity process.
+    n_adm = count(is_mature_male, orgs)
+    n_adf = count(is_mature_female, orgs)
+    n_ad = n_adm + n_adf
     n_ovig = count(is_ovigerous, orgs)
     tot_eggs = sum(c.egg_count for c in orgs; init = 0)
+    adult_sz = model.params.organism.adult_size_threshold
     n_juv = count(c -> !is_adult(c) && c.stage >= 4, orgs)
     n_larv = count(c -> c.stage < 4, orgs)
 
@@ -206,15 +339,18 @@ function summarize_population(model)
     mean_size = isempty(orgs) ? 0.0 : mean(c.size for c in orgs)
     mean_wt = isempty(orgs) ? 0.0 : mean(c.mass for c in orgs)
 
-    # Stock biomass metrics (converted from grams to kilograms)
+    # Stock biomass metrics (converted from grams to kilograms).
+    # Spawning stock uses the *mature* classes, because only mature females
+    # extrude broods. Counting large-but-immature individuals here inflated the
+    # stock and biased the surplus-production term that divides by it.
     tot_biomass = sum(c.mass for c in orgs) / 1000.0
-    f_ssb = sum(mass_if_adult_female, orgs) / 1000.0
-    m_mat_b = sum(mass_if_adult_male, orgs) / 1000.0
+    f_ssb = sum(mass_if_mature_female, orgs) / 1000.0
+    m_mat_b = sum(mass_if_mature_male, orgs) / 1000.0
     tot_ssb = f_ssb + m_mat_b
 
-    legal_sz = hasproperty(model.params, :fishery) ? model.params.fishery.legal_size_male : 95.0
-    n_leg = count(c -> is_legal_male(c; legal_size = legal_sz), orgs)
-    leg_b = sum(c -> mass_if_legal_male(c; legal_size = legal_sz), orgs) / 1000.0
+    legal_sz = model.params.fishery.legal_size_male
+    n_leg = count(c -> is_legal_male(c, legal_sz, adult_sz), orgs)
+    leg_b = sum(c -> mass_if_legal_male(c, legal_sz, adult_sz), orgs) / 1000.0
 
     all_stages = sort(unique(vcat(collect(keys(count_by_aggregate_stage)), [c.stage for c in orgs])))
     size_by_stage = Dict{Int, Float64}()
@@ -757,6 +893,87 @@ function load_simulation_results(filepath::String)
 end
 
 """
+    ANNUAL_PRODUCTION_SCHEMA
+
+Authoritative column order and element type of the `extract_annual_production`
+output. Both the empty and the populated path assemble their `DataFrame` from
+this, so a run too short to produce a sample still has the same schema as a full
+one. Previously the empty path returned 14 columns and the populated path 17, so
+`.day` failed only on the runs you were already debugging.
+"""
+const ANNUAL_PRODUCTION_SCHEMA = (
+    # `sample_index`, not `year`: it counts snapshots, so it reads 1, 2, 3...
+    # regardless of the calendar date a run starts on. The calendar position of
+    # a snapshot is `day` (day of year) plus `time` (elapsed days).
+    (:sample_index, Int),
+    (:day, Float64),
+    (:time, Float64),
+    (:total_numbers, Float64),
+    (:total_biomass_kg, Float64),
+    (:legal_numbers, Float64),
+    (:mature_females, Float64),
+    (:mature_males, Float64),
+    (:fishable_male_biomass_kg, Float64),
+    (:mature_male_biomass_kg, Float64),
+    (:mature_female_biomass_kg, Float64),
+    (:total_egg_production, Float64),
+    (:annual_egg_production, Float64),
+    (:catch_total, Float64),
+    (:catch_legal, Float64),
+    (:surplus_production_total, Float64),
+    (:surplus_production_legal, Float64)
+)
+
+"""
+    empty_annual_production() → DataFrame
+
+Zero-row `DataFrame` carrying the full annual production schema.
+"""
+function empty_annual_production()
+    return DataFrame(
+        [name => Vector{T}() for (name, T) in ANNUAL_PRODUCTION_SCHEMA]
+    )
+end
+
+"""
+    annual_production_targets(t_max::Real; dt_year = 365.0,
+                              frequency_days = dt_year,
+                              snapshot_day = 274.0) → Vector{Float64}
+
+Elapsed times at which [`extract_annual_production`](@ref) takes its snapshots.
+
+When `frequency_days` equals `dt_year` the result is one time per year at
+`snapshot_day`. When `frequency_days` is sub-annual the result starts one
+interval in and steps by `frequency_days`. The regime depends only on
+`frequency_days`, so an explicit `snapshot_day` always takes effect.
+
+Shared with the live-snapshot progress reporting in the CLI script, so the
+printed progress lines land on the same instants as the data rows.
+"""
+function annual_production_targets(
+    t_max::Real;
+    dt_year::Real = 365.0,
+    frequency_days::Real = dt_year,
+    snapshot_day::Union{Nothing, Real} = 274.0
+)
+    freq = (frequency_days > 0.0) ? Float64(frequency_days) : Float64(dt_year)
+    is_annual = isapprox(freq, dt_year; rtol = 0.0, atol = 1e-9)
+    first_day = if is_annual
+        (snapshot_day === nothing) ? Float64(dt_year) : Float64(snapshot_day)
+    else
+        freq
+    end
+
+    targets = Float64[]
+    t_curr = first_day
+    while t_curr <= t_max
+        push!(targets, t_curr)
+        t_curr += freq
+    end
+    return targets
+end
+
+"""
     extract_annual_production(agent_df::DataFrame, model_df::DataFrame;
                               dt_year::Float64 = 365.0,
                               frequency_days::Float64 = dt_year,
@@ -766,11 +983,13 @@ Aggregate simulation output into abundance, demographic components, commercial c
 and realized surplus production metrics sampled at specified intervals.
 
 Sampling times are governed by `frequency_days` (default: 365.0 days = 1 year) and
-`snapshot_day` (default: 274.0 = ~1 September). When `frequency_days` is annual (365 days),
-outputs occur at day `snapshot_day` of each year (t = (yr - 1) * 365 + snapshot_day).
-When sub-annual or arbitrary frequencies are specified, outputs are recorded at intervals
-of `frequency_days` starting from `snapshot_day` (or `frequency_days` if `snapshot_day`
-is not customized).
+`snapshot_day` (default: 274.0 = ~1 September). When `frequency_days` equals
+`dt_year`, one snapshot is taken per year at day `snapshot_day`
+(t = (yr - 1) * dt_year + snapshot_day), and the `day` column is that same
+`snapshot_day` for every row. When `frequency_days` is sub-annual, snapshots are
+taken every `frequency_days` days starting one interval in, and `day` is the
+genuine day of year for each sample. The choice of regime depends only on
+`frequency_days`, so passing `snapshot_day` explicitly always takes effect.
 
 # Arguments
 - `agent_df::DataFrame`: Agent time-series metrics.
@@ -782,9 +1001,12 @@ is not customized).
 
 # Returns
 `DataFrame` with columns:
-- `year::Int`: Sample period index (1, 2, ...).
+- `sample_index::Int`: Snapshot counter (1, 2, ...). Not a calendar year: it counts
+  samples, so a run starting on any date reads the same.
+- `day::Float64`: Calendar day of year at each snapshot.
 - `time::Float64`: Elapsed days at snapshot.
 - `total_numbers::Float64`: Total living organism abundance (N_t).
+- `total_biomass_kg::Float64`: Total wet mass of the population in kg.
 - `legal_numbers::Float64`: Legal-sized adult male abundance (N_{legal, t}).
 - `mature_females::Float64`: Total number of morphometrically mature females.
 - `mature_males::Float64`: Total number of morphometrically mature males.
@@ -792,10 +1014,14 @@ is not customized).
 - `mature_male_biomass_kg::Float64`: Total wet mass of mature males in kg.
 - `mature_female_biomass_kg::Float64`: Total wet mass of mature females (SSB_F) in kg.
 - `total_egg_production::Float64`: Cumulative egg production across the stock.
+- `annual_egg_production::Float64`: Egg production during the interval.
 - `catch_total::Float64`: Harvest removal during interval in numbers (C_t).
 - `catch_legal::Float64`: Commercial catch of legal males during interval.
 - `surplus_production_total::Float64`: Realized production (N_{t+1} - N_t + C_t).
 - `surplus_production_legal::Float64`: Realized legal production.
+
+The empty and populated paths are both built from `ANNUAL_PRODUCTION_SCHEMA`, so
+a short run returns the same columns as a long one.
 """
 function extract_annual_production(
     agent_df::DataFrame,
@@ -806,38 +1032,16 @@ function extract_annual_production(
 )
     t_max = maximum(agent_df.time)
     freq = (frequency_days > 0.0) ? frequency_days : dt_year
-
-    first_day = if snapshot_day !== nothing
-        (snapshot_day == 274.0 && freq < 274.0) ? freq : snapshot_day
-    else
-        freq
-    end
-
-    t_targets = Float64[]
-    t_curr = first_day
-    while t_curr <= t_max
-        push!(t_targets, t_curr)
-        t_curr += freq
-    end
+    t_targets = annual_production_targets(
+        t_max;
+        dt_year = dt_year,
+        frequency_days = frequency_days,
+        snapshot_day = snapshot_day
+    )
     n_samples = length(t_targets)
 
     if n_samples < 1
-        return DataFrame(
-            year = Int[],
-            time = Float64[],
-            total_numbers = Float64[],
-            legal_numbers = Float64[],
-            mature_females = Float64[],
-            mature_males = Float64[],
-            fishable_male_biomass_kg = Float64[],
-            mature_male_biomass_kg = Float64[],
-            mature_female_biomass_kg = Float64[],
-            total_egg_production = Float64[],
-            catch_total = Float64[],
-            catch_legal = Float64[],
-            surplus_production_total = Float64[],
-            surplus_production_legal = Float64[]
-        )
+        return empty_annual_production()
     end
 
     num_col = if :length_stage in propertynames(agent_df)
@@ -846,12 +1050,8 @@ function extract_annual_production(
         :count_stage
     elseif :total_organisms in propertynames(agent_df)
         :total_organisms
-    elseif :total_organisms in propertynames(agent_df)
-        :total_organisms
     elseif :total_numbers in propertynames(agent_df)
         :total_numbers
-    elseif :count_is_adult in propertynames(agent_df)
-        :count_is_adult
     else
         first(names(agent_df))
     end
@@ -866,17 +1066,20 @@ function extract_annual_production(
         nothing
     end
 
+    # No fallback to an adult-male count here: the legal-male count is defined by
+    # the configured legal size, and substituting a size-threshold count for it
+    # would report a number that ignores the fishery regulation.
     legal_col = if :count_is_legal_male in propertynames(agent_df)
         :count_is_legal_male
     elseif :legal_numbers in propertynames(agent_df)
         :legal_numbers
-    elseif :count_is_adult_male in propertynames(agent_df)
-        :count_is_adult_male
     else
         nothing
     end
 
-    mat_f_col = if :count_is_adult_female in propertynames(agent_df)
+    mat_f_col = if :count_is_mature_female in propertynames(agent_df)
+        :count_is_mature_female
+    elseif :count_is_adult_female in propertynames(agent_df)
         :count_is_adult_female
     elseif :mature_females in propertynames(agent_df)
         :mature_females
@@ -886,7 +1089,9 @@ function extract_annual_production(
         nothing
     end
 
-    mat_m_col = if :count_is_adult_male in propertynames(agent_df)
+    mat_m_col = if :count_is_mature_male in propertynames(agent_df)
+        :count_is_mature_male
+    elseif :count_is_adult_male in propertynames(agent_df)
         :count_is_adult_male
     elseif :mature_males in propertynames(agent_df)
         :mature_males
@@ -898,8 +1103,6 @@ function extract_annual_production(
 
     leg_mass_col = if :sum_mass_if_legal_male in propertynames(agent_df)
         :sum_mass_if_legal_male
-    elseif :sum_weight_if_legal_male in propertynames(agent_df)
-        :sum_weight_if_legal_male
     elseif :fishable_male_biomass_kg in propertynames(agent_df)
         :fishable_male_biomass_kg
     elseif :legal_biomass_kg in propertynames(agent_df)
@@ -908,20 +1111,16 @@ function extract_annual_production(
         nothing
     end
 
-    mat_m_mass_col = if :sum_mass_if_adult_male in propertynames(agent_df)
-        :sum_mass_if_adult_male
-    elseif :sum_weight_if_adult_male in propertynames(agent_df)
-        :sum_weight_if_adult_male
+    mat_m_mass_col = if :sum_mass_if_mature_male in propertynames(agent_df)
+        :sum_mass_if_mature_male
     elseif :mature_male_biomass_kg in propertynames(agent_df)
         :mature_male_biomass_kg
     else
         nothing
     end
 
-    mat_f_mass_col = if :sum_mass_if_adult_female in propertynames(agent_df)
-        :sum_mass_if_adult_female
-    elseif :sum_weight_if_adult_female in propertynames(agent_df)
-        :sum_weight_if_adult_female
+    mat_f_mass_col = if :sum_mass_if_mature_female in propertynames(agent_df)
+        :sum_mass_if_mature_female
     elseif :mature_female_biomass_kg in propertynames(agent_df)
         :mature_female_biomass_kg
     elseif :female_ssb_kg in propertynames(agent_df)
@@ -966,7 +1165,7 @@ function extract_annual_production(
         mm_val = (mat_m_col !== nothing) ? Float64(agent_df[idx, mat_m_col]) : 0.0
         push!(mat_m_n_vec, mm_val)
 
-        lm_val = if leg_mass_col in (:sum_weight_if_legal_male, :sum_mass_if_legal_male)
+        lm_val = if leg_mass_col == :sum_mass_if_legal_male
             Float64(agent_df[idx, leg_mass_col]) / 1000.0
         elseif leg_mass_col !== nothing
             Float64(agent_df[idx, leg_mass_col])
@@ -975,7 +1174,7 @@ function extract_annual_production(
         end
         push!(leg_mass_vec, lm_val)
 
-        mmm_val = if mat_m_mass_col in (:sum_weight_if_adult_male, :sum_mass_if_adult_male)
+        mmm_val = if mat_m_mass_col == :sum_mass_if_mature_male
             Float64(agent_df[idx, mat_m_mass_col]) / 1000.0
         elseif mat_m_mass_col !== nothing
             Float64(agent_df[idx, mat_m_mass_col])
@@ -984,7 +1183,7 @@ function extract_annual_production(
         end
         push!(mat_m_mass_vec, mmm_val)
 
-        mfm_val = if mat_f_mass_col in (:sum_weight_if_adult_female, :sum_mass_if_adult_female)
+        mfm_val = if mat_f_mass_col == :sum_mass_if_mature_female
             Float64(agent_df[idx, mat_f_mass_col]) / 1000.0
         elseif mat_f_mass_col !== nothing
             Float64(agent_df[idx, mat_f_mass_col])
@@ -1040,12 +1239,13 @@ function extract_annual_production(
     sp_total[n_samples] = sp_total[max(1, n_samples - 1)]
     sp_legal[n_samples] = sp_legal[max(1, n_samples - 1)]
 
-    # Calculate Julian day (day of year) for each snapshot
-    day_vec = [mod(t, 365.0) == 0.0 ? 365.0 : mod(t, 365.0) for t in time_vec]
-    year_int_vec = Int.(year_vec)
+    # Genuine day of year, so this is correct for annual and sub-annual sampling
+    # alike. With an annual frequency it is constant at `snapshot_day`.
+    day_vec = [mod(t, dt_year) == 0.0 ? dt_year : mod(t, dt_year) for t in time_vec]
+    sample_index_vec = Int.(year_vec)
 
-    return DataFrame(
-        year = year_int_vec,
+    cols = (
+        sample_index = sample_index_vec,
         day = day_vec,
         time = time_vec,
         total_numbers = total_n_vec,
@@ -1063,6 +1263,294 @@ function extract_annual_production(
         surplus_production_total = sp_total,
         surplus_production_legal = sp_legal
     )
+
+    # Assemble strictly in schema order, so a column added to one of the two
+    # structures above without the other is an error rather than a silent
+    # schema difference between short and long runs.
+    return DataFrame([name => cols[name] for (name, _) in ANNUAL_PRODUCTION_SCHEMA])
+end
+
+# ==============================================================================
+# Optimization Utilities (Optim.jl)
+# ==============================================================================
+
+"""
+    OBJECTIVE_PENALTY
+
+Value [`safe_objective`](@ref) returns for a trial that threw or produced a
+non-finite result. Chosen far above any real objective so a diverged trial always
+loses the comparison. It doubles as the sentinel for "the search never found
+anything but failures": a real optimum is never this large, so `fmin` at or above
+it means every trial was penalised.
+"""
+const OBJECTIVE_PENALTY = 1e300
+
+"""
+    safe_objective(f; label = "objective", failures = nothing)
+
+Wrap an objective so that `NaN` and `Inf` results are reported as a large finite
+penalty. Optimizers need a totally ordered objective to compare candidates, and
+a diverging population-trajectory simulation must lose the comparison rather
+than poison the search with a non-orderable value.
+
+An exception thrown by `f` is also mapped to the penalty, but it is recorded and
+warned about once. The bare `catch` this replaces made a genuine bug in an
+objective indistinguishable from an ordinary diverging trial: the search would
+proceed, fail to converge anywhere, and report only that every starting point
+failed.
+
+Pass a `Vector` as `failures` to collect the exceptions for reporting by the
+caller — `optimize_model` uses that to name the real cause when nothing converges.
+"""
+function safe_objective(f; label::AbstractString = "objective", failures = nothing)
+    reported = Ref(false)
+    return function (x...)
+        value = try
+            Float64(f(x...))
+        catch err
+            failures !== nothing && push!(failures, err)
+            if !reported[]
+                reported[] = true
+                @warn "objective threw; treating this trial as a large penalty" label =
+                    label parameters = x exception = err
+            end
+            NaN
+        end
+        return (isfinite(value) ? value : OBJECTIVE_PENALTY)
+    end
+end
+
+"""
+    _attempt_optimize(build) → NamedTuple
+
+Run one optimizer invocation, converting a thrown exception into `ok = false`
+rather than losing it. Callers aggregate the failures so the diagnostic names the
+actual exception instead of reporting a bare "did not converge".
+"""
+function _attempt_optimize(build)
+    try
+        return (ok = true, result = build(), err = nothing)
+    catch err
+        return (ok = false, result = nothing, err = err)
+    end
+end
+
+"""
+    _failure_summary(failures) → String
+
+One line describing why an optimization did not produce a usable result.
+"""
+function _failure_summary(failures)
+    isempty(failures) && return "no optimizer invocation was attempted"
+    msgs = unique(sprint(showerror, err) for err in failures)
+    return "$(length(failures)) failed call(s): " * join(msgs, " | ")
+end
+
+"""
+    optimize_model(f, lower, upper, starts; method=NelderMead(), kwargs...)
+
+Minimize `f` over the box `[lower, upper]` using Optim.jl, restarting from every
+point in `starts` and keeping the best solution.
+
+Population-dynamics objectives are cheap but ragged and multi-modal: the
+recursively simulated trajectories have kinks at the population floors and many
+competing local minima. A single local descent therefore lands on an arbitrary
+basin, which is why the fitting routines supply a coarse lattice of starting
+points and let Optim refine from each one.
+
+# Arguments
+- `f`: objective called as `f(x::Vector{Float64})`.
+- `lower`, `upper`: box bounds, one entry per parameter.
+- `starts`: starting points, each a vector of the same length.
+- `method`: any Optim method; defaults to derivative-free `NelderMead`, which
+  suits the non-smooth residuals better than a gradient method.
+
+# Returns
+`(xmin, fmin)`: best parameters found and the objective value there.
+"""
+function optimize_model(
+    f,
+    lower::AbstractVector{<:Real},
+    upper::AbstractVector{<:Real},
+    starts::Vector{<:AbstractVector};
+    method = NelderMead(),
+    x_abstol::Float64 = 1e-10,
+    f_reltol::Float64 = 1e-14,
+    kwargs...
+)
+    objective_failures = Any[]
+    objective = safe_objective(
+        f;
+        label = "optimize_model",
+        failures = objective_failures
+    )
+    box = Fminbox(method)
+    # Optim v2 takes convergence tolerances through an explicit Options object.
+    options = Optim.Options(; x_abstol = x_abstol, f_reltol = f_reltol)
+    best_x = collect(Float64, first(starts))
+    best_f = Inf
+    solved = 0
+    call_failures = Any[]
+    for start in starts
+        x0 = clamp.(collect(Float64, start), lower, upper)
+        attempt = _attempt_optimize() do
+            optimize(objective, lower, upper, x0, box, options; kwargs...)
+        end
+        if !attempt.ok
+            push!(call_failures, attempt.err)
+            continue
+        end
+        # `minimum` and `minimizer` are pure accessors on a result Optim already
+        # produced, so a failure here is a real defect rather than a diverging
+        # trial and is allowed to propagate.
+        value = Float64(Optim.minimum(attempt.result))
+        if isfinite(value) && value < best_f
+            candidate = collect(Float64, Optim.minimizer(attempt.result))
+            best_f = value
+            best_x = length(candidate) == length(best_x) ? candidate : best_x
+            solved += 1
+        end
+    end
+    if !isempty(call_failures)
+        @warn "optimize_model: some starting points failed to optimize" failures =
+            length(call_failures) starts = length(starts) detail = _failure_summary(
+            call_failures
+        )
+    end
+    if solved == 0
+        # Name the real cause. When no call threw, the objective itself did, and
+        # the recorded objective exception is the useful diagnostic.
+        cause = isempty(call_failures) ?
+                _failure_summary(objective_failures) : _failure_summary(call_failures)
+        error(
+            "optimize_model: no starting point produced a usable result. " *
+            cause *
+            " Check that the objective is finite over the box " *
+            "[$(lower), $(upper)] and that the method $(nameof(typeof(method))) " *
+            "is appropriate for $(length(lower)) parameter(s)."
+        )
+    end
+    if best_f >= OBJECTIVE_PENALTY
+        # Every trial was penalised, so the optimizer "converged" to a constant
+        # and would otherwise return a meaningless parameter vector with a huge but
+        # finite objective. Report it as the failure it is.
+        cause = _failure_summary(objective_failures)
+        error(
+            "optimize_model: every trial was replaced by the divergence penalty, " *
+            "so no solution was found. " *
+            (isempty(objective_failures) ?
+            "The objective returned a non-finite value at every point tried." :
+            cause) *
+            " Check that the objective is finite over the box " *
+            "[$(lower), $(upper)]."
+        )
+    end
+    return (best_x, best_f)
+end
+
+"""
+    optimize_blocks(build_objective, blocks, x0, block_bounds; passes=3, kwargs...)
+
+Coordinate-descent driver over groups of parameters.
+
+High-dimensional biological models are usually over-parameterized to be
+identified jointly, so optimizing every coefficient at once is both slow and
+unstable. Instead the coefficients are partitioned into biologically meaningful
+blocks (early stages, males, females, fecundity), each block is optimized with
+`optimize_model`, and the sweeps repeat until the objective stops improving.
+This keeps every sub-problem low-dimensional while still using all the data.
+
+# Arguments
+- `build_objective`: `f(x) -> value` over the full concatenated parameter vector.
+- `blocks`: vector of index vectors, one per block.
+- `x0`: initial full parameter vector.
+- `block_bounds`: vector of `(lower, upper)` pairs, one per block.
+- `passes`: maximum number of sweeps.
+
+# Returns
+`(x, f)`: refined parameters and objective value.
+"""
+function optimize_blocks(
+    build_objective,
+    blocks::Vector{<:AbstractVector{<:Integer}},
+    x0::Vector{Float64},
+    block_bounds::AbstractVector{<:Tuple};
+    passes::Int = 3,
+    tol::Float64 = 1e-9,
+    kwargs...
+)
+    objective_failures = Any[]
+    objective = safe_objective(
+        build_objective;
+        label = "optimize_blocks",
+        failures = objective_failures
+    )
+    x = copy(x0)
+    best_f = objective(x)
+    options = Optim.Options(; x_abstol = 1e-9, f_reltol = 1e-13)
+
+    call_failures = Any[]
+    for _ in 1:passes
+        improved = false
+        for (block, (lo, hi)) in zip(blocks, block_bounds)
+            isempty(block) && continue
+            attempt = _attempt_optimize() do
+                optimize(
+                    u -> begin
+                        trial = copy(x)
+                        trial[block] .= u
+                        objective(trial)
+                    end,
+                    lo,
+                    hi,
+                    x[block],
+                    Fminbox(NelderMead()),
+                    options;
+                    kwargs...
+                )
+            end
+            if !attempt.ok
+                push!(call_failures, attempt.err)
+                continue
+            end
+            # Accessors on a result Optim already produced: a failure is a real
+            # defect, not a diverging trial.
+            value = Float64(Optim.minimum(attempt.result))
+            if isfinite(value) && value < best_f - tol * (abs(best_f) + tol)
+                candidate = collect(Float64, Optim.minimizer(attempt.result))
+                if length(candidate) == length(block)
+                    x[block] .= candidate
+                    best_f = value
+                    improved = true
+                end
+            end
+        end
+        improved || break
+    end
+    if !isempty(call_failures)
+        # Block optimization is best-effort by design: a block that will not
+        # optimize is reported, but the remaining blocks still run.
+        @warn "optimize_blocks: some block optimizations failed" failures =
+            length(call_failures) detail = _failure_summary(call_failures)
+    end
+    return (x, best_f)
+end
+
+"""
+    logistic_unit(u)
+
+Map an unconstrained real to the open interval `(0, 1)`.
+"""
+logistic_unit(u::Real) = 1.0 / (1.0 + exp(-clamp(Float64(u), -60.0, 60.0)))
+
+"""
+    logit(p)
+
+Inverse of `logistic_unit`, mapping a probability in `(0, 1)` to the real line.
+"""
+logit(p::Real) = begin
+    q = clamp(Float64(p), 1e-12, 1.0 - 1e-12)
+    log(q / (1.0 - q))
 end
 
 # ==============================================================================
@@ -1119,7 +1607,8 @@ function fit_schaefer(
     n_vals = Float64.(numbers)
     c_vals = Float64.(catches)
 
-    # 1. Analytical process-error regression: P_t = a1 * N_t - a2 * N_t^2
+    # 1. Analytical process-error regression: P_t = a1 * N_t - a2 * N_t^2.
+    #    This gives a data-driven anchor for the optimizer below.
     p_obs = [n_vals[t + 1] - n_vals[t] + c_vals[t] for t in 1:(n - 1)]
     n_pre = n_vals[1:(n - 1)]
 
@@ -1137,50 +1626,64 @@ function fit_schaefer(
     if det > 1e-9
         a1 = (s22 * y1 - s12 * y2) / det
         a2 = (s11 * y2 - s12 * y1) / det
-        if a1 > 0.01 && a2 > 1e-8
+        if a1 > 0.01 && a2 > 1e-12
             r_init = a1
             k_init = a1 / a2
         end
     end
 
-    # 2. Refine trajectory fit via grid-coordinate minimization of RSS
-    function simulate_trajectory(r_val, k_val)
+    # 2. Forward-simulate the logistic trajectory for a parameter pair.
+    function simulate_trajectory(r_val::Float64, k_val::Float64)
         pred = zeros(Float64, n)
         pred[1] = n_vals[1]
         for t in 1:(n - 1)
-            pop_curr = max(1.0, pred[t])
+            pop_curr = max(1e-6, pred[t])
             growth = r_val * pop_curr * (1.0 - pop_curr / k_val)
             pred[t + 1] = max(0.0, pop_curr + growth - c_vals[t])
         end
         return pred
     end
 
-    best_r = r_init
-    best_k = k_init
-    best_pred = simulate_trajectory(best_r, best_k)
-    best_rss = sum((n_vals .- best_pred) .^ 2)
+    # Residuals are measured on relative deviations so that the objective is not
+    # dominated by the largest year, which otherwise lets a few high-abundance
+    # points dictate the entire fit.
+    n_scale = max(mean(abs, n_vals), 1e-6)
+    function residual_sum(r_val::Float64, k_val::Float64)
+        pred = simulate_trajectory(r_val, k_val)
+        return sum(((n_vals .- pred) ./ n_scale) .^ 2)
+    end
 
-    # Multi-scale grid search around initial values
-    for r_scale in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-        for k_scale in [0.7, 0.85, 1.0, 1.15, 1.3, 1.6]
-            r_try = r_init * r_scale
-            k_try = k_init * k_scale
-            pred_try = simulate_trajectory(r_try, k_try)
-            rss_try = sum((n_vals .- pred_try) .^ 2)
-            if rss_try < best_rss
-                best_rss = rss_try
-                best_r = r_try
-                best_k = k_try
-                best_pred = pred_try
-            end
+    # 3. Optimize (r, K) with Optim.jl. The coarse lattice only supplies starting
+    #    points; the optimizer does the refinement that a bare grid search could
+    #    never provide.
+    r_ref = clamp(r_init, 1e-3, 10.0)
+    k_ref = clamp(k_init, max(1.0, maximum(n_vals) * 0.05), 1e9)
+    starts = Vector{Vector{Float64}}()
+    for r_scale in (0.25, 0.5, 1.0, 2.0, 4.0)
+        for k_scale in (0.25, 0.5, 1.0, 2.0, 4.0)
+            push!(starts, [
+                clamp(r_ref * r_scale, 1e-4, 20.0),
+                clamp(k_ref * k_scale, 1e-2, 1e10),
+            ])
         end
     end
 
+    best_params, f_opt = optimize_model(
+        u -> residual_sum(u[1], u[2]),
+        [1e-6, 1e-3],          # r must be positive, K must exceed zero
+        [20.0, 1e12],
+        starts,
+    )
+    best_r = best_params[1]
+    best_k = best_params[2]
+    best_pred = simulate_trajectory(best_r, best_k)
+    best_rss = sum((n_vals .- best_pred) .^ 2)
+
     mean_obs = mean(n_vals)
     tss = sum((n_vals .- mean_obs) .^ 2)
-    r2 = (tss > 0.0) ? max(0.0, 1.0 - (best_rss / tss)) : 0.0
+    r2 = (tss > 0.0) ? 1.0 - (best_rss / tss) : 0.0
     rmse = sqrt(best_rss / n)
-    aic = n * log(max(1e-6, best_rss / n)) + 2.0 * 2.0
+    aic = n * log(max(1e-12, best_rss / n)) + 2.0 * 2.0
 
     msy = (best_r * best_k) / 4.0
     n_msy = best_k / 2.0
@@ -1256,56 +1759,72 @@ function fit_delay_difference(
     n_vals = Float64.(numbers)
     c_vals = Float64.(catches)
 
-    function simulate_dd(s_val, alpha_val, beta_val)
+    fit_idx = collect((lag + 1):n)
+    # Reference scale for the density-dependence parameter. Beverton-Holt
+    # recruitment `alpha*S / (1 + beta*S)` only expresses meaningful saturation
+    # when `beta` is of order `1/S`, so `beta` is carried in relative units
+    # (`beta_effective = b_rel / abundance_scale`) and optimized on that scale.
+    # Optimizing a fixed absolute `beta` grid instead forces the fit to
+    # `beta = 0` for any abundance series in the thousands or millions, which
+    # silently removes density dependence from the model.
+    abundance_scale = max(mean(abs, n_vals[fit_idx]), 1.0)
+
+    function simulate_dd(s_val::Float64, alpha_val::Float64, b_rel::Float64)
+        beta_eff = b_rel / abundance_scale
         pred = zeros(Float64, n)
         for i in 1:min(n, lag + 1)
             pred[i] = n_vals[i]
         end
         for t in (lag + 1):(n - 1)
             spawner_idx = max(1, t - lag + 1)
-            s_stock = max(1.0, pred[spawner_idx])
-            recruits = (alpha_val * s_stock) / (1.0 + beta_val * s_stock)
+            s_stock = max(1e-6, pred[spawner_idx])
+            recruits = (alpha_val * s_stock) / (1.0 + beta_eff * s_stock)
             escapement = max(0.0, pred[t] - c_vals[t])
             pred[t + 1] = max(0.0, s_val * escapement + recruits)
         end
         return pred
     end
 
-    best_s = 0.82
-    best_alpha = 0.25
-    best_beta = 1.0 / max(10.0, mean(n_vals) * 2.0)
+    n_scale = abundance_scale
+    function residual_sum(s_val::Float64, alpha_val::Float64, b_rel::Float64)
+        pred = simulate_dd(s_val, alpha_val, b_rel)
+        return sum(((n_vals[fit_idx] .- pred[fit_idx]) ./ n_scale) .^ 2)
+    end
 
-    best_pred = simulate_dd(best_s, best_alpha, best_beta)
-    best_rss = sum((n_vals[(lag + 1):end] .- best_pred[(lag + 1):end]) .^ 2)
-
-    # Multi-scale grid search
-    s_candidates = [0.60, 0.70, 0.78, 0.82, 0.86, 0.90, 0.94]
-    alpha_candidates = [0.05, 0.15, 0.25, 0.40, 0.60, 0.90]
-    beta_candidates = [0.0, 0.0005, 0.001, 0.003, 0.008, 0.02]
-
-    for s_try in s_candidates
-        for a_try in alpha_candidates
-            for b_try in beta_candidates
-                pred_try = simulate_dd(s_try, a_try, b_try)
-                rss_try = sum((n_vals[(lag + 1):end] .- pred_try[(lag + 1):end]) .^ 2)
-                if rss_try < best_rss
-                    best_rss = rss_try
-                    best_s = s_try
-                    best_alpha = a_try
-                    best_beta = b_try
-                    best_pred = pred_try
-                end
+    # 3. Optimize the three parameters with Optim.jl. Survival is bounded to
+    #    (0, 1); alpha is bounded above by a generous multiple of 1 so that a
+    #    high-recruitment series can still be represented; the density
+    #    dependence is carried in relative units so that the box is
+    #    scale-free and meaningful at any abundance magnitude.
+    starts = Vector{Vector{Float64}}()
+    for s_try in (0.3, 0.5, 0.7, 0.85, 0.95)
+        for a_try in (0.05, 0.15, 0.3, 0.5, 0.8, 1.2)
+            for b_try in (0.05, 0.25, 0.5, 1.0, 2.0, 4.0)
+                push!(starts, [s_try, a_try, b_try])
             end
         end
     end
 
-    n_fit = length(n_vals[(lag + 1):end])
-    mean_obs = mean(n_vals[(lag + 1):end])
-    tss = sum((n_vals[(lag + 1):end] .- mean_obs) .^ 2)
-    r2 = (tss > 0.0) ? max(0.0, 1.0 - (best_rss / tss)) : 0.0
+    best_params, f_opt = optimize_model(
+        u -> residual_sum(u[1], u[2], u[3]),
+        [0.0, 0.0, 0.0],        # s, alpha, relative density dependence
+        [1.0, 5.0, 1e6],
+        starts,
+    )
+    best_s = best_params[1]
+    best_alpha = best_params[2]
+    best_b_rel = best_params[3]
+    best_beta = best_b_rel / abundance_scale
+    best_pred = simulate_dd(best_s, best_alpha, best_b_rel)
+    best_rss = sum((n_vals[fit_idx] .- best_pred[fit_idx]) .^ 2)
+
+    n_fit = length(fit_idx)
+    mean_obs = mean(n_vals[fit_idx])
+    tss = sum((n_vals[fit_idx] .- mean_obs) .^ 2)
+    r2 = (tss > 0.0) ? 1.0 - (best_rss / tss) : 0.0
     rmse = sqrt(best_rss / n_fit)
     m_nat = (0.0 < best_s < 1.0) ? -log(best_s) : ((best_s >= 1.0) ? 0.0 : Inf)
-    aic = n_fit * log(max(1e-6, best_rss / n_fit)) + 2.0 * 3.0
+    aic = n_fit * log(max(1e-12, best_rss / n_fit)) + 2.0 * 3.0
 
     return (
         s = best_s,
@@ -1367,13 +1886,13 @@ function fit_population_dynamics(source; lag::Int = 1)
 
     # 1. Whole population fits
     schaefer_tot = fit_schaefer(
-        ann_df.year,
+        ann_df.sample_index,
         ann_df.total_numbers,
         ann_df.catch_total;
         label = "Whole Population"
     )
     dd_tot = fit_delay_difference(
-        ann_df.year,
+        ann_df.sample_index,
         ann_df.total_numbers,
         ann_df.catch_total;
         lag = lag,
@@ -1382,13 +1901,13 @@ function fit_population_dynamics(source; lag::Int = 1)
 
     # 2. Fishable component fits
     schaefer_fish = fit_schaefer(
-        ann_df.year,
+        ann_df.sample_index,
         ann_df.legal_numbers,
         ann_df.catch_legal;
         label = "Fishable Stock (Legal Males)"
     )
     dd_fish = fit_delay_difference(
-        ann_df.year,
+        ann_df.sample_index,
         ann_df.legal_numbers,
         ann_df.catch_legal;
         lag = lag,
@@ -1572,7 +2091,7 @@ function retrospective_analysis(
 
     # 2. Containers for retrospective peels
     peel_indices = collect(1:realized_peels)
-    terminal_years = Int[]
+    terminal_samples = Int[]
 
     whole_peel_fits = []
     whole_term_peeled = Float64[]
@@ -1588,7 +2107,7 @@ function retrospective_analysis(
 
     for p in peel_indices
         t_peel = total_years - p
-        push!(terminal_years, ann_df.year[t_peel])
+        push!(terminal_samples, ann_df.sample_index[t_peel])
         sub_df = ann_df[1:t_peel, :]
 
         # Fit peeled data
@@ -1652,7 +2171,7 @@ function retrospective_analysis(
         n_peels = realized_peels,
         model_type = model_type,
         peel_indices = peel_indices,
-        terminal_years = terminal_years,
+        terminal_samples = terminal_samples,
         whole_population = (
             base_fit = base_whole_fit,
             peel_fits = whole_peel_fits,
@@ -1685,7 +2204,7 @@ function summarize_retrospective(retro_result)
     wp = retro_result.whole_population
     fs = retro_result.fishable_stock
     peels = retro_result.peel_indices
-    years = retro_result.terminal_years
+    samples = retro_result.terminal_samples
     m_name = (retro_result.model_type === :delay_difference) ?
              "Deriso-Schnute Delay-Difference" : "Schaefer Logistic Surplus Production"
 
@@ -1694,17 +2213,17 @@ function summarize_retrospective(retro_result)
     println(buf, "       ORGANISM RETROSPECTIVE PATTERN & MOHN'S RHO DIAGNOSTIC REPORT       ")
     println(buf, "="^80)
     println(buf, " Assessment Model Evaluated : ", m_name)
-    println(buf, " Total Time Series Horizon  : ", nrow(ann), " years")
+    println(buf, " Total Time Series Horizon  : ", nrow(ann), " samples")
     println(buf, " Number of Retrospective Peels: ", retro_result.n_peels)
     println(buf, "="^80)
 
     for (label, stock) in [("WHOLE POPULATION", wp), ("FISHABLE STOCK (LEGAL MALES)", fs)]
         println(buf, "\n >> [$(label)]")
-        println(buf, " Peel | Terminal Year | Peeled Terminal (N) | Base Reference (N) | Relative Bias (%)")
-        println(buf, "------+---------------+---------------------+--------------------+------------------")
+        println(buf, " Peel | Terminal Sample | Peeled Terminal (N) | Base Reference (N) | Relative Bias (%)")
+        println(buf, "------+------------------+---------------------+--------------------+------------------")
         for i in eachindex(peels)
             p_idx = peels[i]
-            yr = years[i]
+            yr = samples[i]
             p_val = stock.terminal_peeled[i]
             b_val = stock.terminal_base[i]
             re_pct = stock.rel_errors[i] * 100.0
@@ -1712,12 +2231,12 @@ function summarize_retrospective(retro_result)
             re_str = re_sign * string(round(re_pct, digits = 2)) * "%"
             p_str = string(round(p_val, digits = 2))
             b_str = string(round(b_val, digits = 2))
-            println(buf, "  -", p_idx, "  |     Year ", lpad(string(yr), 2),
+            println(buf, "  -", p_idx, "  |     Sample ", lpad(string(yr), 2),
                     "   |       ", lpad(p_str, 8),
                     "      |      ", lpad(b_str, 8),
                     "      |     ", lpad(re_str, 8))
         end
-        println(buf, "------+---------------+---------------------+--------------------+------------------")
+        println(buf, "------+------------------+---------------------+--------------------+------------------")
 
         rho = stock.mohn_rho
         status = if abs(rho) <= 0.20
@@ -1880,82 +2399,193 @@ function fit_generalized_leslie_model(
     repro_indices = [st.index for st in stages if st.is_reproductive]
     legal_indices = [st.index for st in stages if st.is_legal_male]
 
-    # Stage 1: Stage 4 (pooled)
-    s1 = 0.74
-    gamma1 = 0.78
-    A[2, 1] = s1 * gamma1
-    A[1, 1] = s1 * (1.0 - gamma1)
-
-    # Stage 2: Stage 5 (pooled)
-    s2 = 0.76
-    gamma2 = 0.75
+    # ------------------------------------------------------------------
+    # Parameterization
+    # ------------------------------------------------------------------
+    # Rather than hardcoding one survival per stage (which cannot be identified
+    # from a short series and is not a fit at all), the matrix is generated from a
+    # small, biologically structured set of coefficients that is then estimated
+    # against the observed trajectories:
+    #   1 s1            survival of the pooled stage-4 cohort
+    #   2 gamma1         stage-4 transition rate
+    #   3 s2            survival of the pooled stage-5 cohort
+    #   4 gamma2         stage-5 transition rate
+    #   5 split          male share of the stage-5 transition
+    #   6 s_male_legal   survival of legal-size males
+    #   7 s_male_sub     survival of sublegal males
+    #   8 gamma_m_base   base male transition rate
+    #   9 gamma_m_decay  per-stage decay of the male transition rate
+    #  10 pterm_m_base  base male maturation probability
+    #  11 pterm_m_exp   maturation exponent
+    #  12 s_female      female survival
+    #  13 gamma_f_base  base female transition rate
+    #  14 gamma_f_decay per-stage decay of the female transition rate
+    #  15 pterm_f_base  base female maturation probability
+    #  16 pterm_f_exp   maturation exponent
+    #  17 fec_base      recruits per reproductive female
+    #  18 fec_size_exp  size scaling of the fecundity term
+    #  19 fec_size_ref  reference size for the fecundity term
     m6_idx = isempty(male_indices) ? 3 : first(male_indices)
     f6_idx = isempty(female_indices) ? 10 : first(female_indices)
-    A[m6_idx, 2] = 0.50 * s2 * gamma2
-    A[f6_idx, 2] = 0.50 * s2 * gamma2
-    A[2, 2] = s2 * (1.0 - gamma2)
 
-    # Male stages (Stages 3 to 9)
-    for idx in male_indices
-        st = stages[idx]
-        is_term = (st.stage == 12 || idx == last(male_indices))
-        s_m = st.is_legal_male ? 0.78 : 0.80
-        gamma_m = is_term ? 0.0 : max(0.15, 0.75 - 0.10 * (st.stage - 6.0))
-        p_term = (st.stage <= 6) ? 0.0 : min(0.80, 0.10 * (st.stage - 6.0)^1.3)
+    """
+        build_leslie_matrix(p) -> Matrix
 
-        if is_term
-            A[idx, idx] = s_m
-        else
-            next_idx = idx + 1
-            A[next_idx, idx] = s_m * gamma_m * (1.0 - p_term)
-            A[idx, idx] = s_m * (1.0 - gamma_m + gamma_m * p_term)
-        end
-    end
+    Assemble the S x S projection matrix from the 19-vector `p`. Columns sum to at
+    most one so the matrix is a valid conditional transition matrix, and the
+    fecundity column carries recruitment into stage 1.
+    """
+    function build_leslie_matrix(p::AbstractVector{<:Real})
+        s1, gamma1, s2, gamma2, split = p[1], p[2], p[3], p[4], p[5]
+        s_ml, s_ms = p[6], p[7]
+        gmb, gmd, ptmb, ptme = p[8], p[9], p[10], p[11]
+        sf, gfb, gfd, ptfb, ptfe = p[12], p[13], p[14], p[15], p[16]
+        fec_base, fec_exp, fec_ref = p[17], p[18], p[19]
 
-    # Female stages (Stages 10 to 15)
-    for idx in female_indices
-        st = stages[idx]
-        is_term = (st.stage == 11 || idx == last(female_indices))
-        s_f = 0.80
-        gamma_f = is_term ? 0.0 : max(0.10, 0.70 - 0.12 * (st.stage - 6.0))
-        p_term_f = (st.stage <= 6) ? 0.0 : min(0.85, 0.15 * (st.stage - 6.0)^1.4)
+        M = zeros(Float64, S, S)
 
-        if is_term
-            A[idx, idx] = s_f
-        else
-            next_idx = idx + 1
-            A[next_idx, idx] = s_f * gamma_f * (1.0 - p_term_f)
-            A[idx, idx] = s_f * (1.0 - gamma_f + gamma_f * p_term_f)
-        end
-    end
+        # Pooled early stages
+        M[2, 1] = s1 * gamma1
+        M[1, 1] = s1 * (1.0 - gamma1)
+        M[m6_idx, 2] = split * s2 * gamma2
+        M[f6_idx, 2] = (1.0 - split) * s2 * gamma2
+        M[2, 2] = s2 * (1.0 - gamma2)
 
-    # Fecundity contributions from reproductive mature females to Stage 1
-    tot_recruits = sum(stage_matrix[1, 2:T])
-    tot_females = sum(stage_matrix[repro_indices, 1:(T-1)])
-    fecundity_base = (tot_females > 0.0) ? (tot_recruits / tot_females) : 0.85
-
-    for idx in repro_indices
-        st = stages[idx]
-        f_scale = (st.size_mean / 65.0)^2.5
-        A[1, idx] = fecundity_base * f_scale
-    end
-
-    # Refine matrix transitions via trajectory matching
-    Y = stage_matrix[:, 2:T] .+ catch_matrix[:, 1:(T-1)]
-    X = stage_matrix[:, 1:(T-1)]
-    sum_x = sum(X)
-    sum_y = sum(Y)
-    scale_factor = (sum_x > 0.0) ? (sum_y / sum_x) : 1.0
-
-    for j in 1:S
-        col_sum = sum(A[i, j] for i in 2:S)
-        if col_sum > 0.0
-            adj_col = min(0.95, col_sum * (0.85 + 0.15 * scale_factor))
-            for i in 2:S
-                A[i, j] = (A[i, j] / col_sum) * adj_col
+        # Male stages
+        for idx in male_indices
+            st = stages[idx]
+            is_term = (idx == last(male_indices))
+            s_m = st.is_legal_male ? s_ml : s_ms
+            gamma_m = is_term ? 0.0 : clamp(gmb - gmd * (st.stage - 6.0), 0.0, 1.0)
+            p_term = (st.stage <= 6) ? 0.0 :
+                clamp(ptmb * (st.stage - 6.0)^ptme, 0.0, 0.99)
+            if is_term
+                M[idx, idx] = s_m
+            else
+                nxt = idx + 1
+                M[nxt, idx] = s_m * gamma_m * (1.0 - p_term)
+                M[idx, idx] = s_m * (1.0 - gamma_m + gamma_m * p_term)
             end
         end
+
+        # Female stages
+        for idx in female_indices
+            st = stages[idx]
+            is_term = (idx == last(female_indices))
+            gamma_f = is_term ? 0.0 : clamp(gfb - gfd * (st.stage - 6.0), 0.0, 1.0)
+            p_term = (st.stage <= 6) ? 0.0 :
+                clamp(ptfb * (st.stage - 6.0)^ptfe, 0.0, 0.99)
+            if is_term
+                M[idx, idx] = sf
+            else
+                nxt = idx + 1
+                M[nxt, idx] = sf * gamma_f * (1.0 - p_term)
+                M[idx, idx] = sf * (1.0 - gamma_f + gamma_f * p_term)
+            end
+        end
+
+        # Recruitment from reproductive females into the first stage
+        for idx in repro_indices
+            st = stages[idx]
+            f_scale = (fec_ref > 0.0) ? (st.size_mean / fec_ref)^fec_exp : 0.0
+            M[1, idx] = fec_base * f_scale
+        end
+
+        return M
     end
+
+    # ------------------------------------------------------------------
+    # Objective
+    # ------------------------------------------------------------------
+    # Observed process error: the year-to-year transition the data actually
+    # support. Fitting this rather than a single recursive trajectory avoids the
+    # error compounding that makes recursive objectives unstable for short
+    # series, while a light trajectory term keeps the projected dynamics honest.
+    X = stage_matrix[:, 1:(T-1)]
+    Y = stage_matrix[:, 2:T] .+ catch_matrix[:, 1:(T-1)]
+    obs_scale = max(mean(abs, stage_matrix), 1e-6)
+
+    function process_error(p::AbstractVector{<:Real})
+        M = build_leslie_matrix(p)
+        total = 0.0
+        for t in 1:(T - 1)
+            x = X[:, t]
+            total_obs = max(sum(x), 1e-9)
+            predicted = M * x
+            # Compare on a relative scale so the fit is not dominated by the
+            # stages that carry most of the biomass.
+            total += sum(((predicted .- Y[:, t]) ./ (obs_scale * sqrt(total_obs))).^2)
+        end
+        return total
+    end
+
+    function trajectory_error(p::AbstractVector{<:Real})
+        M = build_leslie_matrix(p)
+        pred = zeros(Float64, S, T)
+        pred[:, 1] = stage_matrix[:, 1]
+        for t in 1:(T - 1)
+            pred[:, t + 1] = max.(0.0, M * pred[:, t] .- catch_matrix[:, t])
+        end
+        return sum(((pred .- stage_matrix) ./ obs_scale) .^ 2)
+    end
+
+    # The process error dominates; the trajectory term regularizes toward
+    # multi-year consistency without letting recursive noise drive the fit.
+    objective(p) = process_error(p) + 0.5 * trajectory_error(p)
+
+    # ------------------------------------------------------------------
+    # Estimation
+    # ------------------------------------------------------------------
+    # Starting values come from the configured Leslie parameters so the fit
+    # inherits documented, species-specific priors instead of arbitrary numbers.
+    lp = LeslieParams()
+    p0 = [
+        lp.survival_stage1, lp.gamma_stage1,
+        lp.survival_stage2, lp.gamma_stage2, lp.male_split_fraction,
+        lp.survival_male_legal, lp.survival_male_sublegal,
+        lp.gamma_male_base, lp.gamma_male_decay,
+        lp.p_term_male_base, lp.p_term_male_exponent,
+        lp.survival_female, lp.gamma_female_base, lp.gamma_female_decay,
+        lp.p_term_female_base, lp.p_term_female_exponent,
+        lp.fecundity_base, lp.fecundity_size_exponent, lp.fecundity_size_reference,
+    ]
+
+    lower = [
+        1e-3, 1e-3,
+        1e-3, 1e-3, 0.0,
+        1e-3, 1e-3,
+        1e-3, 0.0, 0.0, 0.1,
+        1e-3, 1e-3, 0.0, 0.0, 0.1,
+        0.0, 0.1, 1.0,
+    ]
+    upper = [
+        1.0, 1.0,
+        1.0, 1.0, 1.0,
+        1.0, 1.0,
+        1.0, 1.0, 1.0, 4.0,
+        1.0, 1.0, 1.0, 1.0, 4.0,
+        1e4, 6.0, 200.0,
+    ]
+
+    # Coordinate descent over biologically coherent blocks. Optimizing all 19
+    # coefficients jointly is neither identifiable from a short series nor
+    # tractable for a derivative-free method, but each block is small and uses
+    # every year of data.
+    blocks = [
+        [1, 2, 3, 4, 5],                     # pooled early stages
+        [6, 7, 8, 9, 10, 11],                # male transitions
+        [12, 13, 14, 15, 16],                # female transitions
+        [17, 18, 19],                        # fecundity
+    ]
+    block_bounds = [
+        (lower[blocks[1]], upper[blocks[1]]),
+        (lower[blocks[2]], upper[blocks[2]]),
+        (lower[blocks[3]], upper[blocks[3]]),
+        (lower[blocks[4]], upper[blocks[4]]),
+    ]
+
+    p_hat, obj_hat = optimize_blocks(objective, blocks, p0, block_bounds; passes = 4)
+    A = build_leslie_matrix(p_hat)
 
     # Eigenvalue and Eigenvector Decomposition
     eig_right = eigen(A)
@@ -2030,7 +2660,9 @@ function fit_generalized_leslie_model(
     ss_res = sum((legal_obs .- legal_pred).^2)
     r2 = (ss_tot > 0.0) ? max(0.0, 1.0 - ss_res / ss_tot) : 0.0
     rmse = sqrt(ss_res / T)
-    k_params = 4
+    # 19 estimated coefficients; the penalty must reflect the parameters that
+    # were actually fitted or AIC comparisons across models are meaningless.
+    k_params = length(p_hat)
     aic = (ss_res > 0.0) ? (T * log(ss_res / T) + 2.0 * k_params) : 0.0
 
     return LeslieMatrixFit(
@@ -2125,7 +2757,22 @@ generalized Leslie stage transition matrix.
 - `lag::Int`: Delay-difference recruitment lag in years.
 
 # Returns
-`MacroModelComparison` containing comparative metrics.
+`MacroModelComparison` containing comparative metrics, plus `label_*` legend
+entries that state each model's key estimated parameters *with units*.
+
+# Note on units
+The three fits are performed in **number**, not biomass:
+`fit_population_dynamics` passes `total_numbers` / `legal_numbers` and
+`catch_total` / `catch_legal` to `fit_schaefer` and `fit_delay_difference`, and
+`fit_generalized_leslie_model` works on a per-stage count matrix. So `K` is a
+carrying capacity in individuals, `r` and `M` are annual rates, and `MSY` is
+individuals per year.
+
+The `biomass_*_kg` fields are a post-hoc rescale of those predicted counts by a
+single pooled mean legal mass (`mean_legal_wt_kg`), applied identically to the
+observed series. The biomass curves are therefore proportional to the number
+curves: the kg axis is a presentation choice and adds no information, which is
+why the legend labels carry number units beside it.
 """
 function compare_macro_models(
     annual_data,
@@ -2136,11 +2783,15 @@ function compare_macro_models(
     years = leslie_fit.years
     T = length(years)
 
-    mean_legal_wt_kg = 0.60
-    if !isempty(leslie_fit.stages)
+    # Fall back to the configured allometric mass of a mean-size legal male
+    # rather than a bare literal, so the number conversions use are traceable.
+    mean_legal_wt_kg = begin
         leg_stages = filter(s -> s.is_legal_male, leslie_fit.stages)
         if !isempty(leg_stages)
-            mean_legal_wt_kg = mean([s.mean_mass for s in leg_stages]) / 1000.0
+            mean([s.mean_mass for s in leg_stages]) / 1000.0
+        else
+            sp = SpeciesParams()
+            calculate_mass(sp, 100.0, :male; mat = 1) / 1000.0
         end
     end
 
@@ -2150,22 +2801,22 @@ function compare_macro_models(
     # Schaefer trajectory for fishable stock
     sch_fit = fits.fishable_stock.schaefer
     n_sch = sch_fit.predicted
-    b_sch = [n * mean_legal_wt_kg for n in n_sch]
-    if length(b_sch) < T
-        b_sch = vcat(b_sch, fill(last(b_sch), T - length(b_sch)))
-    elseif length(b_sch) > T
-        b_sch = b_sch[1:T]
+    if length(n_sch) < T
+        n_sch = vcat(n_sch, fill(last(n_sch), T - length(n_sch)))
+    elseif length(n_sch) > T
+        n_sch = n_sch[1:T]
     end
+    b_sch = [n * mean_legal_wt_kg for n in n_sch]
 
     # Delay-Difference trajectory for fishable stock
     dd_fit = fits.fishable_stock.delay_difference
     n_dd = dd_fit.predicted
-    b_dd = [n * mean_legal_wt_kg for n in n_dd]
-    if length(b_dd) < T
-        b_dd = vcat(b_dd, fill(last(b_dd), T - length(b_dd)))
-    elseif length(b_dd) > T
-        b_dd = b_dd[1:T]
+    if length(n_dd) < T
+        n_dd = vcat(n_dd, fill(last(n_dd), T - length(n_dd)))
+    elseif length(n_dd) > T
+        n_dd = n_dd[1:T]
     end
+    b_dd = [n * mean_legal_wt_kg for n in n_dd]
 
     # Compute variability metrics
     mu_obs = mean(b_obs)
@@ -2214,6 +2865,28 @@ function compare_macro_models(
     aics = Dict(:schaefer => aic_sch, :delay_difference => aic_dd, :generalized_leslie => aic_les)
     preferred = argmin(aics)
 
+    # Legend entries carrying the key estimated parameters, formatted to three
+    # significant figures so a run whose estimates barely move does not produce a
+    # legend that changes on every re-fit.
+    #
+    # The fits themselves are in NUMBER: `fit_population_dynamics` passes
+    # `total_numbers` / `legal_numbers` and `catch_total` / `catch_legal`, so K is
+    # a carrying capacity in individuals and MSY is individuals per year. The
+    # biomass series are a post-hoc rescale of the predicted numbers by a single
+    # pooled mean legal mass, applied identically to the observed series — so the
+    # biomass curves are proportional to the number curves and carry no extra
+    # information. The labels below state the units, because the panel's y-axis is
+    # in kg and a bare "K=..." beside it would be read as a biomass.
+    g(x) = @sprintf("%.3g", x)
+    label_observed = "Stage-mean legal biomass (model basis)"
+    label_schaefer = sch_fit.is_fitted ?
+        "Schaefer: K=$(g(sch_fit.K)) ind, r=$(g(sch_fit.r))/yr, MSY=$(g(sch_fit.MSY)) ind/yr" :
+        "Schaefer (not fitted)"
+    label_delay_diff = dd_fit.is_fitted ?
+        "Delay-Diff: s=$(g(dd_fit.s)), M=$(g(dd_fit.M))/yr, α=$(g(dd_fit.alpha))" :
+        "Delay-Diff (not fitted)"
+    label_leslie = "Leslie: λ=$(g(leslie_fit.dominant_eigenvalue)), r=$(g(leslie_fit.intrinsic_growth_rate))/yr"
+
     return MacroModelComparison(
         years,
         b_obs,
@@ -2241,7 +2914,16 @@ function compare_macro_models(
         aic_sch,
         aic_dd,
         aic_les,
-        preferred
+        preferred,
+        label_observed,
+        label_schaefer,
+        label_delay_diff,
+        label_leslie,
+        leslie_fit.legal_abundance_obs,
+        n_sch,
+        n_dd,
+        leslie_fit.legal_abundance_pred,
+        mean_legal_wt_kg
     )
 
 end
@@ -2319,21 +3001,37 @@ criteria to support systematic parameter orchestration and automated model calib
 
 # Evaluated Criteria:
 1. **No Extinction (`is_persistent`)**: Living population ``N(t) \\ge N_{\\min}``.
-2. **No Population Explosion (`is_bounded`)**: Living population ``N(t) \\le N_{\\max}``.
+   The default floor is `CriteriaParams.min_population` (1, i.e. "not extinct").
+   This is deliberately *not* derived from the carrying capacity: the population
+   regulates around a fraction of K, so a K-derived floor reported healthy
+   self-regulated runs as extinct. The bound and the model were both a function
+   of the same K, so the criterion was self-referential.
+2. **No Population Explosion (`is_bounded`)**: Living population
+   ``N(t) \\le N_{\\max}``. The default ceiling is
+   `CriteriaParams.max_population_multiple` times the carrying capacity. This one
+   legitimately refers to K — "did not explode past the scale it was configured
+   for" is a statement about K — and a multiple rather than K itself because a
+   transient overshoot is normal. `peak_population` in the result reports the
+   observed maximum so overshoot is visible rather than implied.
 3. **Steady Size Structure (`is_size_steady`)**: Relative drift in mean carapace width over
    the final evaluation window does not exceed `max_size_drift`.
-4. **Maturity Ogive Fidelity (`is_maturity_realistic`)**: Empirical maturity schedule
-   matches theoretical logistic curves (`maturity(sex, log(size))`) within `max_maturity_rmse`.
+4. **Maturity Ogive Fidelity (`is_maturity_realistic`)**: Empirical cross-sectional
+   maturity schedule matches the cumulative theoretical curve within
+   `max_maturity_rmse`. The empirical ogive estimates the probability of having
+   *ever* matured, so it is compared against the cumulative curve over the stages
+   an individual of that size has passed, not against the per-ecdysis probability.
 5. **Growth Schedule Fidelity (`is_growth_realistic`)**: Observed mean carapace width per
    stage matches reference empirical medians from `growth_schedule()` within `max_growth_rmse`.
 
 # Arguments
 - `model`: Agent-based model instance after simulation.
 - `agent_df::DataFrame`: Time-series table collected during simulation.
-- `min_population::Union{Nothing, Int}`: Minimum living organism threshold (defaults to 10% of K, min 15).
-- `max_population::Union{Nothing, Int}`: Maximum living organism ceiling (defaults to 300% of K).
+- `min_population::Union{Nothing, Int}`: Minimum living organism threshold.
+  `nothing` uses `model.params.criteria.min_population`.
+- `max_population::Union{Nothing, Int}`: Maximum living organism ceiling.
+  `nothing` uses `max_population_multiple * benthic_carrying_capacity`.
 - `max_size_drift::Float64`: Maximum allowable fractional shift in mean size over recent steps.
-- `max_maturity_rmse::Float64`: Maximum allowable RMSE against theoretical maturity ogive.
+- `max_maturity_rmse::Float64`: Maximum allowable RMSE against the cumulative maturity curve.
 - `max_growth_rmse::Float64`: Maximum allowable RMSE against empirical stage size schedule (mm).
 - `window_steps::Int`: Number of recent time steps used to assess size stability.
 
@@ -2349,13 +3047,39 @@ function evaluate_population_criteria(
     max_size_drift::Float64 = 0.20,
     max_maturity_rmse::Float64 = 0.35,
     max_growth_rmse::Float64 = 15.0,
-    window_steps::Int = 10
+    window_steps::Int = 10,
+    maturity_ogive_min_count::Int = 10
 )
-    k_cap = (hasproperty(model, :params) && hasproperty(model.params, :benthic_carrying_capacity)) ?
-        Float64(model.params.benthic_carrying_capacity) : 300.0
+    # `params` lives in the model's abm properties, not as a struct field, so
+    # neither `hasfield` nor `hasproperty` finds it. And `IBMParameters` forwards
+    # unknown field reads to its nested structs via `getproperty` without
+    # extending `propertynames`, so `hasproperty` is also false for
+    # `benthic_carrying_capacity`. Both facts previously sent this code down its
+    # fallback branch, which silently substituted a hardcoded 300.0 carrying
+    # capacity for the configured one.
+    props = try
+        abmproperties(model)
+    catch
+        nothing
+    end
+    p = (props !== nothing && haskey(props, :params)) ? props[:params] : nothing
+    carrying_capacity = if p !== nothing && hasfield(typeof(p), :environment)
+        Float64(getfield(p, :environment).benthic_carrying_capacity)
+    else
+        300.0
+    end
+    crit_cfg = if p !== nothing && hasfield(typeof(p), :criteria)
+        getfield(p, :criteria)
+    else
+        CriteriaParams()
+    end
 
-    n_min = (min_population !== nothing) ? min_population : max(15, round(Int, 0.10 * k_cap))
-    n_max = (max_population !== nothing) ? max_population : round(Int, 3.0 * k_cap)
+    # Floor is an absolute count, independent of K: the criterion asks whether the
+    # run went extinct. Ceiling is a multiple of K, because "did not explode past
+    # the scale it was configured for" is a statement about K.
+    n_min = (min_population !== nothing) ? min_population : crit_cfg.min_population
+    n_max = (max_population !== nothing) ? max_population :
+            round(Int, crit_cfg.max_population_multiple * carrying_capacity)
 
     # 1. Population bounds
     living_organisms = collect(allagents(model))
@@ -2363,6 +3087,18 @@ function evaluate_population_criteria(
 
     is_persistent = n_living >= n_min
     is_bounded = n_living <= n_max
+
+    # Observed peak, so a transient overshoot is reported rather than hidden behind
+    # a pass/fail on the final value alone.
+    peak_population = n_living
+    if nrow(agent_df) > 0
+        for candidate in (:length_stage, :count_stage, :total_organisms, :total_numbers)
+            if candidate in propertynames(agent_df)
+                peak_population = max(peak_population, round(Int, maximum(agent_df[!, candidate])))
+                break
+            end
+        end
+    end
 
     if n_living == 0
         return (
@@ -2373,11 +3109,17 @@ function evaluate_population_criteria(
             is_maturity_realistic = false,
             is_growth_realistic = false,
             n_living = 0,
+            peak_population = peak_population,
+            n_min = n_min,
+            n_max = n_max,
             size_drift = 1.0,
             maturity_rmse = 1.0,
             growth_rmse = 100.0,
             composite_score = 1000.0,
-            mean_cw = 0.0,
+            # Same field name as the populated path below; this one used to report
+            # `mean_cw` while the other reported `mean_size`, so the two returns
+            # did not have the same shape.
+            mean_size = 0.0,
             stage_counts = Dict{Int, Int}()
         )
     end
@@ -2402,22 +3144,21 @@ function evaluate_population_criteria(
     end
     is_size_steady = size_drift <= max_size_drift
 
-    # 3. Maturity ogive fidelity
+    # 3. Maturity ogive fidelity.
+    #    The empirical curve is cross-sectional (has ever matured) and `maturity`
+    #    is a per-ecdysis probability, so they are compared against the cumulative
+    #    curve over the stages an individual of that size has already passed, not
+    #    against the raw per-ecdysis probability. Bins with a handful of
+    #    individuals are excluded because their proportions are noise.
     size_bins = 20.0:10.0:140.0
-    cm_m, pm_m = compute_empirical_ogive(model, male, size_bins)
-    cm_f, pm_f = compute_empirical_ogive(model, female, size_bins)
+    om = compute_empirical_ogive(model, male, size_bins; min_count = maturity_ogive_min_count)
+    of = compute_empirical_ogive(model, female, size_bins; min_count = maturity_ogive_min_count)
 
-    mat_sq_errors = Float64[]
-    for i in eachindex(cm_m)
-        p_theory = maturity(0, log(cm_m[i]))
-        push!(mat_sq_errors, (pm_m[i] - p_theory)^2)
-    end
-    for i in eachindex(cm_f)
-        p_theory = maturity(1, log(cm_f[i]))
-        push!(mat_sq_errors, (pm_f[i] - p_theory)^2)
-    end
+    maturity_sq_errors = Float64[]
+    append!(maturity_sq_errors, maturity_ogive_residuals(om, male))
+    append!(maturity_sq_errors, maturity_ogive_residuals(of, female))
 
-    maturity_rmse = isempty(mat_sq_errors) ? 0.0 : sqrt(mean(mat_sq_errors))
+    maturity_rmse = isempty(maturity_sq_errors) ? 0.0 : sqrt(mean(maturity_sq_errors))
     is_maturity_realistic = maturity_rmse <= max_maturity_rmse
 
     # 4. Growth schedule fidelity
@@ -2426,19 +3167,19 @@ function evaluate_population_criteria(
     stage_obs_f = Dict{Int, Vector{Float64}}()
     stage_counts = Dict{Int, Int}()
 
-for org in living_organisms
-        stg = c.stage
+    for org in living_organisms
+        stg = org.stage
         stage_counts[stg] = get(stage_counts, stg, 0) + 1
-        if c.sex == male
+        if org.sex == male
             if !haskey(stage_obs_m, stg)
                 stage_obs_m[stg] = Float64[]
             end
-            push!(stage_obs_m[stg], c.size)
+            push!(stage_obs_m[stg], org.size)
         else
             if !haskey(stage_obs_f, stg)
                 stage_obs_f[stg] = Float64[]
             end
-            push!(stage_obs_f[stg], c.size)
+            push!(stage_obs_f[stg], org.size)
         end
     end
 
@@ -2479,6 +3220,9 @@ for org in living_organisms
         is_maturity_realistic = is_maturity_realistic,
         is_growth_realistic = is_growth_realistic,
         n_living = n_living,
+        peak_population = peak_population,
+        n_min = n_min,
+        n_max = n_max,
         size_drift = size_drift,
         maturity_rmse = maturity_rmse,
         growth_rmse = growth_rmse,

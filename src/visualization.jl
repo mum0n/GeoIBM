@@ -1,7 +1,7 @@
 """
     src/visualization.jl
 
-Visualization and diagnostic plotting tools for the snow crab
+Visualization and diagnostic plotting tools for the organism
 (*Chionoecetes opilio*) individual-based model (IBM).
 
 Provides specialized diagnostic figures for population dynamics, demographic
@@ -9,6 +9,8 @@ stage structures, size distributions by sex, allometric growth trajectories,
 bioenergetics, spatial distributions over environmental fields, and a unified
 executive simulation dashboard, implemented natively with Makie.jl (CairoMakie).
 """
+
+using Printf
 
 using CairoMakie
 using DataFrames
@@ -22,7 +24,7 @@ Generate a multi-panel timeseries plot showing temporal dynamics of the
 simulated population.
 
 # Visualized Metrics
-- **Panel 1 (Abundance)**: Total living crabs, mature adults, and ovigerous females.
+- **Panel 1 (Abundance)**: Mature adults and ovigerous females.
 - **Panel 2 (Body Size)**: Mean carapace width (mm) across time.
 - **Panel 3 (Recruitment, optional)**: Cumulative benthic recruitment of Stage 4 settlers
   if `model_df` contains `:total_recruits_settled`.
@@ -45,7 +47,7 @@ function plot_population_timeseries(
 
     ax1 = Axis(
         fig[1, 1],
-        title = "Snow Crab Abundance Dynamics",
+        title = "Organism Abundance Dynamics",
         xlabel = "Time",
         ylabel = "Count"
     )
@@ -103,11 +105,11 @@ end
 """
     plot_stage_distribution(model)
 
-Generate a grouped bar chart displaying the frequency of living crabs across
+Generate a grouped bar chart displaying the frequency of living organisms across
 developmental stages, categorized by sex.
 
 # Biological Significance
-Snow crab developmental progress is marked by discrete developmental stages.
+Organism developmental progress is marked by discrete developmental stages.
 Pre-benthic stages (egg, zoea, megalopa) develop at stage 0, while stages 1 through 14+
 represent benthic juveniles and mature adults. This plot visualizes cohort abundance
 and recruitment progression across the demographic age-structure.
@@ -116,13 +118,13 @@ and recruitment progression across the demographic age-structure.
 - `model::ABM`: Agents.jl simulation model containing `Organism` agents.
 
 # Returns
-`CairoMakie.Figure`: Grouped bar chart of crab counts per stage by sex.
+`CairoMakie.Figure`: Grouped bar chart of organism counts per stage by sex.
 """
 function plot_stage_distribution(model)
     fig = Figure(size = (750, 450))
-    crabs = collect(allagents(model))
-    if isempty(crabs)
-        Label(fig[1, 1], "No living crabs to display", fontsize = 16, color = :gray)
+    organisms = collect(allagents(model))
+    if isempty(organisms)
+        Label(fig[1, 1], "No living organisms to display", fontsize = 16, color = :gray)
         return fig
     end
 
@@ -130,7 +132,7 @@ function plot_stage_distribution(model)
     males_by_stage = zeros(Int, length(stage_range))
     females_by_stage = zeros(Int, length(stage_range))
 
-    for c in crabs
+    for c in organisms
         idx = c.stage - first(stage_range) + 1
         if 1 <= idx <= length(stage_range)
             if c.sex === male
@@ -146,7 +148,7 @@ function plot_stage_distribution(model)
         fig[1, 1],
         title = "Stage Demographic Structure by Sex",
         xlabel = "Developmental Stage",
-        ylabel = "Abundance (Crabs)",
+        ylabel = "Abundance (Organisms)",
         xticks = collect(stage_range)
     )
 
@@ -175,21 +177,21 @@ molt at smaller sizes (typically 50-80 mm size), whereas males can continue to
 grow to stages 12-14+ (exceeding 140 mm size).
 
 # Arguments
-- `model::ABM`: Simulation model containing `SnowCrab` agents.
+- `model::ABM`: Simulation model containing `Organism` agents.
 
 # Returns
 `CairoMakie.Figure`: Overlaid histogram of carapace widths for males and females.
 """
 function plot_size_by_sex(model)
     fig = Figure(size = (750, 450))
-    crabs = collect(allagents(model))
-    if isempty(crabs)
-        Label(fig[1, 1], "No living crabs to display", fontsize = 16, color = :gray)
+    organisms = collect(allagents(model))
+    if isempty(organisms)
+        Label(fig[1, 1], "No living organisms to display", fontsize = 16, color = :gray)
         return fig
     end
 
-    male_sizes = [Float64(c.size) for c in crabs if c.sex === male]
-    female_sizes = [Float64(c.size) for c in crabs if c.sex === female]
+    male_sizes = [Float64(c.size) for c in organisms if c.sex === male]
+    female_sizes = [Float64(c.size) for c in organisms if c.sex === female]
 
     ax = Axis(
         fig[1, 1],
@@ -227,7 +229,7 @@ end
 """
     plot_stage_allometry(model)
 
-Scatter plot of individual crab carapace widths across stages contrasted
+Scatter plot of individual organism carapace widths across stages contrasted
 with the empirical theoretical allometric mean curves (`llbm` and `llbf`).
 
 # Allometric Reference
@@ -242,9 +244,9 @@ with the empirical theoretical allometric mean curves (`llbm` and `llbf`).
 """
 function plot_stage_allometry(model)
     fig = Figure(size = (750, 480))
-    crabs = collect(allagents(model))
-    if isempty(crabs)
-        Label(fig[1, 1], "No living crabs to display", fontsize = 16, color = :gray)
+    organisms = collect(allagents(model))
+    if isempty(organisms)
+        Label(fig[1, 1], "No living organisms to display", fontsize = 16, color = :gray)
         return fig
     end
 
@@ -270,8 +272,8 @@ function plot_stage_allometry(model)
         color = :magenta, linestyle = :dash
     )
 
-    male_stages = [Float64(c.stage) + randn() * 0.08 for c in crabs if c.sex === male]
-    male_sizes = [Float64(c.size) for c in crabs if c.sex === male]
+    male_stages = [Float64(c.stage) + randn() * 0.08 for c in organisms if c.sex === male]
+    male_sizes = [Float64(c.size) for c in organisms if c.sex === male]
     if !isempty(male_sizes)
         scatter!(
             ax, male_stages, male_sizes,
@@ -279,8 +281,8 @@ function plot_stage_allometry(model)
         )
     end
 
-    female_stages = [Float64(c.stage) + randn() * 0.08 for c in crabs if c.sex === female]
-    female_sizes = [Float64(c.size) for c in crabs if c.sex === female]
+    female_stages = [Float64(c.stage) + randn() * 0.08 for c in organisms if c.sex === female]
+    female_sizes = [Float64(c.size) for c in organisms if c.sex === female]
     if !isempty(female_sizes)
         scatter!(
             ax, female_stages, female_sizes,
@@ -370,7 +372,7 @@ end
     plot_spatial_habitat(model)
 
 Generate a 2D spatial habitat map displaying benthic water temperature with
-living crabs superimposed by demographic stage and sex.
+living organisms superimposed by demographic stage and sex.
 
 # Demarcated Groups
 - Juveniles (Stage 4+): Yellow circles
@@ -390,7 +392,7 @@ function plot_spatial_habitat(model)
 
     ax = Axis(
         fig[1, 1],
-        title = "Spatial Crab Habitat & Distribution",
+        title = "Spatial Organism Habitat & Distribution",
         xlabel = "X Coordinate (Grid Cells)",
         ylabel = "Y Coordinate (Grid Cells)",
         aspect = AxisAspect(1)
@@ -402,19 +404,19 @@ function plot_spatial_habitat(model)
     )
     Colorbar(fig[1, 2], hm, label = "Temp (°C)")
 
-    crabs = collect(allagents(model))
-    if !isempty(crabs)
-        juv_x = [Float64(c.pos[1]) for c in crabs if !is_adult(c)]
-        juv_y = [Float64(c.pos[2]) for c in crabs if !is_adult(c)]
+    organisms = collect(allagents(model))
+    if !isempty(organisms)
+        juv_x = [Float64(c.pos[1]) for c in organisms if !is_adult(c)]
+        juv_y = [Float64(c.pos[2]) for c in organisms if !is_adult(c)]
 
-        adm_x = [Float64(c.pos[1]) for c in crabs if is_adult_male(c)]
-        adm_y = [Float64(c.pos[2]) for c in crabs if is_adult_male(c)]
+        adm_x = [Float64(c.pos[1]) for c in organisms if is_mature_male(c)]
+        adm_y = [Float64(c.pos[2]) for c in organisms if is_mature_male(c)]
 
-        adf_x = [Float64(c.pos[1]) for c in crabs if is_adult_female(c) && !is_ovigerous(c)]
-        adf_y = [Float64(c.pos[2]) for c in crabs if is_adult_female(c) && !is_ovigerous(c)]
+        adf_x = [Float64(c.pos[1]) for c in organisms if is_mature_female(c) && !is_ovigerous(c)]
+        adf_y = [Float64(c.pos[2]) for c in organisms if is_mature_female(c) && !is_ovigerous(c)]
 
-        ovig_x = [Float64(c.pos[1]) for c in crabs if is_ovigerous(c)]
-        ovig_y = [Float64(c.pos[2]) for c in crabs if is_ovigerous(c)]
+        ovig_x = [Float64(c.pos[1]) for c in organisms if is_ovigerous(c)]
+        ovig_y = [Float64(c.pos[2]) for c in organisms if is_ovigerous(c)]
 
         if !isempty(juv_x)
             scatter!(
@@ -451,64 +453,125 @@ function plot_spatial_habitat(model)
 end
 
 """
-    plot_maturity_ogives(model; size_bins = 20.0:10.0:140.0)
+    fmt_param(x) → String
 
-Contrast the simulated empirical proportion mature against theoretical
-logistic maturity schedules for both male and female snow crabs.
+Format an estimated parameter for a legend entry: three significant figures.
+
+Fixed precision keeps a legend from churning between re-fits when the estimates
+barely move, and three significant figures keeps entries readable when a parameter
+spans orders of magnitude.
+"""
+fmt_param(x::Real) = @sprintf("%.3g", Float64(x))
+fmt_param(x) = string(x)
+
+"""
+    plot_maturity_ogives(model; size_bins=20.0:10.0:140.0, ecdyses=1, min_count=1)
+
+Contrast the simulated empirical proportion mature against the theoretical
+logistic maturity schedules for both male and female organisms.
 
 # Theoretical Model
 ```math
-P_{\\text{mature}}(Size) = \\frac{1}{1 + \\exp(-k \\cdot (Size - L_{50}))}
+P_{\\text{mature}}(Size) = \\frac{1}{1 + \\exp(-k (\\ln Size - \\ln L_{50}))}
 ```
-where ``L_{50} \\approx 91.8`` mm for males and ``51.6`` mm for females.
+where `L50` is the median size at maturity and `k` the log-logistic scale.
+
+The two curves measure different quantities and are labelled accordingly. The
+per-ecdysis curve is the probability of maturing at a *single ecdysis*. The
+simulated points are a *cross-sectional* proportion: every individual of a given
+size, pooled regardless of age, so they estimate the probability of having ever
+matured. The cumulative curve `1 - (1 - p) ^ k` is the like-for-like
+comparison. With `ecdyses = nothing` (the default) `k` is derived per size from
+the stage size ranges, which is the same quantity `evaluate_population_criteria`
+scores against, so the plot and the criterion cannot disagree.
 
 # Arguments
-- `model::ABM`: Simulation model containing `SnowCrab` agents.
+- `model::ABM`: Simulation model containing `Organism` agents.
 - `size_bins::AbstractRange`: Carapace size bin boundaries.
+- `ecdyses::Union{Nothing, Int}`: Ecdyses an individual is assumed to have had at
+  a given size. `nothing` derives them from the stage model.
+- `min_count::Int`: Bins holding fewer individuals are omitted.
 
 # Returns
 `CairoMakie.Figure`: Empirical vs theoretical maturity ogive comparison.
 """
-function plot_maturity_ogives(model; size_bins = 20.0:10.0:140.0)
-    fig = Figure(size = (750, 480))
-    size_eval = 20.0:1.0:140.0
-    pm_male_theory = [maturity(0, log(sz)) for sz in size_eval]
-    pm_female_theory = [maturity(1, log(sz)) for sz in size_eval]
+function plot_maturity_ogives(
+    model;
+    size_bins = 20.0:10.0:140.0,
+    ecdyses::Union{Nothing, Int} = nothing,
+    min_count::Int = 1
+)
+    fig = Figure(size = (820, 520))
+    size_eval = collect(20.0:1.0:140.0)
+
+    # `deterministic = true` returns the expected curve. The default draw re-samples
+    # L50 and the slope at every size, which renders the reference as a Monte Carlo
+    # wiggle rather than the theoretical ogive.
+    male_ecdysis = [maturity(0, log(sz); deterministic = true) for sz in size_eval]
+    female_ecdysis = [maturity(1, log(sz); deterministic = true) for sz in size_eval]
+    if ecdyses !== nothing
+        male_cumulative = [1.0 - (1.0 - p)^ecdyses for p in male_ecdysis]
+        female_cumulative = [1.0 - (1.0 - p)^ecdyses for p in female_ecdysis]
+    else
+        male_cumulative, female_cumulative = cumulative_maturity_curves(size_eval)
+    end
+
+    om = compute_empirical_ogive(model, male, size_bins; min_count = min_count)
+    of = compute_empirical_ogive(model, female, size_bins; min_count = min_count)
 
     ax = Axis(
         fig[1, 1],
-        title = "Snow Crab Maturity Ogives: Simulation vs Theory",
+        title = "Organism Maturity Ogives: Simulation vs Theory",
+        subtitle = "cross-sectional bins with n >= $(min_count); marker area ∝ sample size " *
+                   "(males n=$(sum(om.counts)), females n=$(sum(of.counts)))",
         xlabel = "Carapace Size (mm)",
         ylabel = "Proportion Mature"
     )
 
     lines!(
-        ax, collect(size_eval), pm_male_theory,
-        label = "Theoretical Male (L50=91.8 mm)", linewidth = 2.5, color = :blue
+        ax, size_eval, male_ecdysis,
+        label = "Male, per ecdysis (theory)", linewidth = 2.5, color = :blue
     )
     lines!(
-        ax, collect(size_eval), pm_female_theory,
-        label = "Theoretical Female (L50=51.6 mm)", linewidth = 2.5,
+        ax, size_eval, female_ecdysis,
+        label = "Female, per ecdysis (theory)", linewidth = 2.5,
         color = :red, linestyle = :dash
     )
-
-    cm_m, pm_m = compute_empirical_ogive(model, male, size_bins)
-    cm_f, pm_f = compute_empirical_ogive(model, female, size_bins)
-
-    if !isempty(cm_m)
-        scatter!(
-            ax, cm_m, pm_m, label = "Simulated Males",
-            color = :dodgerblue, marker = :rect, markersize = 10
+    if ecdyses !== 1
+        lines!(
+            ax, size_eval, male_cumulative,
+            label = "Male, cumulative over stages passed",
+            linewidth = 1.8, color = :blue, linestyle = :dot
         )
-    end
-    if !isempty(cm_f)
-        scatter!(
-            ax, cm_f, pm_f, label = "Simulated Females",
-            color = :crimson, marker = :circle, markersize = 10
+        lines!(
+            ax, size_eval, female_cumulative,
+            label = "Female, cumulative over stages passed",
+            linewidth = 1.8, color = :red, linestyle = :dot
         )
     end
 
-    axislegend(ax, position = :rb)
+    scale_markers(c) = 6.0 .+ 14.0 .* sqrt.(c ./ max(maximum(c; init = 1), 1))
+
+    if !isempty(om.bin_centers)
+        scatter!(
+            ax, om.bin_centers, om.prop_mature,
+            label = "Simulated males (n shown by size)",
+            color = :dodgerblue, marker = :rect, markersize = scale_markers(om.counts)
+        )
+    end
+    if !isempty(of.bin_centers)
+        scatter!(
+            ax, of.bin_centers, of.prop_mature,
+            label = "Simulated females (n shown by size)",
+            color = :crimson, marker = :circle, markersize = scale_markers(of.counts)
+        )
+    end
+
+
+    # Top-left: the maturity fraction rises from lower-left to upper-right, so the
+    # lower-left is the empty corner and the legend belongs there rather than over
+    # the mature end of the curve.
+    axislegend(ax, position = :lt)
     return fig
 end
 
@@ -516,7 +579,7 @@ end
     plot_simulation_dashboard(model, agent_df; model_df=nothing)
 
 Generate a unified 6-panel executive summary dashboard combining the core
-biological and ecological indicators of the snow crab simulation.
+biological and ecological indicators of the organism simulation.
 
 # Panels Included
 1. **Panel A**: Abundance & demographic stage timeseries.
@@ -563,19 +626,19 @@ function plot_simulation_dashboard(
     axislegend(ax1, position = :rt)
 
     # Panel 2: Stage distribution
-    crabs = collect(allagents(model))
+    organisms = collect(allagents(model))
     ax2 = Axis(
         fig[1, 2],
         title = "B: Stage Structure",
         xlabel = "Developmental Stage",
-        ylabel = "Abundance (Crabs)",
+        ylabel = "Abundance (Organisms)",
         xticks = collect(4:14)
     )
-    if !isempty(crabs)
+    if !isempty(organisms)
         stage_range = 4:14
         males_by_stage = zeros(Int, length(stage_range))
         females_by_stage = zeros(Int, length(stage_range))
-        for c in crabs
+        for c in organisms
             idx = c.stage - first(stage_range) + 1
             if 1 <= idx <= length(stage_range)
                 if c.sex === male
@@ -604,9 +667,9 @@ function plot_simulation_dashboard(
         xlabel = "Size (mm)",
         ylabel = "Density"
     )
-    if !isempty(crabs)
-        male_sizes = [Float64(c.size) for c in crabs if c.sex === male]
-        female_sizes = [Float64(c.size) for c in crabs if c.sex === female]
+    if !isempty(organisms)
+        male_sizes = [Float64(c.size) for c in organisms if c.sex === male]
+        female_sizes = [Float64(c.size) for c in organisms if c.sex === female]
         if !isempty(male_sizes)
             hist!(
                 ax3, male_sizes, bins = 25, normalization = :pdf,
@@ -640,11 +703,11 @@ function plot_simulation_dashboard(
     )
     hm = heatmap!(ax4, 1:nx, 1:ny, model.temperature_field, colormap = :coolwarm)
     Colorbar(fig[2, 3], hm, label = "Temp (°C)")
-    if !isempty(crabs)
-        juv_x = [Float64(c.pos[1]) for c in crabs if !is_adult(c)]
-        juv_y = [Float64(c.pos[2]) for c in crabs if !is_adult(c)]
-        adm_x = [Float64(c.pos[1]) for c in crabs if is_adult_male(c)]
-        adm_y = [Float64(c.pos[2]) for c in crabs if is_adult_male(c)]
+    if !isempty(organisms)
+        juv_x = [Float64(c.pos[1]) for c in organisms if !is_adult(c)]
+        juv_y = [Float64(c.pos[2]) for c in organisms if !is_adult(c)]
+        adm_x = [Float64(c.pos[1]) for c in organisms if is_mature_male(c)]
+        adm_y = [Float64(c.pos[2]) for c in organisms if is_mature_male(c)]
         if !isempty(juv_x)
             scatter!(ax4, juv_x, juv_y, color = :gold, markersize = 8, label = "Juv")
         end
@@ -671,9 +734,9 @@ function plot_simulation_dashboard(
         ax5, collect(stage_grid), [llbf(i) for i in stage_grid],
         label = "llbf (Female)", linewidth = 2.5, color = :magenta, linestyle = :dash
     )
-    if !isempty(crabs)
-        male_st = [Float64(c.stage) + randn() * 0.08 for c in crabs if c.sex === male]
-        male_sz = [Float64(c.size) for c in crabs if c.sex === male]
+    if !isempty(organisms)
+        male_st = [Float64(c.stage) + randn() * 0.08 for c in organisms if c.sex === male]
+        male_sz = [Float64(c.size) for c in organisms if c.sex === male]
         if !isempty(male_sz)
             scatter!(ax5, male_st, male_sz, color = (:dodgerblue, 0.65), markersize = 7)
         end
@@ -718,7 +781,7 @@ function plot_simulation_dashboard(
 end
 
 """
-    plot_stock_recruitment(sr_data; fits=nothing, title="Snow Crab Stock-Recruitment Relationship")
+    plot_stock_recruitment(sr_data; fits=nothing, title="Organism Stock-Recruitment Relationship")
 
 Visualize the empirical stock-recruitment relationship outcome from a simulation.
 
@@ -741,7 +804,7 @@ Produces a 3-panel diagnostic figure:
 function plot_stock_recruitment(
     sr_data;
     fits = nothing,
-    title::String = "Snow Crab Stock-Recruitment Relationship"
+    title::String = "Organism Stock-Recruitment Relationship"
 )
     fig = Figure(size = (1500, 480))
     Label(fig[0, :], title, font = :bold, fontsize = 16)
@@ -836,15 +899,19 @@ function plot_stock_recruitment(
     axislegend(ax2, position = :rt)
 
     # Panel 3: Cohort Dynamics Timeseries
-    x_cohort = if hasproperty(df, :year)
-        Float64.(df.year)
+    x_cohort = if hasproperty(df, :sample_index)
+        Float64.(df.sample_index)
     elseif hasproperty(df, :time)
         round.(Float64.(df.time) ./ 365.0, digits = 1)
     else
         Float64.(1:n)
     end
 
-    x_lbl = hasproperty(df, :year) ? "Cohort (Year)" : "Time (Years post-hatch)"
+    x_lbl = if hasproperty(df, :sample_index)
+        "Cohort (Sample Index)"
+    else
+        "Time (Years post-hatch)"
+    end
     ax3 = Axis(
         fig[1, 3],
         title = "C: Spawner-Recruit Cohort Dynamics",
@@ -878,7 +945,7 @@ function plot_stock_recruitment(
     model,
     agent_df::DataFrame;
     model_df::Union{DataFrame, Nothing} = nothing,
-    title::String = "Snow Crab Stock-Recruitment Relationship"
+    title::String = "Organism Stock-Recruitment Relationship"
 )
     sr_df = extract_stock_recruitment(model)
     if nrow(sr_df) >= 2
@@ -913,6 +980,23 @@ function export_all_plots(
 )
     mkpath(output_dir)
     generated_files = String[]
+
+    # Optional panels are best-effort: a short or single-run series cannot
+    # support a macro fit, and that is not an error worth aborting the whole
+    # export for. But a genuine failure (a plotting bug, a bad path) must not be
+    # indistinguishable from "skipped" -- the caller used to receive a shorter
+    # list and report success, so record what failed and why.
+    function try_export(build, filename)
+        try
+            path = joinpath(output_dir, filename)
+            save(path, build())
+            push!(generated_files, path)
+            return true
+        catch err
+            @warn "plot export failed" filename = filename exception = err
+            return false
+        end
+    end
 
     # 1. Population Dynamics
     fn_dyn = joinpath(output_dir, "population_dynamics.$(ext)")
@@ -972,65 +1056,65 @@ function export_all_plots(
 
     # 10. Macro-Ecological Population Dynamics Fits (Schaefer & Delay-Difference)
     if model_df !== nothing
-        try
-            ann_prod = extract_annual_production(agent_df, model_df)
-            if nrow(ann_prod) >= 3
-                macro_fits = fit_population_dynamics(ann_prod)
-                fn_macro = joinpath(output_dir, "macro_population_dynamics.$(ext)")
-                p_macro = plot_population_dynamics_fits(macro_fits)
-                save(fn_macro, p_macro)
-                push!(generated_files, fn_macro)
+        ann_prod = try
+            extract_annual_production(agent_df, model_df)
+        catch err
+            @warn "annual production extraction failed; macro panels skipped" exception =
+                err
+            nothing
+        end
+
+        if ann_prod !== nothing && nrow(ann_prod) >= 3
+            try_export("macro_population_dynamics.$(ext)") do
+                plot_population_dynamics_fits(fit_population_dynamics(ann_prod))
             end
-        catch
         end
 
         # 11. Retrospective Pattern Analysis
-        try
-            ann_prod = extract_annual_production(agent_df, model_df)
-            if nrow(ann_prod) >= 5
-                retro_res = retrospective_analysis(ann_prod; n_peels = min(5, nrow(ann_prod) - 3))
-                fn_retro = joinpath(output_dir, "macro_retrospective.$(ext)")
-                p_retro = plot_retrospective_analysis(retro_res)
-                save(fn_retro, p_retro)
-                push!(generated_files, fn_retro)
+        if ann_prod !== nothing && nrow(ann_prod) >= 5
+            try_export("macro_retrospective.$(ext)") do
+                retro_res = retrospective_analysis(
+                    ann_prod;
+                    n_peels = min(5, nrow(ann_prod) - 3)
+                )
+                plot_retrospective_analysis(retro_res)
             end
-        catch
         end
 
         # 12. Generalized Leslie Model & 3-Way Macro Comparison
-        try
-            ann_prod = extract_annual_production(agent_df, model_df)
-            if nrow(ann_prod) >= 4
+        if ann_prod !== nothing && nrow(ann_prod) >= 4
+            try_export("stage_specific_dynamics.$(ext)") do
                 stage_mat, catch_mat, yrs = extract_annual_stage_matrix(ann_prod)
-                leslie_fit = fit_generalized_leslie_model(stage_mat, catch_mat; years = yrs)
-                fn_stages = joinpath(output_dir, "stage_specific_dynamics.$(ext)")
-                p_stages = plot_stage_specific_dynamics(leslie_fit)
-                save(fn_stages, p_stages)
-                push!(generated_files, fn_stages)
-
-                macro_comp = compare_macro_models(ann_prod, leslie_fit)
-                fn_comp = joinpath(output_dir, "fishable_macro_comparison.$(ext)")
-                p_comp = plot_macro_model_comparison(macro_comp)
-                save(fn_comp, p_comp)
-                push!(generated_files, fn_comp)
+                leslie_fit = fit_generalized_leslie_model(
+                    stage_mat,
+                    catch_mat;
+                    years = yrs
+                )
+                plot_stage_specific_dynamics(leslie_fit)
             end
-        catch
+
+            try_export("fishable_macro_comparison.$(ext)") do
+                stage_mat, catch_mat, yrs = extract_annual_stage_matrix(ann_prod)
+                leslie_fit = fit_generalized_leslie_model(
+                    stage_mat,
+                    catch_mat;
+                    years = yrs
+                )
+                plot_macro_model_comparison(compare_macro_models(ann_prod, leslie_fit))
+            end
         end
     end
 
     # 13. Spatial Ecosystem Snapshot using Agents.jl abmplot
-    try
-        fn_abm = joinpath(output_dir, "abm_spatial_summary.$(ext)")
-        plot_abm_summary(model; output_path = fn_abm)
-        push!(generated_files, fn_abm)
-    catch
+    try_export("abm_spatial_summary.$(ext)") do
+        plot_abm_summary(model)
     end
 
     return generated_files
 end
 
 """
-    plot_population_dynamics_fits(macro_fits; title="Snow Crab Macro-Ecological Model Fits")
+    plot_population_dynamics_fits(macro_fits; title="Organism Macro-Ecological Model Fits")
 
 Render a 4-panel diagnostic figure visualizing post-hoc Schaefer logistic and
 Deriso-Schnute delay-difference model fits:
@@ -1052,7 +1136,7 @@ Deriso-Schnute delay-difference model fits:
 """
 function plot_population_dynamics_fits(
     macro_fits;
-    title::String = "Snow Crab Macro-Ecological Dynamic Model Fits"
+    title::String = "Organism Macro-Ecological Dynamic Model Fits"
 )
     fig = Figure(size = (1400, 900))
     Label(fig[0, :], title, font = :bold, fontsize = 16)
@@ -1061,7 +1145,7 @@ function plot_population_dynamics_fits(
     wp = macro_fits.whole_population
     fs = macro_fits.fishable_stock
 
-    years = ann.year
+    samples = ann.sample_index
     n_tot_obs = ann.total_numbers
     n_leg_obs = ann.legal_numbers
 
@@ -1069,24 +1153,24 @@ function plot_population_dynamics_fits(
     ax1 = Axis(
         fig[1, 1],
         title = "A: Whole Population Abundance",
-        xlabel = "Simulation Year",
-        ylabel = "Abundance (Total Crabs)"
+        xlabel = "Sample Index",
+        ylabel = "Abundance (Total Organisms)"
     )
     scatter!(
-        ax1, years, n_tot_obs, label = "Observed Total Numbers",
+        ax1, samples, n_tot_obs, label = "Observed Total Numbers",
         markersize = 10, color = (:dodgerblue, 0.85)
     )
     if wp.schaefer.is_fitted
         lines!(
-            ax1, years, wp.schaefer.predicted,
-            label = "Schaefer (R²=$(round(wp.schaefer.R2, digits=2)))",
+            ax1, samples, wp.schaefer.predicted,
+            label = "Schaefer: K=$(fmt_param(wp.schaefer.K)), r=$(fmt_param(wp.schaefer.r)), MSY=$(fmt_param(wp.schaefer.MSY))  R²=$(round(wp.schaefer.R2, digits=2))",
             linewidth = 2.5, color = :seagreen
         )
     end
     if wp.delay_difference.is_fitted
         lines!(
-            ax1, years, wp.delay_difference.predicted,
-            label = "Delay-Diff (R²=$(round(wp.delay_difference.R2, digits=2)))",
+            ax1, samples, wp.delay_difference.predicted,
+            label = "Delay-Diff: s=$(fmt_param(wp.delay_difference.s)), M=$(fmt_param(wp.delay_difference.M)), α=$(fmt_param(wp.delay_difference.alpha))  R²=$(round(wp.delay_difference.R2, digits=2))",
             linewidth = 2.5, linestyle = :dash, color = :darkorange
         )
     end
@@ -1124,24 +1208,24 @@ function plot_population_dynamics_fits(
     ax3 = Axis(
         fig[2, 1],
         title = "C: Fishable Stock Abundance",
-        xlabel = "Simulation Year",
-        ylabel = "Abundance (Legal Males ≥ 95mm)"
+        xlabel = "Sample Index",
+        ylabel = "Abundance (Legal Males)"
     )
     scatter!(
-        ax3, years, n_leg_obs, label = "Observed Legal Males",
+        ax3, samples, n_leg_obs, label = "Observed Legal Males",
         markersize = 10, color = (:crimson, 0.85)
     )
     if fs.schaefer.is_fitted
         lines!(
-            ax3, years, fs.schaefer.predicted,
-            label = "Schaefer (R²=$(round(fs.schaefer.R2, digits=2)))",
+            ax3, samples, fs.schaefer.predicted,
+            label = "Schaefer: K=$(fmt_param(fs.schaefer.K)), r=$(fmt_param(fs.schaefer.r)), MSY=$(fmt_param(fs.schaefer.MSY))  R²=$(round(fs.schaefer.R2, digits=2))",
             linewidth = 2.5, color = :seagreen
         )
     end
     if fs.delay_difference.is_fitted
         lines!(
-            ax3, years, fs.delay_difference.predicted,
-            label = "Delay-Diff (R²=$(round(fs.delay_difference.R2, digits=2)))",
+            ax3, samples, fs.delay_difference.predicted,
+            label = "Delay-Diff: s=$(fmt_param(fs.delay_difference.s)), M=$(fmt_param(fs.delay_difference.M)), α=$(fmt_param(fs.delay_difference.alpha))  R²=$(round(fs.delay_difference.R2, digits=2))",
             linewidth = 2.5, linestyle = :dash, color = :darkorange
         )
     end
@@ -1179,7 +1263,7 @@ function plot_population_dynamics_fits(
 end
 
 """
-    plot_retrospective_analysis(retro_result; title="Snow Crab Retrospective Pattern & Mohn's ρ")
+    plot_retrospective_analysis(retro_result; title="Organism Retrospective Pattern & Mohn's ρ")
 
 Render a 4-panel diagnostic figure visualizing retrospective patterns and Mohn's rho:
 - **Panel A (Whole Population Spaghetti Plot)**: Observed total numbers, reference base
@@ -1200,7 +1284,7 @@ Render a 4-panel diagnostic figure visualizing retrospective patterns and Mohn's
 """
 function plot_retrospective_analysis(
     retro_result;
-    title::String = "Snow Crab Retrospective Pattern & Mohn's ρ"
+    title::String = "Organism Retrospective Pattern & Mohn's ρ"
 )
     fig = Figure(size = (1400, 950))
     Label(fig[0, :], title, font = :bold, fontsize = 16)
@@ -1209,8 +1293,8 @@ function plot_retrospective_analysis(
     wp = retro_result.whole_population
     fs = retro_result.fishable_stock
     peels = retro_result.peel_indices
-    years = ann.year
-    n_years = length(years)
+    samples = ann.sample_index
+    n_samples = length(samples)
 
     peel_colors = [:darkorange, :purple, :teal, :magenta, :brown, :deepskyblue, :olive]
     rho_w_str = (wp.mohn_rho >= 0 ? "+" : "") * string(round(wp.mohn_rho, digits = 3))
@@ -1220,30 +1304,30 @@ function plot_retrospective_analysis(
     ax1 = Axis(
         fig[1, 1],
         title = "A: Whole Population (Mohn's ρ = " * rho_w_str * ")",
-        xlabel = "Assessment Year",
-        ylabel = "Abundance (Crab Numbers)"
+        xlabel = "Assessment Sample",
+        ylabel = "Abundance (Organism Numbers)"
     )
     scatter!(
-        ax1, years, ann.total_numbers,
+        ax1, samples, ann.total_numbers,
         label = "Observed Total Numbers", markersize = 8, color = :royalblue
     )
     lines!(
-        ax1, years, wp.base_fit.predicted,
+        ax1, samples, wp.base_fit.predicted,
         label = "Base Assessment (Peel 0)", linewidth = 3.0, color = :royalblue
     )
     for i in eachindex(peels)
         p_idx = peels[i]
         c = peel_colors[mod1(i, length(peel_colors))]
-        t_peel = n_years - p_idx
-        peel_years = years[1:t_peel]
+        t_peel = n_samples - p_idx
+        peel_samples = samples[1:t_peel]
         peel_pred = wp.peel_fits[i].predicted[1:t_peel]
         lines!(
-            ax1, peel_years, peel_pred,
-            label = "Peel -$p_idx (to Yr $(peel_years[end]))",
+            ax1, peel_samples, peel_pred,
+            label = "Peel -$p_idx (to Sample $(peel_samples[end]))",
             linestyle = :dash, linewidth = 1.8, color = c
         )
         scatter!(
-            ax1, [peel_years[end]], [peel_pred[end]],
+            ax1, [peel_samples[end]], [peel_pred[end]],
             markersize = 10, color = c, strokewidth = 1.5, strokecolor = :black
         )
     end
@@ -1253,44 +1337,44 @@ function plot_retrospective_analysis(
     ax2 = Axis(
         fig[1, 2],
         title = "B: Fishable Stock (Mohn's ρ = " * rho_f_str * ")",
-        xlabel = "Assessment Year",
-        ylabel = "Legal Abundance (Size ≥ 95mm)"
+        xlabel = "Assessment Sample",
+        ylabel = "Legal Abundance (Size ≥ legal_size_male)"
     )
     scatter!(
-        ax2, years, ann.legal_numbers,
+        ax2, samples, ann.legal_numbers,
         label = "Observed Legal Numbers", markersize = 8, color = :seagreen
     )
     lines!(
-        ax2, years, fs.base_fit.predicted,
+        ax2, samples, fs.base_fit.predicted,
         label = "Base Assessment (Peel 0)", linewidth = 3.0, color = :seagreen
     )
     for i in eachindex(peels)
         p_idx = peels[i]
         c = peel_colors[mod1(i, length(peel_colors))]
-        t_peel = n_years - p_idx
-        peel_years = years[1:t_peel]
+        t_peel = n_samples - p_idx
+        peel_samples = samples[1:t_peel]
         peel_pred = fs.peel_fits[i].predicted[1:t_peel]
         lines!(
-            ax2, peel_years, peel_pred,
-            label = "Peel -$p_idx (to Yr $(peel_years[end]))",
+            ax2, peel_samples, peel_pred,
+            label = "Peel -$p_idx (to Sample $(peel_samples[end]))",
             linestyle = :dash, linewidth = 1.8, color = c
         )
         scatter!(
-            ax2, [peel_years[end]], [peel_pred[end]],
+            ax2, [peel_samples[end]], [peel_pred[end]],
             markersize = 10, color = c, strokewidth = 1.5, strokecolor = :black
         )
     end
     axislegend(ax2, position = :rt)
 
     # Panel 3: Relative Errors by Peel
-    term_yrs = retro_result.terminal_years
+    term_samples = retro_result.terminal_samples
     wp_re_pct = wp.rel_errors .* 100.0
     fs_re_pct = fs.rel_errors .* 100.0
 
     ax3 = Axis(
         fig[2, 1],
         title = "C: Relative Bias by Peel vs ±20% Benchmark",
-        xlabel = "Terminal Peel Year",
+        xlabel = "Terminal Peel Sample",
         ylabel = "Terminal Relative Error (%)"
     )
     hlines!(ax3, [0.0], color = :black, linewidth = 1.0)
@@ -1300,17 +1384,17 @@ function plot_retrospective_analysis(
         linewidth = 2.0, color = :crimson
     )
     scatter!(
-        ax3, term_yrs .- 0.1, wp_re_pct,
+        ax3, term_samples .- 0.1, wp_re_pct,
         label = "Whole Pop (ρ=" * rho_w_str * ")",
         markersize = 10, color = :royalblue
     )
-    lines!(ax3, term_yrs .- 0.1, wp_re_pct, linewidth = 1.5, color = :royalblue)
+    lines!(ax3, term_samples .- 0.1, wp_re_pct, linewidth = 1.5, color = :royalblue)
     scatter!(
-        ax3, term_yrs .+ 0.1, fs_re_pct,
+        ax3, term_samples .+ 0.1, fs_re_pct,
         label = "Fishable (ρ=" * rho_f_str * ")",
         markersize = 10, marker = :diamond, color = :seagreen
     )
-    lines!(ax3, term_yrs .+ 0.1, fs_re_pct, linewidth = 1.5, color = :seagreen)
+    lines!(ax3, term_samples .+ 0.1, fs_re_pct, linewidth = 1.5, color = :seagreen)
     axislegend(ax3, position = :rt)
 
     # Panel 4: Parameter Stability Across Data Peels
@@ -1320,22 +1404,22 @@ function plot_retrospective_analysis(
         (retro_result.model_type === :delay_difference) ?
         wp.base_fit.s : wp.base_fit.K
     )
-    data_yrs = [retro_result.terminal_years[i] for i in length(peels):-1:1]
-    push!(data_yrs, years[end])
+    data_samples = [retro_result.terminal_samples[i] for i in length(peels):-1:1]
+    push!(data_samples, samples[end])
 
     param_label = (retro_result.model_type === :delay_difference) ?
                   "Survival s" : "Carrying Capacity K"
     ax4 = Axis(
         fig[2, 2],
         title = "D: Parameter Stability Across Sequential Reanalyses",
-        xlabel = "Available Data Horizon (Terminal Year)",
+        xlabel = "Available Data Horizon (Terminal Sample)",
         ylabel = param_label
     )
     lines!(
-        ax4, data_yrs, k_whole,
+        ax4, data_samples, k_whole,
         label = "Whole Pop " * param_label, linewidth = 2.5, color = :royalblue
     )
-    scatter!(ax4, data_yrs, k_whole, markersize = 9, color = :royalblue)
+    scatter!(ax4, data_samples, k_whole, markersize = 9, color = :royalblue)
 
     k_fish = [fs.params[i].K for i in length(peels):-1:1]
     push!(
@@ -1344,18 +1428,18 @@ function plot_retrospective_analysis(
         fs.base_fit.s : fs.base_fit.K
     )
     lines!(
-        ax4, data_yrs, k_fish,
+        ax4, data_samples, k_fish,
         label = "Fishable " * param_label, linewidth = 2.0,
         linestyle = :dash, color = :seagreen
     )
-    scatter!(ax4, data_yrs, k_fish, marker = :diamond, markersize = 9, color = :seagreen)
+    scatter!(ax4, data_samples, k_fish, marker = :diamond, markersize = 9, color = :seagreen)
     axislegend(ax4, position = :rt)
 
     return fig
 end
 
 """
-    plot_stage_specific_dynamics(fit::LeslieMatrixFit; title="Snow Crab Stage-Specific Dynamics & Transition Analysis")
+    plot_stage_specific_dynamics(fit::LeslieMatrixFit; title="Organism Stage-Specific Dynamics & Transition Analysis")
 
 Render a 4-panel diagnostic figure visualizing generalized Leslie stage-transition dynamics:
 - **Panel A (Stage Trajectories)**: Historical stage abundance timeseries.
@@ -1372,7 +1456,7 @@ Render a 4-panel diagnostic figure visualizing generalized Leslie stage-transiti
 """
 function plot_stage_specific_dynamics(
     fit::LeslieMatrixFit;
-    title::String = "Snow Crab Stage-Specific Dynamics & Transition Analysis"
+    title::String = "Organism Stage-Specific Dynamics & Transition Analysis"
 )
     fig = Figure(size = (1400, 950))
     Label(fig[0, :], title, font = :bold, fontsize = 16)
@@ -1524,23 +1608,25 @@ function plot_macro_model_comparison(
     )
     lines!(
         ax1, yrs, comp.biomass_obs_kg,
-        label = "Annual Biomass (Survey)", linewidth = 2.5, color = :black
+        label = comp.label_observed, linewidth = 2.5, color = :black
     )
     scatter!(ax1, yrs, comp.biomass_obs_kg, markersize = 9, color = :black)
 
+    # Legend entries carry the key estimated parameters as well as goodness of fit:
+    # identifying the curve is not much use without saying what it estimated.
     lines!(
         ax1, yrs, comp.biomass_schaefer_kg,
-        label = "Schaefer (R²=" * string(round(comp.r2_schaefer, digits = 2)) * ")",
+        label = comp.label_schaefer * "  R²=" * string(round(comp.r2_schaefer, digits = 2)),
         linewidth = 2.2, linestyle = :dash, color = :royalblue
     )
     lines!(
         ax1, yrs, comp.biomass_delay_diff_kg,
-        label = "Delay-Diff (R²=" * string(round(comp.r2_delay_diff, digits = 2)) * ")",
+        label = comp.label_delay_diff * "  R²=" * string(round(comp.r2_delay_diff, digits = 2)),
         linewidth = 2.2, linestyle = :dashdot, color = :seagreen
     )
     lines!(
         ax1, yrs, comp.biomass_leslie_kg,
-        label = "Leslie Matrix (R²=" * string(round(comp.r2_leslie, digits = 2)) * ")",
+        label = comp.label_leslie * "  R²=" * string(round(comp.r2_leslie, digits = 2)),
         linewidth = 2.2, color = :darkorange
     )
     axislegend(ax1, position = :rt)
@@ -1627,7 +1713,7 @@ end
 # ==============================================================================
 
 """
-    organism_color(org::Organism)
+    organism_color(org::Organism, params::IBMParameters)
 
 Determine the discrete visualization color for an individual organism based
 on its life history stage, sex, maturity, and reproductive status:
@@ -1636,19 +1722,25 @@ on its life history stage, sex, maturity, and reproductive status:
 - Benthic immature males: Sky blue (`#56B4E9`)
 - Adult ovigerous females carrying egg clutches: Crimson (`#D55E00`)
 - Adult non-ovigerous females: Purple (`#785EF0`)
-- Commercial legal-sized adult males (Size >= 95 mm): Dark blue (`#003B73`)
+- Legal-sized adult males: Dark blue (`#003B73`)
 - Sublegal adult males: Royal blue (`#0072B2`)
+
+The legal/sublegal split uses `params.fishery.legal_size_male`, so a reconfigured
+fishery recolors the map instead of silently disagreeing with the demographic
+counts.
 
 # Arguments
 - `org::Organism`: Individual organism agent.
+- `params::IBMParameters`: Active parameters supplying the adult size threshold
+  and the legal male size.
 
 # Returns
 `String`: Hex color code for graphical representation.
 """
-function organism_color(org::Organism)
+function organism_color(org::Organism, params::IBMParameters)
     if org.stage in (0, 1, 2, 3) || org.sex === undifferentiated
         return "#E69F00"
-    elseif !org.is_mature && org.stage < 10
+    elseif !is_adult(org)
         return (org.sex === female) ? "#CC79A7" : "#56B4E9"
     else
         if is_ovigerous(org)
@@ -1656,7 +1748,9 @@ function organism_color(org::Organism)
         elseif org.sex === female
             return "#785EF0"
         else
-            return is_legal_male(org) ? "#003B73" : "#0072B2"
+            return is_legal_male(org, params.fishery.legal_size_male,
+                                 params.organism.adult_size_threshold) ?
+                    "#003B73" : "#0072B2"
         end
     end
 end
@@ -1735,13 +1829,13 @@ end
 
 """
     plot_abm_summary(model; heat_field=:temperature, output_path=nothing,
-                     figure_size=(800, 800), title="Snow Crab Spatial Ecosystem")
+                     figure_size=(800, 800), title="Organism Spatial Ecosystem")
 
-Render a publication-ready spatial ABM summary snapshot of the snow crab population
+Render a publication-ready spatial ABM summary snapshot of the organism population
 using `Agents.abmplot` over the specified environmental landscape (temperature or food).
 
 # Arguments
-- `model`: Configured snow crab simulation model.
+- `model`: Configured organism simulation model.
 - `heat_field::Union{Symbol, String}`: Environmental field (`:temperature` or `:food`).
 - `output_path::Union{String, Nothing}`: Optional destination file path to save figure.
 - `figure_size::Tuple{Int, Int}`: Figure dimensions in pixels (default: (800, 800)).
@@ -1755,7 +1849,7 @@ function plot_abm_summary(
     heat_field::Union{Symbol, String} = :temperature,
     output_path::Union{String, Nothing} = nothing,
     figure_size::Tuple{Int, Int} = (800, 800),
-    title::String = "Snow Crab Spatial Ecosystem"
+    title::String = "Organism Spatial Ecosystem"
 )
     field_sym = Symbol(heat_field)
     cbar_label = if field_sym in (:food, :food_availability, :food_availability_field)
@@ -1765,14 +1859,14 @@ function plot_abm_summary(
     end
 
     heat_fn = m -> organism_heatarray(m, field_sym)
-    n_crabs = nagents(model)
+    n_organisms = nagents(model)
     sim_time = hasproperty(model, :current_time) ? model.current_time : 0.0
 
-    full_title = "$(title) (Day $(round(sim_time, digits=1)), Living Organisms: $(n_crabs))"
+    full_title = "$(title) (Day $(round(sim_time, digits=1)), Living Organisms: $(n_organisms))"
 
     fig, ax, abmobs = Agents.abmplot(
         model;
-        agent_color = organism_color,
+        agent_color = org -> organism_color(org, model.params),
         agent_size = organism_size,
         agent_marker = organism_marker,
         heatarray = heat_fn,
@@ -1834,7 +1928,7 @@ function animate_organism_simulation(
         heatarray = heat_fn,
         figure = (size = figure_size,),
         title = title,
-        agent_color = organism_color,
+        agent_color = org -> organism_color(org, model.params),
         agent_size = organism_size,
         agent_marker = organism_marker
     )
@@ -1845,12 +1939,19 @@ end
     plot_functional_relationships(params_list::Vector{IBMParameters};
                                   type=:maturity, label_prefix="Set", ...)
 
-Render parameterized process curves across different parameter sets.
+Render parameterized process curves across different parameter sets, for comparing
+configurations side by side.
 
 # Arguments
 - `params_list::Vector{IBMParameters}`: List of parameter profiles.
-- `type::Symbol`: `:maturity`, `:fecundity`, or `:selectivity`.
+- `type::Symbol`: `:maturity`, `:fecundity`, `:selectivity`, or `:growth`.
 - `label_prefix::String`: Legend prefix for each parameter set.
+
+# Notes
+The species-level functions take a `SpeciesParams`, not a whole `IBMParameters`;
+this extracts the species section so a caller can pass the parameter object the
+model actually holds. It previously passed the whole `IBMParameters`, so every
+branch raised a `TypeError`.
 
 # Returns
 `CairoMakie.Figure`: Visualized functional relationship curves.
@@ -1873,7 +1974,10 @@ function plot_functional_relationships(
 
         size_vals = exp.(range(log(10.0), log(250.0), length = 100))
         for (i, params) in enumerate(params_list)
-            probs = [maturity(sz; params = params, deterministic = true) for sz in size_vals]
+            probs = [
+                maturity(sz; params = params.species, deterministic = true)
+                for sz in size_vals
+            ]
             lines!(ax, size_vals, probs, label = "$(label_prefix)$i", linewidth = 2.5)
         end
         axislegend(ax, position = :rb)
@@ -1887,7 +1991,7 @@ function plot_functional_relationships(
         size_vals = collect(10.0:5.0:250.0)
         for (i, params) in enumerate(params_list)
             eggs = [fecundity(sz; fecundity_parameterization = "moncton",
-                              is_primiparous = true, params = params,
+                              is_primiparous = true, params = params.species,
                               deterministic = true) for sz in size_vals]
             lines!(ax, size_vals, eggs, label = "$(label_prefix)$i", linewidth = 2.5)
         end
@@ -1901,13 +2005,33 @@ function plot_functional_relationships(
 
         size_vals = collect(20.0:2.0:180.0)
         for (i, params) in enumerate(params_list)
-            probs = selectivity.(size_vals; params = params)
+            probs = selectivity.(size_vals; params = params.species)
             lines!(ax, size_vals, probs, label = "$(label_prefix)$i", linewidth = 2.5)
         end
         axislegend(ax, position = :rb)
 
+    elseif type === :growth
+        title_str = title !== nothing ? title : "Growth Schedules (Functional Space)"
+        xlabel_str = xlabel !== nothing ? xlabel : "Stage"
+        ylabel_str = ylabel !== nothing ? ylabel : "Carapace Width (mm)"
+        ax = Axis(fig[1, 1], title = title_str, xlabel = xlabel_str, ylabel = ylabel_str)
+
+        stage_vals = collect(4:10)
+        for (i, params) in enumerate(params_list)
+            behavior = SpeciesBehaviorImpl(params.species)
+            schedule = growth_schedule(behavior)
+            rows = filter(r -> r.stage in stage_vals, eachrow(schedule))
+            lines!(
+                ax,
+                [r.stage for r in rows],
+                [r.size_male_med for r in rows],
+                label = "$(label_prefix)$i", linewidth = 2.5
+            )
+        end
+        axislegend(ax, position = :lt)
+
     else
-        error("Unsupported functional type: $type. Use :maturity, :fecundity, or :selectivity.")
+        error("Unsupported functional type: $type. Use :maturity, :fecundity, :selectivity, or :growth.")
     end
 
     return fig

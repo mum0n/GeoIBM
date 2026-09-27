@@ -1,115 +1,105 @@
-# ==============================================================================
-# Snow Crab (Chionoecetes opilio) Species-Specific Configuration
-# ==============================================================================
-# This file contains all parameters specific to snow crab biology.
-# It overrides the generic defaults in default.toml.
+# =============================================================================
+# Snow crab overlay
+# =============================================================================
+# Layered on top of `configs/default.toml`, which holds every declared parameter
+# at its struct default. The loader applies the baseline first and this file
+# second, so anything here wins.
 #
-# References:
-# - Sainte-Marie, B. (1993). Reproductive cycle and fecundity of primiparous
-#   and multiparous female snow crab. CJFAS, 50(10), 2147-2156.
-# - Sainte-Marie, B., Raymond, S., & Brêthes, J. C. (1995). Growth and maturation
-#   of the benthic stages of male snow crab. CJFAS, 52(5), 903-924.
-# - DFO (2020). Assessment of Nova Scotia (4VWX) Snow Crab. DFO Can. Sci. Advis. Sec.
-# ==============================================================================
+# The struct defaults already hold the snow crab reference values, so this file
+# currently restates them. That is deliberate: it is the one place to edit when
+# moving the model to a different crab species, and the values are the ones the
+# model is calibrated against.
+#
+# Nothing outside [species] is overridden here, so the baseline's execution,
+# environment and mortality settings apply unchanged.
+#
+# A key that is not a declared parameter is reported as a warning and ignored,
+# so a typo here fails loudly rather than silently doing nothing.
 
 [species]
-# --- Maturity (Log-Logistic Ogives) ---
-maturity_l50_male      = 91.8
-maturity_l50_male_sd   = 1.2
-maturity_slope_male    = 6.9957
-maturity_slope_male_sd = 0.25
+# --- Maturity ogive (logistic in log-size) ---
+# Male L50 of 91.8 mm and female L50 of 51.6 mm: the sexes diverge sharply above
+# ~60 mm, which is what makes the spawner-weight calculation sex-structured.
+maturity_l50_male        = 91.8
+maturity_l50_male_sd     = 1.2
+maturity_slope_male      = 6.9957
+maturity_slope_male_sd   = 0.25
+maturity_l50_female      = 51.6
+maturity_l50_female_sd   = 0.8
+maturity_slope_female    = 12.9812
+maturity_slope_female_sd = 0.4
+# No female matures below this size, independent of the ogive.
+maturity_size_gate       = 35.0
+maturity_l50_temp_slope  = -2.0
+maturity_temp_reference  = 4.0
 
-maturity_l50_female     = 51.6
-maturity_l50_female_sd  = 0.8
-maturity_slope_female   = 12.9812
-maturity_slope_female_sd = 0.40
-
-# --- Fecundity (Empirical Models) ---
-fecundity_parameterization = "moncton"
+# --- Fecundity (Moncton form) ---
+fecundity_parameterization     = "moncton"
 fecundity_primiparous_intercept = -0.7229
 fecundity_primiparous_slope     = 2.94
-fecundity_primiparous_err       = 0.090
+fecundity_primiparous_err       = 0.09
 fecundity_multiparous_intercept = 0.0158
 fecundity_multiparous_slope     = 2.5811
 fecundity_multiparous_err       = 0.145
+fecundity_intercept_sd          = 0.05
+fecundity_stmarie_exponent      = 2.725
+fecundity_stmarie_coefficient   = 0.7311
+fecundity_senescence_threshold  = 3.0
+fecundity_senescence_floor      = 0.6
+fecundity_senescence_rate       = 0.08
 
-# --- Growth (Bivariate Normal: Intercept & Slope) ---
-growth_int_female    = 0.1931
-growth_beta1_female  = 0.0545
-growth_slp_female    = 1.0372
-growth_beta2_female  = -0.017376
-growth_beta3_female  = 0.005068
+# --- Growth ---
+growth_int_female              = 0.1931
+growth_beta1_female            = 0.0545
+growth_slp_female              = 1.0372
+growth_beta2_female            = -0.017376
+growth_beta3_female            = 0.005068
+growth_int_male                = 0.30153
+growth_beta1_male              = 0.02198
+growth_slp_male                = 1.00027
+growth_beta2_male              = -0.00643655
+growth_beta3_male              = 0.0017492
+growth_maturation_penalty_male_mean   = -0.13564
+growth_maturation_penalty_male_sd     = 0.00922
+growth_maturation_penalty_female_mean = -0.131
+growth_maturation_penalty_female_sd   = 0.0252
+growth_condition_coefficient   = 0.05
+growth_temperature_coefficient = -0.004
+growth_temperature_reference   = 4.0
+growth_residual_sd             = 0.04
+growth_min_expansion_immature  = 0.12
+growth_min_expansion_mature    = 0.06
 
-growth_int_male      = 0.30153
-growth_beta1_male    = 0.02198
-growth_slp_male      = 1.00027
-growth_beta2_male    = -0.00643655
-growth_beta3_male    = 0.0017492
+# --- Stage lower bounds ---
+size_lb_immature_sizes       = [0.95, 1.45, 2.5]
+size_lb_immature_breakpoints = [1.5, 2.5]
+size_lb_male_intercept       = 1.917564
+size_lb_male_slope           = 0.298914
+size_lb_male_anchor_stage    = 3.0
+size_lb_female_intercept     = 2.198848
+size_lb_female_slope         = 0.315026
+size_lb_female_anchor_stage  = 4.0
+benthic_anchor_stage         = 4.0
 
-# --- Gear Selectivity ---
+# --- Fishery selectivity ---
+# The 50% retention size coincides with the legal size, so the fishery and the
+# regulation are consistent by construction.
 selectivity_s50       = 95.0
 selectivity_s50_sigma = 5.0
 
-# --- Allometric Mass Parameters ---
-mass_alpha_male_immature    = 0.0002665
-mass_beta_male_immature     = 3.098
-mass_alpha_male_mature      = 0.0001830
-mass_beta_male_mature       = 3.160
-mass_alpha_female_immature  = 0.0003440
-mass_beta_female_immature   = 2.980
-mass_alpha_female_mature    = 0.0004500
-mass_beta_female_mature     = 2.920
-mass_sigma                  = 0.08
+# --- Wet-mass allometry, mass = alpha * size^beta (g) ---
+mass_alpha_male_immature   = 0.0002665
+mass_beta_male_immature    = 3.098
+mass_alpha_male_mature     = 0.000183
+mass_beta_male_mature      = 3.16
+mass_alpha_female_immature = 0.000344
+mass_beta_female_immature  = 2.98
+mass_alpha_female_mature   = 0.00045
+mass_beta_female_mature    = 2.92
+mass_sigma                 = 0.08
 
-[organism]
-max_size_male       = 160.0
-max_size_female     = 95.0
-max_stage_male      = 16
-max_stage_female    = 14
-maturity_size_mid   = 60.0
-
-[phenology]
-molt_season_start    = 15.0
-molt_season_end      = 140.0
-mating_season_start  = 30.0
-mating_season_end    = 120.0
-mating_search_radius = 5
-brood_duration_base  = 365.0
-egg_survival_base    = 5.0e-5
-
-[mortality]
-soft_shell_duration       = 30.0
-senescence_age_threshold  = 3.0
-temp_thermal_stress       = 8.0
-
-[fishery]
-legal_size_male             = 95.0
-fishing_probability_daily   = 0.0
-fishing_season_start        = 90.0
-fishing_season_end          = 150.0
-
-[leslie]
-# Snow crab specific stage transition parameters
-survival_stage1       = 0.74
-gamma_stage1          = 0.78
-survival_stage2       = 0.76
-gamma_stage2          = 0.75
-male_split_fraction   = 0.50
-female_split_fraction = 0.50
-survival_male_legal       = 0.78
-survival_male_sublegal    = 0.80
-gamma_male_base           = 0.75
-gamma_male_decay          = 0.10
-p_term_male_base          = 0.10
-p_term_male_exponent      = 1.3
-survival_female           = 0.80
-gamma_female_base         = 0.70
-gamma_female_decay        = 0.12
-p_term_female_base        = 0.15
-p_term_female_exponent    = 1.4
-fecundity_base            = 0.85
-fecundity_size_exponent   = 2.5
-fecundity_size_reference  = 65.0
-col_sum_cap               = 0.95
-col_sum_scale_low         = 0.85
-col_sum_scale_high        = 0.15
+# --- Ecdysis schedules, indexed by benthic stage ---
+intermolt_days_schedule = [60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0]
+degree_days_schedule   = [150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0]
+intermolt_days_larval  = [0.0, 5.0, 10.0]
+degree_days_larval     = [0.0, 20.0, 40.0]

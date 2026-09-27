@@ -17,83 +17,213 @@ using Distributions
 using TOML
 
 """
+    parameter_structs() → Tuple of (field, struct, section)
+
+Single source of truth for the configuration surface. The field is the name of the
+slot holding that struct inside `IBMParameters`, the struct is its type, and the
+section is the TOML section that carries it.
+
+`config_field_types`, `config_section_map`, `reconstruct_params` and
+`ibm_configuration_sections` all derive from this, so a new parameter struct
+cannot be added to one and forgotten in another — the omission mode that let the
+GUI's Reset button drop a parameter, and that let a documented TOML key fail the
+"every TOML key is a parameter" check.
+"""
+parameter_structs() = (
+    (:toggles, ProcessToggles, "toggles"),
+    (:simulation, SimulationParams, "simulation"),
+    (:environment, EnvironmentParams, "environment"),
+    (:organism, OrganismParams, "organism"),
+    (:species, SpeciesParams, "species"),
+    (:phenology, PhenologyParams, "phenology"),
+    (:mortality, MortalityParams, "mortality"),
+    (:fishery, FisheryParams, "fishery"),
+    (:output, OutputParams, "output"),
+    (:binning, BinningParams, "binning"),
+    (:leslie, LeslieParams, "leslie"),
+    (:criteria, CriteriaParams, "criteria"),
+)
+
+"""
+    config_field_types()
+
+Map every declared parameter field to its type, derived from the parameter
+structs. Field names are unique across the structs, so this map is
+unambiguous and stays correct as structs gain fields.
+"""
+function config_field_types()
+    types = Dict{Symbol, DataType}()
+    for (_, struct_type, _) in parameter_structs()
+        for field in fieldnames(struct_type)
+            types[field] = fieldtype(struct_type, field)
+        end
+    end
+    return types
+end
+
+"""
+    config_field_type(key::Symbol)
+
+Declared type of parameter `key`, or `nothing` when the name is not a parameter.
+Used to coerce command-line strings to the type the struct expects.
+"""
+config_field_type(key::Symbol) = get(config_field_types(), key, nothing)
+
+"""
+    parameter_struct_defaults()
+
+Collect the declared default of every field across all parameter structs into a
+flat `Dict{Symbol, Any}`. This is the single source of truth for default values
+and is derived automatically, so a new struct field appears here with no edit.
+"""
+function parameter_struct_defaults()
+    defaults = Dict{Symbol, Any}()
+    for (_, struct_type, _) in parameter_structs()
+        base = struct_type()
+        for field in fieldnames(struct_type)
+            defaults[field] = getfield(base, field)
+        end
+    end
+    return defaults
+end
+
+"""
     default_ibm_configuration()
 
 Return the default configuration dictionary for the organism IBM simulation,
 encompassing spatial grid geometry, runtime duration, environmental forcings,
-bioenergetics, life-history phenology, fishery dynamics, process toggles, and output handling.
+bioenergetics, life-history phenology, fishery dynamics, process toggles, and
+output handling.
+
+Values come from the parameter struct defaults, so `configs/default.toml` and
+the structs can never silently disagree: the TOML is the documented,
+user-editable record, and the structs are the programmatic fallback.
 
 # Returns
 `Dict{Symbol, Any}` containing all baseline parameter keys and values.
 """
 function default_ibm_configuration()
-    return Dict{Symbol, Any}(
-        # Process Toggles
-        :use_energetics => true,
-        :use_thermal_stress => true,
-        :use_cannibalism => false,
-        :use_senescence => true,
-        :use_spermatheca => true,
-        :use_movement => true,
-        :use_directed_movement => true,
-        :use_fishery => true,
-        :use_degree_days => true,
-        :use_molting => true,
-        :use_reproduction => true,
-        # Simulation
-        :n_agents => 300,
-        :days => 730,
-        :grid => (100, 100),
-        :dt => 1.0,
-        :seed => 1234,
-        # Environment
-        :temp_base => 5.0,
-        :temp_amplitude => 4.0,
-        :temp_noise_sd => 0.50,
-        :food_max => 10.0,
-        :food_replenishment_rate => 0.10,
-        :benthic_carrying_capacity => 300.0,
-        :half_saturation_food => 2.0,
-        :temp_base_degreedays => 0.0,
-        # Organism Biology
-        :max_size_male => 160.0,
-        :max_size_female => 95.0,
-        :max_stage_male => 16,
-        :max_stage_female => 14,
-        :maturity_size_mid => 60.0,
-        :metabolic_rate_base => 0.01,
-        :intake_rate_base => 0.05,
-        :energy_molt_threshold => 50.0,
-        :energy_molt_slope => 1.5,
-        :molt_energy_retention => 0.10,
-        # Phenology
-        :molt_season_start => 15.0,
-        :molt_season_end => 140.0,
-        :mating_season_start => 30.0,
-        :mating_season_end => 120.0,
-        :mating_search_radius => 5,
-        :brood_duration_base => 365.0,
-        :egg_survival_base => 5.0e-5,
-        # Fishery
-        :legal_size_male => 95.0,
-        :fishing_probability_daily => 0.0,
-        :fishing_season_start => 90.0,
-        :fishing_season_end => 150.0,
-        # Output
-        :save => true,
-        :save_file => "simulation_results.csv",
-        :snapshot_day => 274.0,
-        :frequency_days => 365.0,
-        :plot => false,
-        :output_dir => "outputs",
-        # Animation
-        :animate => false,
-        :animation_file => "organism_animation.mp4",
-        :anim_frames => 120,
-        :anim_dt => 2,
-        :anim_fps => 15,
-        :anim_field => "temperature"
-    )
+    config = parameter_struct_defaults()
+
+    # Grid is addressed as a pair in the flat configuration, so derive it from
+    # the struct's `grid_nx`/`grid_ny` fields.
+    config[:grid] = (config[:grid_nx], config[:grid_ny])
+
+    # Path-valued keys are resolved relative to the project at write time.
+    config[:output_dir] = "outputs"
+    config[:save_file] = "simulation_results.csv"
+    config[:animation_file] = "organism_animation.mp4"
+
+    sync_grid_dimensions!(config)
+    return config
+end
+
+"""
+    sync_grid_dimensions!(config::AbstractDict; explicit=nothing)
+
+Keep the two representations of the spatial grid in agreement.
+
+`grid_nx` and `grid_ny` are the declared parameter fields, while `grid` is the
+`(nx, ny)` pair that the model constructor consumes. Whichever spelling a
+configuration layer supplies, the other is derived from it.
+
+Configurations are assembled in layers (defaults, baseline file, species overlay,
+command line, keyword overrides). Without the `explicit` set, a value inherited
+from an earlier layer would masquerade as a local choice and overwrite what the
+current layer actually set, so callers pass the keys this layer supplied.
+
+# Arguments
+- `config`: configuration dictionary, modified in place.
+- `explicit`: keys set by the current layer, or `nothing` to accept whichever
+  spelling is already present.
+"""
+function sync_grid_dimensions!(
+    config::AbstractDict;
+    explicit::Union{Nothing, Union{AbstractSet, AbstractVector}} = nothing
+)
+    grid_set = (explicit === nothing || :grid in explicit) && haskey(config, :grid)
+    nx_set = (explicit === nothing || :grid_nx in explicit) && haskey(config, :grid_nx)
+    ny_set = (explicit === nothing || :grid_ny in explicit) && haskey(config, :grid_ny)
+
+    if grid_set
+        grid_value = config[:grid]
+        if isa(grid_value, AbstractVector)
+            config[:grid] = (Int(grid_value[1]), Int(grid_value[2]))
+        end
+        if isa(config[:grid], Tuple)
+            config[:grid_nx] = Int(config[:grid][1])
+            config[:grid_ny] = Int(config[:grid][2])
+        end
+    elseif nx_set || ny_set
+        nx = Int(get(config, :grid_nx, 100))
+        ny = Int(get(config, :grid_ny, 100))
+        config[:grid_nx] = nx
+        config[:grid_ny] = ny
+        config[:grid] = (nx, ny)
+    end
+    return config
+end
+
+"""
+    runtime_config_keys() → Set{Symbol}
+
+Configuration keys that are meaningful to a run but are not parameter struct
+fields: paths, CLI-only switches, and the `grid` pair that the flat configuration
+uses in place of `grid_nx`/`grid_ny`.
+
+`load_ibm_configuration` treats a key that is neither a declared parameter nor one
+of these as a mistake, because it is otherwise copied into the configuration and
+then silently dropped when the parameter structs are built.
+"""
+runtime_config_keys() = Set{Symbol}([
+    :grid,
+    :output_dir,
+    :save_file,
+    :animation_file,
+    :log_file,
+    :csv_prefix,
+    :save,
+    :plot,
+    :help,
+    :gui,
+    :config_file,
+    :species_config_file,
+    :fishery_on,
+])
+
+"""
+    cli_switch_keys() → Set{Symbol}
+
+Command-line switch names that are consumed while parsing the argument vector and
+never appear as a key in a configuration file.
+
+`--config` is the reason this is separate from [`runtime_config_keys`](@ref): the
+pre-scan uses it to locate the configuration files before the main loop runs, and
+it is recorded on the config dict as `config_file`, never as `config`. A switch
+like that must not be reported as an unrecognized parameter when the generic
+branch encounters it, and it must not be accepted as a TOML key either.
+"""
+cli_switch_keys() = Set{Symbol}([:config])
+
+"""
+    known_config_keys() → Set{Symbol}
+
+Every key a configuration file may legitimately declare: all parameter struct
+fields plus [`runtime_config_keys`](@ref).
+"""
+known_config_keys() = union(Set(keys(config_field_types())), runtime_config_keys())
+
+"""
+    unknown_config_keys(file_keys; known = known_config_keys()) → Vector{Symbol}
+
+Subset of `file_keys` that names neither a declared parameter nor a runtime key,
+sorted for a stable message.
+"""
+function unknown_config_keys(
+    file_keys;
+    known::Set{Symbol} = known_config_keys()
+)
+    return sort!(collect(setdiff(Set(file_keys), known)))
 end
 
 """
@@ -101,6 +231,12 @@ end
 
 Read a TOML configuration file and return a flat `Dict{Symbol, Any}` of settings,
 optionally overlaying loaded values on top of a `base_config` dictionary.
+Alias keys are normalized via `sync_grid_dimensions!`.
+
+Keys that are neither declared parameters nor runtime keys are reported as a
+warning. They used to be copied into the configuration and then dropped without a
+word when the parameter structs were built, so a typo, an abbreviation, or a key
+renamed in an overlay silently did nothing.
 """
 function load_ibm_configuration(
     filepath::String;
@@ -113,19 +249,55 @@ function load_ibm_configuration(
     raw = TOML.parsefile(filepath)
     flat = base_config === nothing ? Dict{Symbol, Any}() : deepcopy(base_config)
 
+    # Track which keys this file actually set. Layers are loaded in order
+    # (defaults, baseline, species overlay), so a value inherited from an
+    # earlier layer must never be allowed to overwrite an explicit value from
+    # the file being loaded.
+    file_keys = Set{Symbol}()
     for (section, kvs) in raw
         if isa(kvs, AbstractDict)
             for (k, v) in kvs
-                flat[Symbol(k)] = v
+                key = Symbol(k)
+                flat[key] = v
+                push!(file_keys, key)
             end
         else
-            flat[Symbol(section)] = kvs
+            key = Symbol(section)
+            flat[key] = kvs
+            push!(file_keys, key)
         end
     end
 
-    # Normalize grid dimensions if present as array
-    if haskey(flat, :grid) && isa(flat[:grid], AbstractVector)
-        flat[:grid] = (Int(flat[:grid][1]), Int(flat[:grid][2]))
+    # Grid dimensions have two spellings: a `grid` pair, which is the flat-config
+    # form consumed by `initialize_model`, and the `grid_nx`/`grid_ny` struct
+    # fields. Derive whichever spelling this file did not supply, so a species
+    # overlay that sets only `grid_nx`/`grid_ny` still takes effect.
+    if :grid in file_keys
+        grid_value = flat[:grid]
+        if isa(grid_value, AbstractVector)
+            flat[:grid] = (Int(grid_value[1]), Int(grid_value[2]))
+        end
+        if isa(flat[:grid], Tuple)
+            flat[:grid_nx] = Int(flat[:grid][1])
+            flat[:grid_ny] = Int(flat[:grid][2])
+        end
+    elseif (:grid_nx in file_keys) || (:grid_ny in file_keys)
+        nx = Int(get(flat, :grid_nx, 100))
+        ny = Int(get(flat, :grid_ny, 100))
+        flat[:grid_nx] = nx
+        flat[:grid_ny] = ny
+        flat[:grid] = (nx, ny)
+    end
+
+    sync_grid_dimensions!(flat; explicit = file_keys)
+
+    # Report keys that will have no effect. Silently dropping them is how a
+    # misspelled or renamed key survived in a shipped configuration file: the run
+    # completes, the setting simply never applies, and nothing says so.
+    unknown = unknown_config_keys(file_keys)
+    if !isempty(unknown)
+        @warn "configuration file declares keys that are not parameters and will be ignored" file =
+            filepath keys = unknown
     end
 
     return flat
@@ -135,163 +307,53 @@ load_ibm_configuration(filepath::String, base_config::AbstractDict) =
 
 
 """
+    ibm_configuration_sections()
+
+Ordered list of TOML section names used by `save_ibm_configuration`.
+"""
+ibm_configuration_sections() = [section for (_, _, section) in parameter_structs()]
+
+"""
+    config_section_map()
+
+Derive the configuration key to TOML section mapping directly from the parameter
+struct definitions, so that adding a field to any parameter struct automatically
+routes it to the correct section. This removes the hand-maintained duplicate
+mapping that previously had to be edited in lockstep with the structs.
+"""
+function config_section_map()
+    section_map = Dict{Symbol, String}()
+    for (_, struct_type, section) in parameter_structs()
+        for field in fieldnames(struct_type)
+            section_map[field] = section
+        end
+    end
+    return section_map
+end
+
+"""
     save_ibm_configuration(filepath::String, config::AbstractDict)
 
 Serialize a simulation configuration dictionary to a structured TOML file.
+Keys are routed to sections by `config_section_map()`.
 """
 function save_ibm_configuration(filepath::String, config::AbstractDict)
     sections = Dict{String, Dict{String, Any}}(
-        "toggles" => Dict{String, Any}(),
-        "simulation" => Dict{String, Any}(),
-        "environment" => Dict{String, Any}(),
-        "organism" => Dict{String, Any}(),
-        "species" => Dict{String, Any}(),
-        "phenology" => Dict{String, Any}(),
-        "fishery" => Dict{String, Any}(),
-        "output" => Dict{String, Any}(),
-        "animation" => Dict{String, Any}(),
-        "leslie" => Dict{String, Any}()
+        name => Dict{String, Any}() for name in ibm_configuration_sections()
     )
+    section_map = config_section_map()
 
-    section_map = Dict{Symbol, String}(
-        :use_energetics => "toggles",
-        :use_thermal_stress => "toggles",
-        :use_cannibalism => "toggles",
-        :use_senescence => "toggles",
-        :use_spermatheca => "toggles",
-        :use_movement => "toggles",
-        :use_directed_movement => "toggles",
-        :use_fishery => "toggles",
-        :use_degree_days => "toggles",
-        :use_molting => "toggles",
-        :use_reproduction => "toggles",
-
-        :n_agents => "simulation",
-        :days => "simulation",
-        :grid => "simulation",
-        :dt => "simulation",
-        :seed => "simulation",
-
-        :temp_base => "environment",
-        :temp_amplitude => "environment",
-        :temp_noise_sd => "environment",
-        :temp_base_degreedays => "environment",
-        :food_max => "environment",
-        :food_replenishment_rate => "environment",
-        :benthic_carrying_capacity => "environment",
-        :half_saturation_food => "environment",
-
-        :max_size_male => "organism",
-        :max_size_female => "organism",
-        :max_stage_male => "organism",
-        :max_stage_female => "organism",
-        :maturity_size_mid => "organism",
-        :metabolic_rate_base => "organism",
-        :intake_rate_base => "organism",
-        :energy_molt_threshold => "organism",
-        :energy_molt_slope => "organism",
-        :molt_energy_retention => "organism",
-
-        :molt_season_start => "phenology",
-        :molt_season_end => "phenology",
-        :mating_season_start => "phenology",
-        :mating_season_end => "phenology",
-        :mating_search_radius => "phenology",
-        :brood_duration_base => "phenology",
-        :egg_survival_base => "phenology",
-
-        # Species-specific biological parameters
-        :maturity_l50_male => "species",
-        :maturity_l50_male_sd => "species",
-        :maturity_slope_male => "species",
-        :maturity_slope_male_sd => "species",
-        :maturity_l50_female => "species",
-        :maturity_l50_female_sd => "species",
-        :maturity_slope_female => "species",
-        :maturity_slope_female_sd => "species",
-        :fecundity_parameterization => "species",
-        :fecundity_primiparous_intercept => "species",
-        :fecundity_primiparous_slope => "species",
-        :fecundity_primiparous_err => "species",
-        :fecundity_multiparous_intercept => "species",
-        :fecundity_multiparous_slope => "species",
-        :fecundity_multiparous_err => "species",
-        :growth_int_female => "species",
-        :growth_beta1_female => "species",
-        :growth_slp_female => "species",
-        :growth_beta2_female => "species",
-        :growth_beta3_female => "species",
-        :growth_int_male => "species",
-        :growth_beta1_male => "species",
-        :growth_slp_male => "species",
-        :growth_beta2_male => "species",
-        :growth_beta3_male => "species",
-        :selectivity_s50 => "species",
-        :selectivity_s50_sigma => "species",
-        :mass_alpha_male_immature => "species",
-        :mass_beta_male_immature => "species",
-        :mass_alpha_male_mature => "species",
-        :mass_beta_male_mature => "species",
-        :mass_alpha_female_immature => "species",
-        :mass_beta_female_immature => "species",
-        :mass_alpha_female_mature => "species",
-        :mass_beta_female_mature => "species",
-        :mass_sigma => "species",
-
-        :legal_size_male => "fishery",
-        :fishing_probability_daily => "fishery",
-        :fishing_season_start => "fishery",
-        :fishing_season_end => "fishery",
-
-        :save => "output",
-        :save_file => "output",
-        :snapshot_day => "output",
-        :frequency_days => "output",
-        :plot => "output",
-        :output_dir => "output",
-
-        :animate => "animation",
-        :animation_file => "animation",
-        :anim_frames => "animation",
-        :anim_dt => "animation",
-        :anim_fps => "animation",
-        :anim_field => "animation"
-
-        # Leslie matrix model parameters
-        :survival_stage1 => "leslie"
-        :gamma_stage1 => "leslie"
-        :survival_stage2 => "leslie"
-        :gamma_stage2 => "leslie"
-        :male_split_fraction => "leslie"
-        :female_split_fraction => "leslie"
-        :survival_male_legal => "leslie"
-        :survival_male_sublegal => "leslie"
-        :gamma_male_base => "leslie"
-        :gamma_male_decay => "leslie"
-        :p_term_male_base => "leslie"
-        :p_term_male_exponent => "leslie"
-        :survival_female => "leslie"
-        :gamma_female_base => "leslie"
-        :gamma_female_decay => "leslie"
-        :p_term_female_base => "leslie"
-        :p_term_female_exponent => "leslie"
-        :fecundity_base => "leslie"
-        :fecundity_size_exponent => "leslie"
-        :fecundity_size_reference => "leslie"
-        :col_sum_cap => "leslie"
-        :col_sum_scale_low => "leslie"
-        :col_sum_scale_high => "leslie"
-    )
+    # `grid` is a derived pair of `grid_nx`/`grid_ny`; persisting it as well
+    # would duplicate those fields in the emitted TOML.
+    write_grid = !(haskey(config, :grid_nx) && haskey(config, :grid_ny))
 
     for (k, v) in config
         sym_k = Symbol(k)
+        (sym_k === :grid && !write_grid) && continue
         sec = get(section_map, sym_k, "simulation")
-        str_k = string(sym_k)
-        if sym_k === :grid && (isa(v, Tuple) || isa(v, AbstractVector))
-            sections[sec][str_k] = [Int(v[1]), Int(v[2])]
-        else
-            sections[sec][str_k] = v
-        end
+        # TOML has no tuple type, so render tuples as arrays.
+        value = isa(v, Tuple) ? [Int(x) for x in v] : v
+        sections[sec][string(sym_k)] = value
     end
 
     open(filepath, "w") do io
@@ -313,6 +375,129 @@ function initialize_model(config_filepath::String; kwargs...)
 end
 
 """
+    struct_from_config(::Type{T}, config::AbstractDict) where {T}
+
+Build parameter struct `T` from its own declared defaults, overriding any field
+whose name appears in `config` and coercing the value to the field's declared
+type.
+
+Constructing the structs field-by-field at each call site duplicated the field
+list, so a parameter added to a struct silently kept its default whenever the
+duplicated list was not updated in step. Deriving the values from `T`'s own
+definition makes that class of drift impossible.
+"""
+function struct_from_config(::Type{T}, config::AbstractDict) where {T}
+    values = Any[]
+    for field in fieldnames(T)
+        declared = fieldtype(T, field)
+        if haskey(config, field)
+            push!(values, coerce_to_declared(declared, config[field], field))
+        else
+            push!(values, getfield(T(), field))
+        end
+    end
+    return T(values...)
+end
+
+"""
+    coerce_to_declared(declared::Type, value, field::Symbol)
+
+Convert a configuration value to a parameter field's declared type, converting
+numeric widths (a TOML float landing on an `Int` field, or vice versa) and
+leaving values that already match alone.
+
+Strings are parsed rather than rejected: `Float64("3.5")` is a `MethodError` in
+Julia, so a numeric setting that arrived as text (a command-line argument, an
+environment variable, a hand-edited overlay that quoted its numbers) could not be
+coerced at all, which is the one case this function exists to handle.
+
+Raises with a message naming the field and the offending value if the conversion
+is impossible. Use [`try_coerce_to_declared`](@ref) for a non-throwing form.
+"""
+function coerce_to_declared(declared::Type, value, field::Symbol)
+    declared === Any && return value
+    try
+        if declared <: Bool
+            return value isa Bool ? value :
+                   !(lowercase(strip(string(value))) in ("false", "0", "no", "off", ""))
+        elseif declared <: Integer
+            value isa Integer && return value
+            f = to_number(value, field)
+            return round(Int, f)
+        elseif declared <: AbstractFloat
+            value isa Real && return Float64(value)
+            return to_number(value, field)
+        elseif declared <: AbstractString
+            return string(value)
+        elseif declared <: AbstractVector
+            values = value isa AbstractVector ? value : [value]
+            parsed = [to_number(v, field) for v in values]
+            return declared <: AbstractVector{<:Integer} ?
+                   declared.(Int.(round.(Int, parsed))) : declared(Float64.(parsed))
+        end
+        return declared === typeof(value) ? value : convert(declared, value)
+    catch err
+        err isa CoercionError && rethrow()
+        error(
+            "Configuration value for `$(field)` could not be converted to " *
+            "$(declared): got $(repr(value)) ($(sprint(showerror, err)))"
+        )
+    end
+end
+
+"""
+    CoercionError
+
+Raised internally when a configuration value cannot be converted to the declared
+type, carrying the field name so the message can name it.
+"""
+struct CoercionError <: Exception
+    field::Symbol
+    declared::Type
+    value::Any
+end
+
+function Base.showerror(io::IO, e::CoercionError)
+    print(io, "configuration value for `", e.field, "` cannot be converted to ",
+        e.declared, ": got ", repr(e.value))
+    return nothing
+end
+
+"""
+    to_number(value, field::Symbol) → Float64
+
+Numeric value of `value`, parsing it if it is text. Used by
+[`coerce_to_declared`](@ref) so that a quoted number from a configuration source
+is accepted rather than rejected with a `MethodError`.
+"""
+function to_number(value, field::Symbol)
+    value isa Real && return Float64(value)
+    if value isa AbstractString
+        parsed = tryparse(Float64, strip(value))
+        parsed === nothing || return parsed
+    elseif value isa AbstractChar || value isa Symbol
+        parsed = tryparse(Float64, strip(string(value)))
+        parsed === nothing || return parsed
+    end
+    throw(CoercionError(field, Float64, value))
+end
+
+"""
+    try_coerce_to_declared(declared::Type, value, field::Symbol) → Union{Some, Nothing}
+
+Non-throwing [`coerce_to_declared`](@ref). Returns `Some(converted)` on success
+and `nothing` when the value cannot be converted, so a caller that wants to
+distinguish "bad setting" from "good setting" need not catch.
+"""
+function try_coerce_to_declared(declared::Type, value, field::Symbol)
+    try
+        return Some(coerce_to_declared(declared, value, field))
+    catch
+        return nothing
+    end
+end
+
+"""
     initialize_model(config::AbstractDict; kwargs...)
 
 Initialize an individual-based model from a configuration dictionary,
@@ -320,82 +505,42 @@ with optional keyword argument overrides.
 """
 function initialize_model(config::AbstractDict; kwargs...)
     merged = deepcopy(config)
+    # Keyword overrides are the highest-precedence layer, so they must be applied
+    # to the grid pair before the grid is read back out of the merged dictionary.
+    override_keys = Set(Symbol.(keys(kwargs)))
     for (k, v) in kwargs
         merged[Symbol(k)] = v
     end
+    sync_grid_dimensions!(merged; explicit = override_keys)
 
-    n_ag = get(merged, :N_agents, get(merged, :n_agents, 100))
-    grid_dim = get(merged, :dims, get(merged, :grid, (50, 50)))
+    n_ag = get(merged, :n_agents, 100)
+    grid_dim = get(merged, :grid, (50, 50))
     if isa(grid_dim, AbstractVector)
         grid_dim = (Int(grid_dim[1]), Int(grid_dim[2]))
     end
 
-    dt = Float64(get(merged, :dt_days, get(merged, :dt, 1.0)))
-    seed = get(merged, :rng_seed, get(merged, :seed, 1234))
+    dt = Float64(get(merged, :dt, 1.0))
+    seed = get(merged, :seed, 1234)
 
-    # Construct toggles
-    toggles = ProcessToggles(
-        use_energetics = get(merged, :use_energetics, true),
-        use_thermal_stress = get(merged, :use_thermal_stress, true),
-        use_cannibalism = get(merged, :use_cannibalism, false),
-        use_senescence = get(merged, :use_senescence, true),
-        use_spermatheca = get(merged, :use_spermatheca, true),
-        use_movement = get(merged, :use_movement, true),
-        use_directed_movement = get(merged, :use_directed_movement, true),
-        use_fishery = get(merged, :use_fishery, true),
-        use_degree_days = get(merged, :use_degree_days, true),
-        use_molting = get(merged, :use_molting, true),
-        use_reproduction = get(merged, :use_reproduction, true)
-    )
-
-    # Construct environment
-    env = EnvironmentParams(
-        temp_base = Float64(get(merged, :temp_base, 5.0)),
-        temp_amplitude = Float64(get(merged, :temp_amplitude, 4.0)),
-        temp_noise_sd = Float64(get(merged, :temp_noise_sd, 0.50)),
-        temp_base_degreedays = Float64(get(merged, :temp_base_degreedays, 0.0)),
-        food_max = Float64(get(merged, :food_max, 10.0)),
-        food_replenishment_rate = Float64(get(merged, :food_replenishment_rate, 0.10)),
-        benthic_carrying_capacity = Float64(get(merged, :benthic_carrying_capacity, 300.0)),
-        half_saturation_food = Float64(get(merged, :half_saturation_food, 2.0))
-    )
-
-    # Construct organism params
-    org_params = OrganismParams(
-        max_size_male = Float64(get(merged, :max_size_male, 160.0)),
-        max_size_female = Float64(get(merged, :max_size_female, 95.0)),
-        max_stage_male = Int(get(merged, :max_stage_male, 16)),
-        max_stage_female = Int(get(merged, :max_stage_female, 14)),
-        maturity_size_mid = Float64(get(merged, :maturity_size_mid, 60.0)),
-        metabolic_rate_base = Float64(get(merged, :metabolic_rate_base, 0.01)),
-        intake_rate_base = Float64(get(merged, :intake_rate_base, 0.05)),
-        energy_molt_threshold = Float64(get(merged, :energy_molt_threshold, 50.0)),
-        energy_molt_slope = Float64(get(merged, :energy_molt_slope, 1.5)),
-        molt_energy_retention = Float64(get(merged, :molt_energy_retention, 0.10))
-    )
-
-    # Construct phenology
-    phen = PhenologyParams(
-        molt_season_start = Float64(get(merged, :molt_season_start, 15.0)),
-        molt_season_end = Float64(get(merged, :molt_season_end, 140.0)),
-        mating_season_start = Float64(get(merged, :mating_season_start, 30.0)),
-        mating_season_end = Float64(get(merged, :mating_season_end, 120.0)),
-        mating_search_radius = Int(get(merged, :mating_search_radius, 5)),
-        brood_duration_base = Float64(get(merged, :brood_duration_base, 365.0)),
-        egg_survival_base = Float64(get(merged, :egg_survival_base, 5.0e-5))
-    )
-
-    # Construct fishery
-    fish = FisheryParams(
-        legal_size_male = Float64(get(merged, :legal_size_male, 95.0)),
-        fishing_probability_daily = Float64(get(merged, :fishing_probability_daily, 0.0)),
-        fishing_season_start = Float64(get(merged, :fishing_season_start, 90.0)),
-        fishing_season_end = Float64(get(merged, :fishing_season_end, 150.0))
-    )
+    # Parameter structs are built generically from the merged configuration. Each
+    # struct is instantiated from its own declared defaults and any field present in
+    # the configuration is overridden, coerced to the field's declared type. Listing
+    # fields by hand here meant a new parameter silently fell back to its default
+    # whenever this function was not updated alongside the struct.
+    toggles = struct_from_config(ProcessToggles, merged)
+    env = struct_from_config(EnvironmentParams, merged)
+    org_params = struct_from_config(OrganismParams, merged)
+    phen = struct_from_config(PhenologyParams, merged)
+    fish = struct_from_config(FisheryParams, merged)
 
     params = IBMParameters(
         toggles = toggles,
-        simulation = SimulationParams(dt = dt, seed = seed, n_agents = n_ag),
+        simulation = SimulationParams(
+            dt = dt, seed = seed, n_agents = n_ag,
+            # Keep the recorded grid consistent with the space that is actually
+            # built, so anything reading `params.grid_nx` sees the real extent.
+            grid_nx = Int(grid_dim[1]), grid_ny = Int(grid_dim[2])
+        ),
         environment = env,
         organism = org_params,
         phenology = phen,
@@ -403,42 +548,42 @@ function initialize_model(config::AbstractDict; kwargs...)
     )
 
     return initialize_model(
-        N_agents = n_ag,
-        dims = grid_dim,
-        dt_days = dt,
+        n_agents = n_ag,
+        grid = grid_dim,
+        dt = dt,
         params = params,
-        rng_seed = seed
+        seed = seed
     )
 end
 
 """
-    initialize_model(; N_agents=100, dims=(50, 50), ...)
+    initialize_model(; n_agents=100, grid=(50, 50), ...)
 
 Construct and populate an `Agents.StandardABM` representing the organism ecosystem.
 
 # Arguments
-- `N_agents::Int`: Initial number of individual agents seeded into the environment (default: 100).
-- `dims::Tuple{Int, Int}`: Grid spatial dimensions `(nx, ny)` (default: `(50, 50)`).
+- `n_agents::Int`: Initial number of individual agents seeded into the environment (default: 100).
+- `grid::Tuple{Int, Int}`: Grid spatial dimensions `(nx, ny)` (default: `(50, 50)`).
 - `temp_map::Union{Nothing, Matrix{Float64}}`: Optional initial temperature field.
 - `food_map::Union{Nothing, Matrix{Float64}}`: Optional initial food density field.
-- `dt_days::Float64`: Time step in days (default: 1.0).
+- `dt::Float64`: Time step in days (default: 1.0).
 - `params::IBMParameters`: Parameters and process toggles.
 - `behavior::Union{Nothing, SpeciesBehavior}`: Optional custom species behavior. If nothing, created from params.species.
-- `rng_seed::Union{Nothing, Int}`: Optional RNG seed.
+- `seed::Union{Nothing, Int}`: Optional RNG seed.
 
 # Returns
 Configured and populated `StandardABM` instance ready for simulation.
 """
 function initialize_model(;
-    N_agents::Int = 100,
-    dims::Tuple{Int, Int} = (50, 50),
+    n_agents::Int = 100,
+    grid::Tuple{Int, Int} = (50, 50),
     temp_map::Union{Nothing, Matrix{Float64}} = nothing,
     food_map::Union{Nothing, Matrix{Float64}} = nothing,
     habitat_map::Union{Nothing, Matrix{Float64}} = nothing,
-    dt_days::Float64 = 1.0,
+    dt::Float64 = 1.0,
     params::IBMParameters = IBMParameters(),
     behavior::Union{Nothing, SpeciesBehavior} = nothing,
-    rng_seed::Union{Nothing, Int} = nothing,
+    seed::Union{Nothing, Int} = nothing,
     kwargs...
 )
     # Create species behavior from params if not provided
@@ -446,22 +591,22 @@ function initialize_model(;
         behavior = SpeciesBehaviorImpl(params.species)
     end
     
-    space = GridSpace(dims)
+    space = GridSpace(grid)
 
-    rng = if rng_seed === nothing
+    rng = if seed === nothing
         Random.default_rng()
     else
-        Random.Xoshiro(rng_seed)
+        Random.Xoshiro(seed)
     end
 
     initial_temp = if temp_map === nothing
-        fill(params.environment.temp_base, dims)
+        fill(params.environment.temp_base, grid)
     else
         copy(temp_map)
     end
 
     initial_food = if food_map === nothing
-        fill(params.environment.food_max / 2.0, dims)
+        fill(params.environment.food_max / 2.0, grid)
     else
         copy(food_map)
     end
@@ -469,7 +614,7 @@ function initialize_model(;
     initial_habitat = if habitat_map === nothing
         μ = params.environment.habitat_quality_mean
         σ = params.environment.habitat_quality_sd
-        clamp.(randn(rng, dims) .* σ .+ μ, 0.0, 1.0)
+        clamp.(randn(rng, grid) .* σ .+ μ, 0.0, 1.0)
     else
         copy(habitat_map)
     end
@@ -479,7 +624,7 @@ function initialize_model(;
         :temperature_field => initial_temp,
         :food_availability_field => initial_food,
         :habitat_quality_field => initial_habitat,
-        :dt => dt_days,
+        :dt => dt,
         :params => params,
         :total_eggs_spawned => 0,
         :annual_eggs_spawned => 0,
@@ -488,9 +633,12 @@ function initialize_model(;
         :total_catch_biomass_kg => 0.0,
         :total_molts => 0,
         :deaths_predation => 0,
+        :deaths_baseline => 0,
+        :deaths_soft_shell => 0,
         :deaths_starvation => 0,
         :deaths_thermal => 0,
         :deaths_senescence => 0,
+        :deaths_cannibalism => 0,
         :deaths_fishery => 0,
         :n_benthic_organisms => 0,
         :n_mature_males => 0,
@@ -518,12 +666,21 @@ function initialize_model(;
         rng = rng
     )
 
-    # --- Initialize Aggregate Populations (Egg stage 0 through stage 5) ---
+    # --- Initialize Aggregate Populations (stage 0 through juvenile_max_stage - 1) ---
+    #
+    # The range comes from the configuration, not a literal. It previously ran
+    # `0:5`, which happened to match the default `juvenile_max_stage = 6` but
+    # would silently mis-seed any other value: individuation happens at stage 6, so
+    # a group per stage below that is what feeds the benthic population.
     pop = AggregatePopulations()
-    if N_agents > 0
-        for stg in 0:5
-            sz = (stg == 0) ? 0.60 : ((stg < 4) ? stage_size_lower_bound(behavior, Float64(stg), :male) : stage_size(behavior, stg, :male; type = :random, rng = rng))
-            wt = (stg == 0) ? 0.00007 : calculate_mass(behavior, sz, :male; mat = 0, stochastic = true, rng = rng)
+    juvenile_max = params.organism.juvenile_max_stage
+    if n_agents > 0 && juvenile_max > 0
+        for stg in 0:(juvenile_max - 1)
+            sz = (stg == 0) ? 0.60 :
+                 ((stg < 4) ? stage_size_lower_bound(behavior, Float64(stg), :male) :
+                  stage_size(behavior, stg, :male; type = :random, rng = rng))
+            wt = (stg == 0) ? 0.00007 :
+                 calculate_mass(behavior, sz, :male; mat = 0, stochastic = true, rng = rng)
             grp = AggregateGroup(
                 id = pop.next_group_id,
                 stage = stg,
@@ -533,7 +690,7 @@ function initialize_model(;
                 age_days = stg * 90.0,
                 degree_days = 0.0,
                 last_growth_time = 0.0,
-                pos = (rand(rng, 1:dims[1]), rand(rng, 1:dims[2]))
+                pos = (rand(rng, 1:grid[1]), rand(rng, 1:grid[2]))
             )
             pop.next_group_id += 1
             push!(pop.groups, grp)
@@ -541,59 +698,125 @@ function initialize_model(;
     end
     properties[:aggregate_populations] = pop
 
-    # --- Populate Initial Spatial Agents (Individuated: stage 6 onwards) ---
+    # --- Populate Initial Spatial Agents (Individuated: benthic stages onwards) ---
+    #
+    # Two properties the previous seeding did not have.
+    #
+    # It drew stages from `6:9` only, so stages 10 upwards were never seeded. Since
+    # it also set `mat = (stg >= 10)`, that meant *no individual was ever mature at
+    # initialization*, and so no legal male either — the run began with an empty
+    # spawning and fishable stock and could not produce a brood for a full year.
+    # That is visible in a GUI run as `mean_weight_legal_kg == 0` for the first two
+    # annual snapshots.
+    #
+    # It now covers the whole benthic range for each sex, guarantees at least one
+    # individual in every (sex, stage) cell so no stage is empty, and sets maturity
+    # from the maturity ogive at the individual's own size and trait quantile — the
+    # same test `perform_development!` applies during a run — rather than from a
+    # stage threshold.
     benthic_cnt = 0
     mat_m = 0
     mat_f = 0
     leg_m = 0
 
-    for _ in 1:N_agents
-        stg = rand(rng, 6:9)
-        sex = rand(rng, (male, female))
+    # First individuated stage. Recruits are individuated *into* `juvenile_max_stage`
+    # by the aggregate-to-agent transition, so the benthic range starts there, not
+    # one stage above it — otherwise the seeded population can never contain a
+    # stage-6 recruit, which is the main inflow into the benthic stock.
+    first_benthic = max(juvenile_max, 1)
+    max_stage_of(sex) = (sex === female) ? params.organism.max_stage_female :
+                        params.organism.max_stage_male
+
+    # Stage-abundance weighting: geometrically decreasing with stage, so the initial
+    # cohort is juvenile-skewed as a real population is, while every benthic stage is
+    # still represented. The decay is a calibration choice; that a stage must be
+    # reachable at all is not.
+    stage_decay = 0.75
+
+    function seed_one(stg::Int, sex, position)
         sz = stage_size(behavior, stg, sex; type = :random, rng = rng)
-        mat = (stg >= 10)
-        wt = calculate_mass(behavior, sz, sex; mat = (mat ? 1 : 0), stochastic = true, rng = rng)
         age_days = (stg - 3.0) * 180.0 + rand(rng) * 90.0
         energy_reserve = params.organism.initial_energy
         last_molt_time = -age_days
         degree_days = rand(rng, Uniform(50.0, 300.0))
-        is_mating_ready = mat
-        egg_count = 0
-        hatch_day = 0.0
-        sperm_clutches = 0
-        pos = (rand(rng, 1:dims[1]), rand(rng, 1:dims[2]))
+        max_stage = max_stage_of(sex)
 
         new_org = add_agent!(
-            pos,
-            model,
-            stg,
-            sex,
-            age_days,
-            sz,
-            wt,
-            energy_reserve,
-            last_molt_time,
-            degree_days,
-            is_mating_ready,
-            egg_count,
-            hatch_day,
-            sperm_clutches,
-            mat;
+            position, model, stg, sex, age_days, sz, 0.0, energy_reserve,
+            last_molt_time, degree_days, false, 0, 0.0, 0, false;
             behavior = behavior
         )
         sample_individual_traits!(new_org, model, rng)
+
+        # Maturity, by the same test a run applies. An individual at its sex's
+        # terminal stage is mature by definition, exactly as the stage ceiling in
+        # `perform_development!` forces.
+        sex_code = (sex === female) ? 1 : 0
+        prob_mat = maturity(
+            behavior, sex_code, log(new_org.size);
+            maturity_quantile = new_org.trait_maturity_quantile
+        )
+        new_org.is_mature = (stg >= max_stage) || (rand(rng) < prob_mat)
+        new_org.is_mating_ready = new_org.is_mature
+        new_org.mass = calculate_mass(
+            behavior, new_org.size, sex;
+            mat = (new_org.is_mature ? 1 : 0), stochastic = true, rng = rng
+        )
+        return new_org
     end
 
-    # Cache initial demographic aggregates
+    if n_agents > 0
+        # Every (sex, stage) cell, ordered by sex then stage, as the coverage pool.
+        cells = Tuple{Int, Any}[]
+        weights = Float64[]
+        for sex in (male, female)
+            for stg in first_benthic:max_stage_of(sex)
+                push!(cells, (stg, sex))
+                # Juvenile-skewed, as a real population is, so the remainder lands
+                # mostly on the young stages while every cell is still represented.
+                push!(weights, stage_decay^(stg - first_benthic))
+            end
+        end
+
+        # `n_agents` is honoured exactly. When the budget covers every cell, seed
+        # them all and distribute the remainder by weight. When it does not, spread
+        # the budget across the ordered cells so the stage range is still spanned
+        # end to end, rather than filling only the youngest stages.
+        if n_agents <= length(cells)
+            # `range(1, k, length = 1)` is invalid — a one-element range cannot span
+            # differing endpoints — so the single-agent case is handled directly.
+            picks = (n_agents == 1) ? [1] :
+                    unique(round.(Int, range(1, length(cells), length = n_agents)))
+            for i in picks
+                stg, sex = cells[i]
+                seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
+            end
+        else
+            for (stg, sex) in cells
+                seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
+            end
+            for _ in 1:(n_agents - length(cells))
+                stg, sex = sample_weighted(cells, weights, rng)
+                seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
+            end
+        end
+    end
+
+    # Cache initial demographic aggregates.
+    # Maturity and legal size are counted independently: `is_legal_male` is a
+    # size-based regulation test, so a large male that never matured is still
+    # legal. Gating the legal count on maturity would make `n_legal_males`
+    # disagree with the `count_is_legal_male` column and the GUI's legal series.
     for a in allagents(model)
         benthic_cnt += 1
-        if is_adult_male(a)
+        if is_mature_male(a)
             mat_m += 1
-            if is_legal_male(a)
-                leg_m += 1
-            end
-        elseif is_adult_female(a)
+        elseif is_mature_female(a)
             mat_f += 1
+        end
+        if is_legal_male(a, params.fishery.legal_size_male,
+                         params.organism.adult_size_threshold)
+            leg_m += 1
         end
     end
 
@@ -650,8 +873,9 @@ function organism_disperse!(
         return org.pos
     end
 
-    # Energy-depleted lethargy: 75% chance of remaining stationary when energetics active
-    if model.params.toggles.use_energetics && org.energy_reserve <= 0.0 && rand(rng) < 0.75
+    # Energy-depleted lethargy: the individual may stay put when energetics are active.
+    if model.params.toggles.use_energetics && org.energy_reserve <= 0.0 &&
+       rand(rng) < model.params.organism.energy_deficit_removal_probability
         return org.pos
     end
 
@@ -735,14 +959,25 @@ function agent_step!(org::Organism, model)
     # 4. Mortality
     temp = model.temperature_field[org.pos...]
     local_density = Float64(count(_ -> true, nearby_agents(org, model, 1)))
-    mort_prob = calculate_mortality_probability(org, temp, local_density, model.current_time; params = model.params)
+    causes = mortality_components(org, temp, local_density, model.current_time;
+        params = model.params,
+        density_feedback = benthic_density_feedback(model))
 
-    if rand(abmrng(model)) < mort_prob
-        if model.params.toggles.use_senescence && org.is_mature
-            model.deaths_senescence += 1
-        else
-            model.deaths_predation += 1
-        end
+    if rand(abmrng(model)) < causes.total
+        # Attribute the death to the hazard that produced it. The previous rule —
+        # `is_mature → senescence, else → predation` — had no relationship to the
+        # summed probability, so juveniles dying of background mortality were
+        # counted as predation deaths and mature individuals dying of anything were
+        # counted as senescence deaths. `deaths_starvation` and `deaths_thermal`
+        # were never incremented at all.
+        cause = dominant_mortality_cause(causes)
+        cause === :baseline && (model.deaths_baseline += 1)
+        cause === :predation && (model.deaths_predation += 1)
+        cause === :soft_shell && (model.deaths_soft_shell += 1)
+        cause === :starvation && (model.deaths_starvation += 1)
+        cause === :thermal && (model.deaths_thermal += 1)
+        cause === :senescence && (model.deaths_senescence += 1)
+        cause === :cannibalism && (model.deaths_cannibalism += 1)
         remove_agent!(org, model)
         return nothing
     end
@@ -751,15 +986,16 @@ function agent_step!(org::Organism, model)
     if model.params.toggles.use_fishery &&
        model.params.fishery.fishing_probability_daily > 0.0 &&
        (model.params.fishery.fishing_season_start <= day_of_year <= model.params.fishery.fishing_season_end) &&
-       is_legal_male(org; legal_size = model.params.fishery.legal_size_male)
+       is_legal_male(org, model.params.fishery.legal_size_male,
+                     model.params.organism.adult_size_threshold)
 
-        harvest_prob = model.params.fishery.fishing_probability_daily *
+        fishing_probability_daily = model.params.fishery.fishing_probability_daily *
                        selectivity(
                            org.size;
                            s50 = model.params.fishery.legal_size_male,
                            s50_sigma = org.behavior.params.selectivity_s50_sigma
                        )
-        if rand(abmrng(model)) < harvest_prob
+        if rand(abmrng(model)) < fishing_probability_daily
             model.total_catch_numbers += 1
             model.total_catch_biomass_kg += (org.mass / 1000.0)
             model.deaths_fishery += 1
@@ -784,13 +1020,14 @@ function update_demographic_caches!(model)
     legal_males = 0
     for org in allagents(model)
         benthic_count += 1
-        if is_adult_male(org)
+        if is_mature_male(org)
             mat_males += 1
-            if is_legal_male(org)
-                legal_males += 1
-            end
-        elseif is_adult_female(org)
+        elseif is_mature_female(org)
             mat_females += 1
+        end
+        if is_legal_male(org, model.params.fishery.legal_size_male,
+                         model.params.organism.adult_size_threshold)
+            legal_males += 1
         end
     end
     model.n_benthic_organisms = benthic_count
@@ -808,17 +1045,19 @@ for one simulation time step.
 """
 function model_step!(model)
     dt = model.dt
+    sim = model.params.simulation
     old_time = model.current_time
     model.current_time += dt
 
     # Year boundary detection for annual resets
-    if floor(old_time / 365.0) < floor(model.current_time / 365.0)
+    if floor(old_time / sim.days_per_year) < floor(model.current_time / sim.days_per_year)
         model.annual_eggs_spawned = 0.0
     end
 
     # 1. Environmental updates (Temperature & Food)
-    day_of_year = mod(model.current_time, 365.0)
-    sinusoidal_factor = sin(2.0 * π * (day_of_year - 80.0) / 365.0)
+    day_of_year = mod(model.current_time, sim.days_per_year)
+    sinusoidal_factor = sin(2.0 * π * (day_of_year - sim.temp_seasonal_phase_day) /
+                           sim.days_per_year)
 
     t_base = model.params.environment.temp_base
     t_amp = model.params.environment.temp_amplitude
@@ -848,10 +1087,74 @@ end
 """
     safe_mean(x)
 
-Calculate sample mean of numeric collection `x`, returning 0.0 if empty.
+Mean of `x`, returning `0.0` when it is empty.
+
+Materialises `x` exactly once before testing it. `Agents` hands aggregators a
+one-shot generator, not a collection, so probing emptiness with `isempty(x)` and
+then calling `mean(x)` either consumes an element or fails outright.
 """
 function safe_mean(x)
-    return isempty(x) ? 0.0 : mean(x)
+    values = collect(x)
+    return isempty(values) ? 0.0 : mean(values)
+end
+
+"""
+    safe_sum(x)
+
+Sum of `x`, returning `0.0` when it is empty.
+
+`Agents._add_col_data!` calls `agg(generator)` with no `init`, so a bare `sum`
+throws `reducing over an empty collection is not allowed` the moment the
+population reaches zero. That is precisely the run this model produces: the
+population declines, and rather than recording the final empty state the run
+crashed inside the data-collection step. `length` and `count` are already safe on
+an empty input; `sum` and `mean` are the two that are not.
+"""
+safe_sum(x) = sum(x; init = 0.0)
+
+"""
+    total_sum
+
+Total function with `sum`'s name, so a column aggregated with it is still called
+`sum_*`. See [`NamedAggregate`](@ref) for why the name matters.
+"""
+const total_sum = NamedAggregate(:sum, safe_sum)
+
+"""
+    default_agent_observations(params::IBMParameters)
+
+Standard per-agent observations recorded by `run_simulation`.
+
+The biological predicates take their thresholds from `params` — legal size and
+the adult size boundary are species settings — so the observation list is built
+from the model's own parameters rather than from hardcoded defaults.
+"""
+function default_agent_observations(params::IBMParameters)
+    adult_size = params.organism.adult_size_threshold
+    legal_size = params.fishery.legal_size_male
+    return [
+        (:stage, length),
+        (:stage, safe_mean),
+        (:size, safe_mean),
+        (:mass, safe_mean),
+        (:mass, total_sum),
+        (named_predicate(is_adult_male, :is_adult_male), count),
+        (is_mature_male, count),
+        (is_mature_female, count),
+        (named_predicate(is_legal_male, :is_legal_male, legal_size, adult_size), count),
+        (is_ovigerous, count),
+        (mass_if_mature_female, total_sum),
+        (mass_if_mature_male, total_sum),
+        (
+            named_predicate(
+                mass_if_legal_male,
+                :mass_if_legal_male,
+                legal_size,
+                adult_size
+            ),
+            total_sum
+        )
+    ]
 end
 
 """
@@ -871,21 +1174,7 @@ function run_simulation(
         model.step_callback = step_callback
     end
 
-    default_adata = [
-        (:stage, length),
-        (:stage, safe_mean),
-        (:size, safe_mean),
-        (:mass, safe_mean),
-        (:mass, sum),
-        (is_adult, count),
-        (is_adult_male, count),
-        (is_adult_female, count),
-        (is_legal_male, count),
-        (is_ovigerous, count),
-        (mass_if_adult_female, sum),
-        (mass_if_adult_male, sum),
-        (mass_if_legal_male, sum)
-    ]
+    default_adata = default_agent_observations(model.params)
 
     default_mdata = [
         :total_eggs_spawned,
@@ -893,10 +1182,13 @@ function run_simulation(
         :total_catch_numbers,
         :total_catch_biomass_kg,
         :total_molts,
+        :deaths_baseline,
         :deaths_predation,
+        :deaths_soft_shell,
         :deaths_starvation,
         :deaths_thermal,
         :deaths_senescence,
+        :deaths_cannibalism,
         :deaths_fishery,
         :n_benthic_organisms,
         :n_mature_males,

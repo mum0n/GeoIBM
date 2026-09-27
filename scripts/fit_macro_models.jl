@@ -102,7 +102,7 @@ end
 
 function display_help()
     println("="^75)
-    println("Snow Crab Macro-Ecological Dynamic Model Fitting & Retrospective CLI")
+    println("Organism Macro-Ecological Dynamic Model Fitting & Retrospective CLI")
     println("="^75)
     println("Usage:")
     println("    julia --project=. scripts/fit_macro_models.jl --file=<path> [OPTIONS]")

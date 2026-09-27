@@ -76,7 +76,8 @@ function get_stage_size(
     stage::Real,
     sex;
     type::Symbol = :mid,
-    rng::AbstractRNG = Random.default_rng()
+    rng::AbstractRNG = Random.default_rng(),
+    params::IBMParameters = IBMParameters()
 )
     lb = stage_size_lower_bound(behavior, stage, sex)
     ub = stage_size_lower_bound(behavior, stage + 1.0, sex)
@@ -87,7 +88,7 @@ function get_stage_size(
     elseif type === :mid
         return (lb + ub) / 2.0
     elseif type === :random
-        u = rand(rng, Beta(2.5, 2.5))
+        u = rand(rng, Beta(params.organism.stage_size_sample_a, params.organism.stage_size_sample_b))
         return lb + u * (ub - lb)
     else
         error("Unknown get_stage_size type: $(type). Supported: :lb, :ub, :mid, :random")
@@ -202,20 +203,72 @@ fecundity(behavior::SpeciesBehavior, size::AbstractArray; kwargs...) =
     fecundity.(Ref(behavior), size; kwargs...)
 
 """
-    fecundity(org::Organism; rng=Random.default_rng(), deterministic=false)
+    individuation_stage(params) → Int
+
+Stage at which an aggregate cohort transitions into individuated `Organism` agents.
+
+`OrganismParams.juvenile_max_stage`: aggregate groups cover stages
+`0:(juvenile_max_stage - 1)`, and the cohort that completes the last of them
+individuates. Derived from configuration rather than the literal `6`, so
+reconfiguring the juvenile span actually moves the boundary instead of leaving the
+aggregate cohort to advance past a stage nothing was watching for — in which case
+no individual was ever individuated and the benthic population silently received
+no recruits.
+"""
+individuation_stage(params::IBMParameters) = params.organism.juvenile_max_stage
+
+"""
+    shell_age_years(org::Organism, params::IBMParameters) → Float64
+
+Years since metamorphosis, inferred as
+
+```
+(age_days - shell_age_stage_offset * (stage - shell_age_first_stage)) / days_per_year
+```
+
+floored at one year.
+
+Single definition, used by both fecundity senescence and mortality senescence.
+
+Those two paths previously used different quantities. Fecundity used this
+age-based formula; mortality used *time since the last ecdysis*. That is not a
+coarser version of the same thing, it is a different thing, and the difference is
+not cosmetic:
+
+- Senescence became a function of molt recency rather than age. A ten-year-old
+  that had molted yesterday had **zero** mortality senescence, and a one-year-old
+  that last molted 2000 days ago had exactly the same hazard as the ten-year-old.
+  The one variable senescence is supposed to depend on was not read at all.
+- A terminal-molt individual never molts again, so its time since ecdysis grows
+  without limit and `exp(rate * (years - threshold))` diverges. The daily hazard
+  reached 6.6e3 before `hazard_cap` clamped it, which the cap then reported as
+  certain death.
+- A female could be reproductively senescent on the age-based path while carrying
+  no mortality senescence whatsoever.
+"""
+function shell_age_years(org::Organism, params::IBMParameters)
+    op = params.organism
+    inferred = (org.age_days - op.shell_age_stage_offset *
+            (org.stage - op.shell_age_first_stage)) / params.simulation.days_per_year
+    return max(1.0, inferred)
+end
+
+"""
+    fecundity(org::Organism; rng, deterministic, params)
 
 Estimate extruded brood fecundity directly for an individual female `Organism` agent.
 """
 function fecundity(
     org::Organism;
     rng::AbstractRNG = Random.default_rng(),
-    deterministic::Bool = false
+    deterministic::Bool = false,
+    params::IBMParameters = IBMParameters()
 )
     if org.sex !== female || !org.is_mature
         return 0
     end
     is_p = (org.sperm_clutches <= 1)
-    shell_age = max(1.0, (org.age_days - 180.0 * (org.stage - 3)) / 365.0)
+    shell_age = shell_age_years(org, params)
     raw_eggs = fecundity(
         org.behavior,
         org.size;
@@ -330,7 +383,8 @@ function calculate_mass(
     org::Organism;
     stochastic::Bool = false,
     include_eggs::Bool = true,
-    rng::AbstractRNG = Random.default_rng()
+    rng::AbstractRNG = Random.default_rng(),
+    params::IBMParameters = IBMParameters()
 )
     somatic_mass = calculate_mass(
         org.behavior,
@@ -341,7 +395,7 @@ function calculate_mass(
         rng = rng
     )
     egg_mass = (include_eggs && is_ovigerous(org)) ?
-        (Float64(org.egg_count) * 0.00007) : 0.0
+        (Float64(org.egg_count) * params.organism.egg_mass_g) : 0.0
     return somatic_mass + egg_mass
 end
 
@@ -372,19 +426,21 @@ for an individual organism based on time elapsed since the most recent ecdysis.
 # Returns
 `Int`: Shell condition category (1 to 5).
 """
-function shell_condition(org::Organism, current_time::Real)
+function shell_condition(
+    org::Organism,
+    current_time::Real;
+    params::IBMParameters = IBMParameters()
+)
     elapsed_days = max(0.0, current_time - org.last_growth_event_time)
-    if elapsed_days < 30.0
-        return 1
-    elseif elapsed_days < 365.0
-        return 2
-    elseif elapsed_days < 730.0
-        return 3
-    elseif elapsed_days < 1277.5
-        return 4
-    else
-        return 5
+    breaks = params.organism.shell_condition_days
+    category = length(breaks) + 1
+    for (index, threshold) in enumerate(breaks)
+        if elapsed_days < threshold
+            category = index
+            break
+        end
     end
+    return category
 end
 
 """
@@ -420,23 +476,26 @@ function calculate_energy_change(
         calculate_mass(size, :male; mat = 0)
     end
 
-    # Kleiber metabolic consumption (allometric exponent 0.75)
-    mass_scaling = effective_mass^0.75
-    metabolic_temp_factor = exp(0.08 * temp)
-    t_opt = 3.0
-    t_sigma = 2.5
+    org = params.organism
+    # Kleiber-style allometric metabolic consumption
+    mass_scaling = effective_mass^org.metabolic_mass_exponent
+    metabolic_temp_factor = exp(org.metabolic_temperature_coefficient * temp)
+    t_opt = org.metabolic_optimal_temperature
+    t_sigma = org.metabolic_optimal_sigma
     thermal_modifier = exp(-((temp - t_opt)^2) / (2.0 * t_sigma^2))
-    maintenance_cost = params.organism.metabolic_rate_base * mass_scaling *
+    maintenance_cost = org.metabolic_rate_base * mass_scaling *
                        metabolic_temp_factor * thermal_modifier
 
     # Holling Type II functional feeding response
     half_sat = params.environment.half_saturation_food
-    intake_demand = params.organism.intake_rate_base * (food / (food + half_sat)) * mass_scaling
+    intake_demand = org.intake_rate_base * (food / (food + half_sat)) * mass_scaling
     actual_intake = min(intake_demand, max(0.0, food))
 
-    # Net energy assimilation (Specific Dynamic Action SDA = 0.15)
+    # Net energy assimilation. A fraction `specific_dynamic_action` of the
+    # assimilated intake is spent on processing, leaving the rest for growth.
     assim_eff = params.environment.assimilation_efficiency
-    net_assimilation = (actual_intake * assim_eff * 0.85) - maintenance_cost
+    usable_fraction = clamp(1.0 - org.specific_dynamic_action, 0.0, 1.0)
+    net_assimilation = (actual_intake * assim_eff * usable_fraction) - maintenance_cost
 
     return (net_assimilation, actual_intake)
 end
@@ -448,6 +507,48 @@ function calculate_energy_change(
     params::IBMParameters = IBMParameters()
 )
     return calculate_energy_change(temp, food, org.size; params = params, mass = org.mass)
+end
+
+"""
+    total_benthic_abundance(model)
+
+Total benthic population size, counting both spatial individuals and the
+aggregate juvenile cohorts that have not yet individuated.
+
+Carrying capacity must be evaluated against the whole benthic population. Using
+only the individuated agents understates density by an order of magnitude during
+the juvenile phase, and once the aggregate cohorts are exhausted it makes
+carrying capacity completely inert.
+"""
+function total_benthic_abundance(model)
+    total = float(nagents(model))
+    aggs = get(abmproperties(model), :aggregate_populations, nothing)
+    if aggs !== nothing
+        for grp in aggs.groups
+            total += grp.abundance
+        end
+    end
+    return total
+end
+
+"""
+    benthic_density_feedback(model)
+
+Density-dependent multiplier for mortality, equal to
+`1 + (N / K)^exponent` where `N` is the total benthic abundance and `K` is
+`benthic_carrying_capacity`.
+
+The exponent comes from the configuration. At the default value of 2 the
+feedback is gentle below `K` and rises steeply above it, so the population is
+actually regulated near carrying capacity; a purely linear response stays finite
+however far `N` exceeds `K` and therefore does not bound the population.
+"""
+function benthic_density_feedback(model)
+    env = model.params.environment
+    k_cap = env.benthic_carrying_capacity
+    k_cap > 0.0 || return 1.0
+    ratio = total_benthic_abundance(model) / k_cap
+    return 1.0 + ratio^env.benthic_carrying_capacity_exponent
 end
 
 """
@@ -478,8 +579,10 @@ function molt_probability(
         end
     end
 
-    # Seasonality gate for benthic subadults (stage >= 7)
-    if org.stage >= 7
+    # Seasonal gate. `molt_season_min_stage` sets the first stage that must molt
+    # within the season; earlier stages molt as soon as their physiological
+    # requirements are met.
+    if org.stage >= params.phenology.molt_season_min_stage
         day_of_year = mod(current_time, 365.0)
         in_molt_season = (params.phenology.molt_season_start <= day_of_year <=
                           params.phenology.molt_season_end)
@@ -489,15 +592,21 @@ function molt_probability(
     end
 
     if params.toggles.use_energetics
-        required_energy = max(2.0, params.organism.energy_molt_slope * org.size)
+        required_energy = max(params.organism.energy_molt_floor,
+                              params.organism.energy_molt_slope * org.size)
         if org.energy_reserve < required_energy
             return 0.0
         end
     end
 
-    # Thermal ecdysial inhibition for warm waters
-    thermal_inhibition = if params.toggles.use_thermal_stress && current_temp > 5.0
-        max(0.0, 1.0 - ((current_temp - 5.0) / 3.0)^2)
+    # Ecdysial thermal inhibition. The onset and bandwidth are configurable so
+    # that inhibition can be placed above the warmest temperature reached during
+    # the molt season; thresholds hardcoded below the seasonal maximum would zero
+    # the molt probability for part of the season and stall development.
+    onset = params.phenology.molt_thermal_onset
+    bandwidth = params.phenology.molt_thermal_bandwidth
+    thermal_inhibition = if params.toggles.use_thermal_stress && bandwidth > 0.0 && current_temp > onset
+        max(0.0, 1.0 - ((current_temp - onset) / bandwidth)^2)
     else
         1.0
     end
@@ -512,7 +621,8 @@ function molt_probability(
         days_since_molt / min_intermolt
     end
 
-    lambda_molt = 0.15 * min(progress_ratio, 3.0) * thermal_inhibition
+    lambda_molt = params.organism.molt_hazard_coefficient *
+                     min(progress_ratio, params.organism.molt_progress_saturation) * thermal_inhibition
     p_molt = 1.0 - exp(-lambda_molt * params.simulation.dt)
 
     if p_molt < 0.0 || p_molt > 1.0
@@ -582,9 +692,11 @@ function perform_molt!(
     end
 
     condition_factor = if params.toggles.use_energetics
-        req_e = max(2.0, params.organism.energy_molt_slope * org.size)
+        req_e = max(params.organism.energy_molt_floor,
+                     params.organism.energy_molt_slope * org.size)
         cond_ratio = org.energy_reserve / req_e
-        0.85 + 0.15 * tanh(cond_ratio - 1.0)
+        base_fraction = params.organism.molt_energy_base_fraction
+        base_fraction + (1.0 - base_fraction) * tanh(cond_ratio - 1.0)
     else
         1.0
     end
@@ -619,60 +731,133 @@ function perform_molt!(
 end
 
 """
-    calculate_mortality_probability(org, temp, local_density, current_time; params=IBMParameters())
+    mortality_components(
+        org::Organism,
+        temp::Real,
+        local_density::Real,
+        current_time::Real;
+        params::IBMParameters = IBMParameters(),
+        density_feedback::Real = 1.0,
+        on_clamp = nothing
+    )
 
-Calculate comprehensive daily mortality probability across baseline predation,
-soft-shell post-molt vulnerability, starvation, thermal stress, senescence, and cannibalism.
+Per-cause daily mortality hazards for one organism, as a `NamedTuple`.
+
+Returns the seven component hazards (`baseline`, `predation`, `soft_shell`,
+`starvation`, `thermal`, `senescence`, `cannibalism`) plus `raw_total` before the
+cap and `total` after it.
+
+The breakdown exists so a death can be attributed to the hazard that actually
+produced it. The previous code computed a single summed probability and then
+attributed the death by a rule unrelated to that sum — `is_mature → senescence,
+else → predation` — so a juvenile that died of background baseline mortality was
+recorded as a predation death, and a mature individual that died of anything at
+all was recorded as a senescence death. The published death-cause counts were
+therefore fiction, and `deaths_starvation` and `deaths_thermal` were never
+incremented at all despite being declared and exported in the run output.
+
+See [`dominant_mortality_cause`](@ref) for the attribution convention.
+
+`density_feedback` multiplies the density-independent baseline hazards. Pass
+`benthic_density_feedback(model)` so that `benthic_carrying_capacity` regulates
+the individuated population; without it the baseline mortality is independent of
+density and carrying capacity has no effect once a cohort is fully individuated.
 """
-function calculate_mortality_probability(
+function mortality_components(
     org::Organism,
     temp::Real,
     local_density::Real,
     current_time::Real;
-    params::IBMParameters = IBMParameters()
+    params::IBMParameters = IBMParameters(),
+    density_feedback::Real = 1.0,
+    on_clamp = nothing
 )
     dt = params.simulation.dt
+    m = params.mortality
+    dpy = params.simulation.days_per_year
+    feedback = max(1.0, Float64(density_feedback))
+    # Report, rather than silently absorb, a hazard that reaches the cap. A
+    # capped probability is not a probability the model predicted: the individual
+    # was certain to die, and the reported value is an artifact of the guard. That
+    # indicates a mis-specified rate, and without a warning a run could clamp
+    # every step and still look clean.
+    #
+    # `maxlog = 1` keeps this to one line per session: a run where the cap binds
+    # daily would otherwise emit a warning per agent per day.
+    default_on_clamp = function (source, raw, cap)
+        @warn "daily mortality probability reached hazard_cap; the modelled hazard is at or above a certainty, so the reported probability is the cap, not the model" source =
+            source raw = raw cap = cap maxlog = 1
+        return nothing
+    end
+    report_clamp = (on_clamp === nothing) ? default_on_clamp : on_clamp
 
-    # 1. Baseline natural mortality modulated by individual mortality trait quantile
+    # Every hazard is capped: senescence and thermal stress are unbounded in their
+    # raw form, and a terminal-molt individual never molts again, so its time since
+    # ecdysis grows without limit and its senescence hazard would eventually exceed
+    # a daily probability of one.
+    cap = clamp(m.hazard_cap, 0.0, 1.0)
+
+    # 1. Baseline natural mortality modulated by individual mortality trait
+    #    quantile and by population density relative to carrying capacity
     q_mort = org.trait_mortality_quantile
     if q_mort <= 0.0 || q_mort >= 1.0
         error("trait_mortality_quantile must be strictly in (0, 1), received: $(q_mort)")
     end
-    individual_mort_factor = exp(0.25 * quantile(Normal(0.0, 1.0), q_mort))
-    base_daily = ((0.20 / 365.0) * individual_mort_factor) * dt
-    stage_multiplier = (org.stage < 6) ? 2.5 : 1.0
+    individual_mort_factor = exp(
+        m.baseline_trait_sigma * quantile(Normal(0.0, 1.0), q_mort)
+    )
+    base_daily = ((m.rate_baseline / dpy) * individual_mort_factor * feedback) * dt
+    stage_multiplier = (org.stage < params.organism.juvenile_max_stage) ?
+        m.baseline_juvenile_multiplier : 1.0
 
     # 2. Predation risk attenuated by size
-    size_excess = max(0.0, org.size - 5.0)
-    predation_risk = ((0.15 / 365.0) * exp(-0.03 * size_excess)) * dt
+    size_excess = max(0.0, org.size - m.predation_size_reference)
+    predation_risk = ((m.rate_predation / dpy) * exp(-m.predation_size_decay * size_excess)) * dt
 
-    # 3. Soft-shell vulnerability post-ecdysis
+    # 3. Soft-shell vulnerability post-ecdysis.
+    # Vulnerable only within `soft_shell_duration` days of the ecdysis, decaying
+    # with e-folding time `soft_shell_decay_days`. The window used to be ignored,
+    # so the hazard was nonzero forever: a long-lived individual kept accruing
+    # soft-shell risk at a rate set only by how long ago it last molted.
     days_since_molt = max(0.0, current_time - org.last_growth_event_time)
-    soft_shell_risk = ((0.12 / 365.0) * exp(-days_since_molt / 15.0)) * dt
+    soft_shell_risk = if days_since_molt > m.soft_shell_duration
+        0.0
+    else
+        tau = max(m.soft_shell_decay_days, eps())
+        ((m.rate_soft_shell / dpy) * exp(-days_since_molt / tau)) * dt
+    end
 
     # 4. Starvation mortality
     starvation_risk = if params.toggles.use_energetics && org.energy_reserve < 0.0
         deficit = -org.energy_reserve
-        crit_pool = max(0.5, org.mass * 0.05)
-        ((0.20 / 365.0) * (1.0 - exp(-deficit / crit_pool))) * dt
+        crit_pool = max(0.5, org.mass * m.starvation_critical_fraction)
+        ((m.rate_starvation / dpy) * (1.0 - exp(-deficit / crit_pool))) * dt
     else
         0.0
     end
 
     # 5. Thermal stress mortality
-    thermal_stress = if params.toggles.use_thermal_stress &&
-                        temp > params.mortality.temp_thermal_stress
-        ((0.05 / 365.0) * ((temp - params.mortality.temp_thermal_stress)^1.5)) * dt
+    thermal_stress = if params.toggles.use_thermal_stress && temp > m.temp_thermal_stress
+        raw = ((m.rate_thermal / dpy) *
+               ((temp - m.temp_thermal_stress)^m.thermal_exponent)) * dt
+        raw > cap && report_clamp(:thermal_stress, raw, cap)
+        clamp(raw, 0.0, cap)
     else
         0.0
     end
 
-    # 6. Senescence mortality for terminal molt adults
+    # 6. Senescence mortality for terminal molt adults.
+    #    Keyed on inferred shell age, not on time since the last ecdysis: those are
+    #    different quantities, and senescence is an age process. See
+    #    `shell_age_years` for what the previous formulation got wrong.
     senescence_risk = if params.toggles.use_senescence && org.is_mature
-        shell_age_years = days_since_molt / 365.0
-        thresh = params.mortality.senescence_age_threshold
-        if shell_age_years > thresh
-            ((0.08 / 365.0) * exp(0.80 * (shell_age_years - thresh))) * dt
+        age_years = shell_age_years(org, params)
+        thresh = m.senescence_age_threshold
+        if age_years > thresh
+            raw = ((m.rate_senescence / dpy) *
+                   exp(m.senescence_exp_rate * (age_years - thresh))) * dt
+            raw > cap && report_clamp(:senescence, raw, cap)
+            clamp(raw, 0.0, cap)
         else
             0.0
         end
@@ -681,21 +866,90 @@ function calculate_mortality_probability(
     end
 
     # 7. Cannibalism risk on small juveniles
-    cannibalism_risk = if params.toggles.use_cannibalism && org.size < 35.0 && local_density > 0.0
-        ((0.05 / 365.0) * min(local_density / 10.0, 2.0)) * dt
+    cannibalism_risk = if params.toggles.use_cannibalism &&
+                         org.size < m.cannibalism_size_threshold && local_density > 0.0
+        ((m.rate_cannibalism / dpy) *
+         min(local_density / m.cannibalism_density_reference, m.cannibalism_density_cap)) * dt
     else
         0.0
     end
 
-    total_prob = (base_daily * stage_multiplier) +
-                 predation_risk + soft_shell_risk + starvation_risk +
-                 thermal_stress + senescence_risk + cannibalism_risk
+    raw_total = (base_daily * stage_multiplier) +
+        predation_risk + soft_shell_risk + starvation_risk +
+        thermal_stress + senescence_risk + cannibalism_risk
+    total_prob = clamp(raw_total, 0.0, cap)
+    raw_total > cap && report_clamp(:total, raw_total, cap)
 
-    if total_prob < 0.0 || total_prob > 1.0
-        error("Total mortality probability $(total_prob) outside [0.0, 1.0]. Check mortality assumptions.")
+    return (
+        baseline = base_daily * stage_multiplier,
+        predation = predation_risk,
+        soft_shell = soft_shell_risk,
+        starvation = starvation_risk,
+        thermal = thermal_stress,
+        senescence = senescence_risk,
+        cannibalism = cannibalism_risk,
+        raw_total = raw_total,
+        total = total_prob
+    )
+end
+
+"""
+    dominant_mortality_cause(components) → Symbol
+
+Which hazard most plausibly caused a death, given [`mortality_components`](@ref).
+
+Dominant-cause attribution: the largest single component wins, rather than a
+fractional split across causes. A competing-risks decomposition would apportion
+one death across several causes, which the integer per-cause counters cannot
+represent and which would be a modelling claim stronger than the model supports —
+these hazards are summed as an approximation, not as mutually exclusive causes.
+
+Returns `:none` when every component is zero.
+"""
+function dominant_mortality_cause(components)
+    causes = (
+        :baseline, :predation, :soft_shell, :starvation,
+        :thermal, :senescence, :cannibalism
+    )
+    best = :none
+    best_value = 0.0
+    for cause in causes
+        v = getfield(components, cause)
+        if v > best_value
+            best = cause
+            best_value = v
+        end
     end
+    return best
+end
 
-    return total_prob
+"""
+    calculate_mortality_probability(org, temp, local_density, current_time;
+                                    params=IBMParameters(), density_feedback=1.0)
+
+Total daily mortality probability for one organism: baseline natural mortality,
+predation, soft-shell post-molt vulnerability, starvation, thermal stress,
+senescence and cannibalism, summed and capped.
+
+This is [`mortality_components`](@ref) reduced to its total. Call that directly
+when the per-cause breakdown is needed, so a death can be attributed to the
+hazard that produced it rather than inferred from the organism's maturity.
+"""
+function calculate_mortality_probability(
+    org::Organism,
+    temp::Real,
+    local_density::Real,
+    current_time::Real;
+    params::IBMParameters = IBMParameters(),
+    density_feedback::Real = 1.0,
+    on_clamp = nothing
+)
+    return mortality_components(
+        org, temp, local_density, current_time;
+        params = params,
+        density_feedback = density_feedback,
+        on_clamp = on_clamp
+    ).total
 end
 
 
@@ -714,11 +968,11 @@ function step_aggregate_groups!(
     behavior::SpeciesBehavior = get(abmproperties(model), :species_behavior, default_species_behavior())
 )
     dt = model.dt
+    params = model.params
     groups = model.aggregate_populations.groups
     isempty(groups) && return nothing
 
     nx, ny = size(model.temperature_field)
-    k_cap = model.params.environment.benthic_carrying_capacity
     surviving_groups = AggregateGroup[]
 
     for grp in groups
@@ -742,8 +996,9 @@ function step_aggregate_groups!(
             0.0015
         end
 
-        n_benthic = get(abmproperties(model), :n_benthic_organisms, 0)
-        density_feedback = 1.0 + (n_benthic / max(1.0, k_cap))
+        # Density feedback uses the whole benthic population, so carrying
+        # capacity constrains the juveniles as well as the individuals.
+        density_feedback = benthic_density_feedback(model)
         hazard_rate = base_m * density_feedback
         cumulative_hazard = hazard_rate * dt
 
@@ -767,19 +1022,19 @@ function step_aggregate_groups!(
         days_in_stage = max(0.0, model.current_time - grp.last_growth_time)
         d_metric, d_req, d_scale = if model.params.toggles.use_degree_days
             req_dd = required_degree_days(behavior, grp.stage)
-            (grp.degree_days, req_dd, max(1.0, 0.15 * req_dd))
+            (grp.degree_days, req_dd, max(1.0, params.mortality.aggregate_hazard_degree_days * req_dd))
         else
             min_days = min_intermolt_days(behavior, grp.stage)
-            (days_in_stage, min_days, max(1.0, 0.20 * min_days))
+            (days_in_stage, min_days, max(1.0, params.mortality.aggregate_hazard_intermolt * min_days))
         end
 
         diff = (d_metric - d_req) / d_scale
-        p_trans = if diff < -10.0
+        p_trans = if diff < -params.mortality.aggregate_transition_saturation
             0.0
-        elseif diff > 10.0
-            1.0 - exp(-0.35 * dt)
+        elseif diff > params.mortality.aggregate_transition_saturation
+            1.0 - exp(-params.mortality.aggregate_transition_hazard * dt)
         else
-            hazard = 0.35 / (1.0 + exp(-diff))
+            hazard = params.mortality.aggregate_transition_hazard / (1.0 + exp(-diff))
             1.0 - exp(-hazard * dt)
         end
 
@@ -809,14 +1064,26 @@ function step_aggregate_groups!(
                 )
                 model.aggregate_populations.next_group_id += 1
                 push!(surviving_groups, new_grp)
-                if next_stage == 1 || next_stage == 4
+                if next_stage == 1 ||
+                   next_stage == Int(params.species.benthic_anchor_stage)
                     model.total_recruits_settled += n_trans
                 end
-            elseif next_stage == 6
-                # Individuation into spatial Organism agents at stage 6
+            elseif next_stage == individuation_stage(params)
+                # Individuation into spatial `Organism` agents, at the configured
+                # juvenile->benthic boundary. This was the literal `6`, so
+                # configuring `juvenile_max_stage` to anything else meant the
+                # aggregate cohort advanced to a stage nothing was watching for and
+                # no individual was ever individuated: the benthic population
+                # received no recruits at all, silently.
+                ind_stage = next_stage
                 for _ in 1:n_trans
                     rec_sex = (rand(abmrng(model)) < 0.5) ? male : female
-                    mean_log_sz = log(stage_size(behavior, 6, rec_sex; type = :random, rng = abmrng(model)))
+                    mean_log_sz = log(
+                        stage_size(
+                            behavior, ind_stage, rec_sex;
+                            type = :random, rng = abmrng(model)
+                        )
+                    )
                     rec_size = exp(rand(abmrng(model), Normal(mean_log_sz, 0.04)))
                     rec_mass = calculate_mass(behavior, rec_size, rec_sex; mat = 0, stochastic = true, rng = abmrng(model))
 
@@ -828,7 +1095,7 @@ function step_aggregate_groups!(
                     new_org = add_agent!(
                         (rx, ry),
                         model,
-                        6,
+                        ind_stage,
                         rec_sex,
                         grp.age_days,
                         rec_size,

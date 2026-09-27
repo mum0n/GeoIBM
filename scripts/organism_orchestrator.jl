@@ -41,7 +41,7 @@ to vectors of candidate values.
 
 # Supported Formats:
 - Comma-separated list: `"temp_base=3.5,4.5,5.5;food_max=8.0,10.0"`
-- Range specification: `"temp_base=3.0:1.0:5.0;carrying_capacity=200.0,300.0"`
+- Range specification: `"temp_base=3.0:1.0:5.0;benthic_carrying_capacity=200.0,300.0"`
 
 # Returns
 `Dict{Symbol, Vector{Float64}}` of parameter candidates.
@@ -146,7 +146,7 @@ function parse_orchestrator_cli(args::Vector{String})
         :stop_on_first_pass => true,
         :mode => :direct,
         :output_dir => projectdir("outputs"),
-        :save_best => "snowcrab_orchestrated.config",
+        :save_best => "orchestrated_run.toml",
         :plot_best => true,
         :help => false
     )
@@ -221,7 +221,7 @@ function parse_orchestrator_cli(args::Vector{String})
             if parsed_d !== nothing
                 config[:days] = parsed_d
             end
-        elseif k in ("n_agents", "agents")
+        elseif k == "n_agents"
             parsed_a = tryparse(Int, v)
             if parsed_a !== nothing
                 config[:n_agents] = parsed_a
@@ -266,7 +266,7 @@ Examples:
 
     # 3. Explore multi-parameter space and continue across all trials without early stop:
     julia --project=. scripts/organism_orchestrator.jl \\
-        --vary="temp_base=4.0,5.0;food_max=8.0,12.0;carrying_capacity=250.0,350.0" \\
+        --vary="temp_base=4.0,5.0;food_max=8.0,12.0;benthic_carrying_capacity=250.0,350.0" \\
         --max_trials=10 --no-stop_on_first_pass
 
 Multi-Attribute Biological Stopping Criteria:
@@ -313,50 +313,32 @@ function execute_trial(
 )
     # 1. Merge baseline configuration with trial overrides
     merged_config = copy(base_config)
+    trial_keys = Set{Symbol}()
     for (k, v) in trial_params
-        # If it's a known short-hand alias, map to the official IBMParameters name
-        target_key = if k === :temp
-            :temp_base
-        elseif k === :temp_amp
-            :temp_amplitude
-        elseif k === :fishing_prob
-            :fishing_probability_daily
-        elseif k === :carrying_capacity
-            :benthic_carrying_capacity
-        elseif k === :molt_scale
-            :molt_probability_scale
-        else
-            k
-        end
-        merged_config[target_key] = v
+        merged_config[k] = v
+        push!(trial_keys, k)
     end
     merged_config[:days] = days
     merged_config[:n_agents] = n_agents
     merged_config[:save] = false
     merged_config[:plot] = false
+    push!(trial_keys, :days, :n_agents, :save, :plot)
+    # Trial parameters outrank the baseline, so name them as the explicit layer.
+    sync_grid_dimensions!(merged_config; explicit = trial_keys)
 
     # 2. Build model parameters and initialize simulation
     params = IBMParameters(merged_config)
     seed = get(merged_config, :seed, 1234) + trial_num
 
     model = initialize_model(
-        N_agents = n_agents,
-        dims = merged_config[:grid],
-        dt_days = merged_config[:dt],
+        n_agents = n_agents,
+        grid = merged_config[:grid],
+        dt = merged_config[:dt],
         params = params,
-        rng_seed = seed
+        seed = seed
     )
 
-    adata = [
-        (:stage, length),
-        (:size, safe_mean),
-        (:mass, safe_mean),
-        (is_adult, count),
-        (is_adult_male, count),
-        (is_adult_female, count),
-        (is_legal_male, count),
-        (:stage, safe_mean)
-    ]
+    adata = default_agent_observations(params)
     mdata = [
         :total_eggs_spawned,
         :total_recruits_settled,
@@ -400,7 +382,7 @@ end
 
 Main execution routine for the organism simulation orchestrator.
 """
-function main()
+function main_orchestrator()
     cli_opts = parse_orchestrator_cli(ARGS)
 
     if cli_opts[:help]
@@ -562,5 +544,5 @@ function main()
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    main()
+    main_orchestrator()
 end

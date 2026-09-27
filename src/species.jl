@@ -50,22 +50,23 @@ for a given developmental stage and sex.
 Uses the theoretical growth curves defined by the species parameters.
 """
 function stage_size_lower_bound(behavior::SpeciesBehaviorImpl, stage::Real, sex)
+    p = behavior.params
     is_female = (sex == 1 || sex == :female || Symbol(sex) == :female)
-    if is_female
-        if stage < 4.0
-            return (stage <= 1.5) ? 0.95 : (stage <= 2.5 ? 1.45 : 2.50)
+
+    # Pre-benthic stages come from a small lookup table split by breakpoints.
+    if stage < p.benthic_anchor_stage
+        sizes = p.size_lb_immature_sizes
+        isempty(sizes) && return 0.0
+        for (index, breakpoint) in enumerate(p.size_lb_immature_breakpoints)
+            stage <= breakpoint && return sizes[min(index, length(sizes))]
         end
-        i = stage - 4.0
-        # Female: ln(CW) = 2.198848 + 0.315026 * (stage - 4)
-        return exp(2.198848 + 0.315026 * i)
-    else
-        if stage < 4.0
-            return (stage <= 1.5) ? 0.95 : (stage <= 2.5 ? 1.45 : 2.50)
-        end
-        i = stage - 3.0
-        # Male: ln(CW) = 1.917564 + 0.298914 * (stage - 3)
-        return exp(1.917564 + 0.298914 * i)
+        return sizes[end]
     end
+
+    intercept = is_female ? p.size_lb_female_intercept : p.size_lb_male_intercept
+    slope = is_female ? p.size_lb_female_slope : p.size_lb_male_slope
+    anchor = is_female ? p.size_lb_female_anchor_stage : p.size_lb_male_anchor_stage
+    return exp(intercept + slope * (stage - anchor))
 end
 
 """
@@ -123,30 +124,37 @@ function growth_increment(
     end
     z2 = rand(rng, Normal(0.0, 1.0))
 
-    params = behavior.params
+    sp = behavior.params
     if !is_female
-        intercept = params.growth_int_male + params.growth_beta1_male * z1
-        slope = params.growth_slp_male + params.growth_beta2_male * z1 +
-                params.growth_beta3_male * z2
-        mat_effect = (mat == 1) ? rand(rng, Normal(-0.13564, 0.00922)) : 0.0
+        intercept = sp.growth_int_male + sp.growth_beta1_male * z1
+        slope = sp.growth_slp_male + sp.growth_beta2_male * z1 +
+                sp.growth_beta3_male * z2
+        mat_effect = (mat == 1) ?
+            rand(rng, Normal(sp.growth_maturation_penalty_male_mean,
+                             sp.growth_maturation_penalty_male_sd)) : 0.0
     else
-        intercept = params.growth_int_female + params.growth_beta1_female * z1
-        slope = params.growth_slp_female + params.growth_beta2_female * z1 +
-                params.growth_beta3_female * z2
-        mat_effect = (mat == 1) ? rand(rng, Normal(-0.1310, 0.0252)) : 0.0
+        intercept = sp.growth_int_female + sp.growth_beta1_female * z1
+        slope = sp.growth_slp_female + sp.growth_beta2_female * z1 +
+                sp.growth_beta3_female * z2
+        mat_effect = (mat == 1) ?
+            rand(rng, Normal(sp.growth_maturation_penalty_female_mean,
+                             sp.growth_maturation_penalty_female_sd)) : 0.0
     end
 
     cond_factor = Float64(condition)
     if cond_factor <= 0.0
         error("Nutritional condition factor must be positive, received: $(cond_factor)")
     end
-    cond_mod = 0.05 * (cond_factor - 1.0)
-    temp_mod = (temp !== nothing) ? -0.004 * (Float64(temp) - 4.0) : 0.0
-    residual = rand(rng, Normal(0.0, 0.040))
+    cond_mod = sp.growth_condition_coefficient * (cond_factor - 1.0)
+    temp_mod = (temp !== nothing) ?
+        sp.growth_temperature_coefficient *
+        (Float64(temp) - sp.growth_temperature_reference) : 0.0
+    residual = rand(rng, Normal(0.0, sp.growth_residual_sd))
 
     log_size_next = intercept + slope * log_size + mat_effect + cond_mod +
                     temp_mod + residual
-    min_expansion = (mat == 1) ? 0.06 : 0.12
+    min_expansion = (mat == 1) ? sp.growth_min_expansion_mature :
+                                 sp.growth_min_expansion_immature
     return max(log_size_next, log_size + log(1.0 + min_expansion))
 end
 
@@ -166,7 +174,8 @@ growth_schedule() = growth_schedule(SpeciesBehaviorImpl())
     maturity(behavior::SpeciesBehaviorImpl, sex, log_size::Real; temp=nothing, ...)
 
 Calculate probability of morphometric maturity during molt.
-Minimum size gate: Stages 4-6 (size < 35 mm) cannot undergo terminal molt.
+Individuals below the `maturity_size_gate` species parameter cannot attain
+maturity regardless of the ogive.
 """
 function maturity(
     behavior::SpeciesBehaviorImpl,
@@ -177,7 +186,8 @@ function maturity(
     rng::AbstractRNG = Random.default_rng(),
     deterministic::Bool = false
 )
-    if log_size < log(35.0)
+    size_gate = behavior.params.maturity_size_gate
+    if size_gate > 0.0 && log_size < log(size_gate)
         return 0.0
     end
 
@@ -232,8 +242,9 @@ function maturity(
     end
 
     l50 = if temp !== nothing
-        t_val = Float64(temp)
-        max(35.0, l50_base - 2.0 * (t_val - 4.0))
+        shifted = l50_base + behavior.params.maturity_l50_temp_slope *
+                  (Float64(temp) - behavior.params.maturity_temp_reference)
+        max(size_gate, shifted)
     else
         l50_base
     end
@@ -296,16 +307,18 @@ function fecundity(
         is_primiparous
     end
 
+    params = behavior.params
     if param_type == "st.marie"
-        return sz^2.725 * (10.0^0.7311)
+        return sz^params.fecundity_stmarie_exponent *
+               (10.0^params.fecundity_stmarie_coefficient)
     elseif param_type == "moncton"
-        params = behavior.params
         if primiparous
             intercept = if !isnothing(fecundity_quantile)
                 if fecundity_quantile <= 0.0 || fecundity_quantile >= 1.0
                     error("fecundity_quantile must be strictly in (0, 1), received: $(fecundity_quantile)")
                 end
-                quantile(Normal(params.fecundity_primiparous_intercept, 0.05),
+                quantile(Normal(params.fecundity_primiparous_intercept,
+                                    params.fecundity_intercept_sd),
                          Float64(fecundity_quantile))
             else
                 params.fecundity_primiparous_intercept
@@ -320,7 +333,8 @@ function fecundity(
                 if fecundity_quantile <= 0.0 || fecundity_quantile >= 1.0
                     error("fecundity_quantile must be strictly in (0, 1), received: $(fecundity_quantile)")
                 end
-                quantile(Normal(params.fecundity_multiparous_intercept, 0.05),
+                quantile(Normal(params.fecundity_multiparous_intercept,
+                                    params.fecundity_intercept_sd),
                          Float64(fecundity_quantile))
             else
                 params.fecundity_multiparous_intercept
@@ -329,8 +343,10 @@ function fecundity(
             fec_log10 = log10(sz) * slope + intercept
             err = deterministic ? 0.0 :
                 rand(rng, Normal(0.0, params.fecundity_multiparous_err))
-            senescence = (shell_age > 3.0) ?
-                max(0.60, 1.0 - 0.08 * (shell_age - 3.0)) : 1.0
+            senescence = (shell_age > params.fecundity_senescence_threshold) ?
+                max(params.fecundity_senescence_floor,
+                    1.0 - params.fecundity_senescence_rate *
+                    (shell_age - params.fecundity_senescence_threshold)) : 1.0
             return 10.0^(fec_log10 + err) * senescence
         end
     else
@@ -393,8 +409,34 @@ function selectivity(
     return 1.0 ./ (1.0 .+ exp.(-diff))
 end
 
-selectivity(size::Real; kwargs...) = selectivity(SpeciesBehaviorImpl(), size; kwargs...)
-selectivity(size::AbstractArray; kwargs...) = selectivity(SpeciesBehaviorImpl(), size; kwargs...)
+"""
+    selectivity(size; params = nothing, s50 = nothing, s50_sigma = nothing, ...)
+
+Fishery retention probability at `size`, using `params` (a `SpeciesParams`) to
+supply the defaults.
+
+Mirrors the `maturity` and `fecundity` convenience wrappers. The previous
+wrappers forwarded every keyword to the behavior method, which accepts only
+`s50` and `s50_sigma`, so a caller that passed `params = ...` — the natural way to
+compare parameter sets — got a `MethodError`.
+"""
+function selectivity(
+    size::Real;
+    params::Union{Nothing, SpeciesParams} = nothing,
+    kwargs...
+)
+    behavior = (params === nothing) ? SpeciesBehaviorImpl() : SpeciesBehaviorImpl(params)
+    return selectivity(behavior, size; kwargs...)
+end
+
+function selectivity(
+    size::AbstractArray;
+    params::Union{Nothing, SpeciesParams} = nothing,
+    kwargs...
+)
+    behavior = (params === nothing) ? SpeciesBehaviorImpl() : SpeciesBehaviorImpl(params)
+    return selectivity(behavior, size; kwargs...)
+end
 
 """
     calculate_mass(behavior::SpeciesBehaviorImpl, size::Real, sex; mat=0, stochastic=false, rng=...)
@@ -545,65 +587,67 @@ build_stages(; kwargs...) = build_stages(SpeciesBehaviorImpl(); kwargs...)
 # -----------------------------------------------------------------------------
 
 """
-    min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
+    stage_schedule_lookup(schedule::AbstractVector, stage::Integer)
 
-Return the minimum required intermolt duration in days for given stage.
+Index a stage-indexed schedule vector, clamping out-of-range stages to the
+first or last entry so that terminal stages reuse the final schedule value.
 """
-function min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
-    if stage <= 0
-        return 60.0
-    elseif stage == 1
-        return 60.0
-    elseif stage == 2
-        return 75.0
-    elseif stage == 3
-        return 90.0
-    elseif stage == 4
-        return 105.0
-    elseif stage == 5
-        return 120.0
-    elseif stage == 6
-        return 150.0
-    elseif stage == 7
-        return 200.0
-    else
-        return 300.0
-    end
+function stage_schedule_lookup(schedule::AbstractVector, stage::Integer)
+    isempty(schedule) && error("stage schedule must not be empty")
+    idx = clamp(Int(stage), 0, length(schedule) - 1) + 1
+    return Float64(schedule[idx])
 end
 
+"""
+    min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
+
+Return the minimum required intermolt duration in days for `stage`, read from
+the `intermolt_days_schedule` species parameter.
+"""
+min_intermolt_days(behavior::SpeciesBehavior, stage::Int) =
+    stage_schedule_lookup(behavior.params.intermolt_days_schedule, stage)
+
 min_intermolt_days(stage::Int) = min_intermolt_days(SpeciesBehaviorImpl(), stage)
+
+function min_intermolt_days(behavior::SpeciesBehavior, stage_cat::LifeStage, stage::Int = 0)
+    larval = behavior.params.intermolt_days_larval
+    if stage_cat === egg
+        return stage_schedule_lookup(larval, 0)
+    elseif stage_cat === zoea
+        return stage_schedule_lookup(larval, 1)
+    elseif stage_cat === megalopa
+        return stage_schedule_lookup(larval, 2)
+    end
+    return min_intermolt_days(behavior, stage)
+end
+
 min_intermolt_days(stage_cat::LifeStage, stage::Int = 0) =
     min_intermolt_days(SpeciesBehaviorImpl(), stage_cat, stage)
 
 """
     required_degree_days(behavior::SpeciesBehavior, stage::Int)
 
-Calculate cumulative physiological thermal degree-days (°C·days above 0°C)
-required to complete pre-ecdysial preparation at `stage`.
+Cumulative physiological thermal degree-days (°C·days above 0°C) required to
+complete pre-ecdysial preparation at `stage`, read from the
+`degree_days_schedule` species parameter.
 """
-function required_degree_days(behavior::SpeciesBehavior, stage::Int)
-    if stage <= 0
-        return 150.0
-    elseif stage == 1
-        return 200.0
-    elseif stage == 2
-        return 250.0
-    elseif stage == 3
-        return 300.0
-    elseif stage == 4
-        return 320.0
-    elseif stage == 5
-        return 350.0
-    elseif stage == 6
-        return 550.0
-    elseif stage == 7
-        return 750.0
-    else
-        return 950.0
-    end
-end
+required_degree_days(behavior::SpeciesBehavior, stage::Int) =
+    stage_schedule_lookup(behavior.params.degree_days_schedule, stage)
 
 required_degree_days(stage::Int) = required_degree_days(SpeciesBehaviorImpl(), stage)
+
+function required_degree_days(behavior::SpeciesBehavior, stage_cat::LifeStage, stage::Int = 0)
+    larval = behavior.params.degree_days_larval
+    if stage_cat === egg
+        return stage_schedule_lookup(larval, 0)
+    elseif stage_cat === zoea
+        return stage_schedule_lookup(larval, 1)
+    elseif stage_cat === megalopa
+        return stage_schedule_lookup(larval, 2)
+    end
+    return required_degree_days(behavior, stage)
+end
+
 required_degree_days(stage_cat::LifeStage, stage::Int = 0) =
     required_degree_days(SpeciesBehaviorImpl(), stage_cat, stage)
 
@@ -692,8 +736,12 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
                     cx = min(max(org.pos[1], 1), size(model.temperature_field, 1))
                     cy = min(max(org.pos[2], 1), size(model.temperature_field, 2))
                     local_temp = model.temperature_field[cx, cy]
-                    tau_incubation = 365.0 * (5.0 / max(1.0, local_temp))^0.30
-                    incubation_noise = rand(abmrng(model), Normal(0.0, 5.0))
+                    phen = model.params.phenology
+                    tau_incubation = phen.brood_duration_base *
+                                     (phen.brood_temperature_reference /
+                                      max(1.0, local_temp))^phen.brood_temperature_exponent
+                    incubation_noise = rand(abmrng(model),
+                                            Normal(0.0, phen.brood_duration_sd))
 
                     org.egg_count = max(round(Int, egg_estimate), 1000)
                     org.hatch_day = model.current_time + tau_incubation + incubation_noise
@@ -716,8 +764,8 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
                     id = model.aggregate_populations.next_group_id,
                     stage = 0,
                     abundance = Float64(org.egg_count),
-                    size = 0.60,
-                    mass = 0.00007,
+                    size = model.params.organism.egg_size_mm,
+                    mass = model.params.organism.egg_mass_g,
                     age_days = 0.0,
                     degree_days = 0.0,
                     last_growth_time = model.current_time,

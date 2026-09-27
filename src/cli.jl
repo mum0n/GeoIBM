@@ -17,6 +17,109 @@ using CairoMakie
 import GLMakie
 
 """
+    resolve_configuration_files(; explicit_path="")
+
+Locate the baseline and overlay TOML configuration files.
+
+Configurations are always applied in two layers, lowest priority first:
+
+1. the baseline, `default.toml`, which records every declared parameter, and
+2. an overlay holding the values that differ for a particular run.
+
+`explicit_path` names the overlay. If it *is* the baseline, the conventional
+`snowcrab.toml` sibling is used as the overlay instead, so `--config` always
+selects the highest-priority layer. Without `explicit_path` both files are
+located under `configs/` relative to the working directory and the package root.
+
+The previous behaviour treated the explicit path as the baseline and overlaid
+whatever other `*.toml` sat beside it. Passing a species file therefore loaded
+`default.toml` *after* it, so the baseline silently overwrote the very file the
+user had asked for.
+
+# Returns
+`(baseline, overlay)` tuple of paths; either entry is `""` when absent. The
+baseline is always loaded first and the overlay second.
+"""
+function resolve_configuration_files(; explicit_path::AbstractString = "")
+    dir = if isempty(explicit_path)
+        ""
+    else
+        isdir(explicit_path) ? explicit_path : dirname(explicit_path)
+    end
+
+    if !isempty(dir) && isdir(dir)
+        baseline = joinpath(dir, "default.toml")
+        isfile(baseline) || (baseline = "")
+
+        overlay = if isempty(explicit_path)
+            species = joinpath(dir, "snowcrab.toml")
+            isfile(species) ? species : ""
+        elseif isfile(explicit_path) && abspath(explicit_path) != abspath(baseline)
+            String(explicit_path)
+        else
+            # The explicit path is the baseline, so the species sibling overlays it.
+            species = joinpath(dir, "snowcrab.toml")
+            isfile(species) ? species : ""
+        end
+
+        return (String(baseline), String(overlay))
+    end
+
+    for root in (pwd(), joinpath(@__DIR__, ".."))
+        candidate = joinpath(root, "configs", "default.toml")
+        isfile(candidate) || continue
+        species = joinpath(root, "configs", "snowcrab.toml")
+        overlay = isfile(species) ? species : ""
+        if !isempty(explicit_path) && isfile(explicit_path) &&
+           abspath(explicit_path) != abspath(candidate)
+            return (String(candidate), String(explicit_path))
+        end
+        return (String(candidate), String(overlay))
+    end
+    return ("", isfile(explicit_path) ? String(explicit_path) : "")
+end
+
+"""
+    coerce_config_value(::Type{T}, raw::AbstractString)
+
+Convert a command-line string into the declared parameter type `T`.
+
+The CLI accepts every parameter that the structs declare, so values must be
+coerced to the same type the struct field expects. Without this, a numeric
+parameter arriving as `String` would either fail deep inside a constructor or be
+silently stored as text.
+"""
+function coerce_config_value(::Type{T}, raw::AbstractString) where {T}
+    text = strip(String(raw))
+    if T === Bool
+        lowered = lowercase(text)
+        return !(lowered in ("false", "0", "no", "off", ""))
+    elseif T === Int
+        return parse(Int, text)
+    elseif T === Float64
+        return parse(Float64, text)
+    elseif T === String
+        return text
+    elseif T <: Tuple
+        parts = parse.(Int, [strip(p) for p in split(replace(text, r"[\(\)\[\]]" => ""), ',')])
+        return T(parts)
+    elseif T <: AbstractVector
+        if occursin(',', text) || occursin(';', text)
+            tokens = [strip(p) for p in split(replace(text, ',' => ';'), ';') if !isempty(strip(p))]
+        else
+            tokens = split(text)
+        end
+        if eltype(T) === Float64
+            return T(parse.(Float64, tokens))
+        elseif eltype(T) === Int
+            return T(parse.(Int, tokens))
+        end
+        return T(tokens)
+    end
+    return convert(T, text)
+end
+
+"""
     parse_cli_args(args::Vector{String})
 
 Parse command-line argument vector into a configuration dictionary.
@@ -32,7 +135,10 @@ Follows a strict three-tier precedence hierarchy:
 # Returns
 `Dict{Symbol, Any}` containing simulation configuration.
 """
-function parse_cli_args(args::Vector{String})
+function parse_cli_args(args::AbstractVector)
+    # Accept any vector of strings, including the `[]` literal, so callers do not
+    # have to annotate the element type.
+    argv = String[String(a) for a in args]
     config = default_ibm_configuration()
     config[:help] = false
     config[:config_file] = ""
@@ -40,7 +146,7 @@ function parse_cli_args(args::Vector{String})
     config[:gui] = false
 
     function extract_key_val(idx::Int)
-        tok = args[idx]
+        tok = argv[idx]
         if contains(tok, '=')
             parts = split(tok, '=', limit = 2)
             k_str = lstrip(parts[1], '-')
@@ -48,8 +154,8 @@ function parse_cli_args(args::Vector{String})
             return (k_str, v_str, idx)
         elseif startswith(tok, '-')
             k_str = lstrip(tok, '-')
-            if idx < length(args) && !startswith(args[idx + 1], '-')
-                return (k_str, args[idx + 1], idx + 1)
+            if idx < length(argv) && !startswith(argv[idx + 1], '-')
+                return (k_str, argv[idx + 1], idx + 1)
             else
                 return (k_str, "true", idx)
             end
@@ -58,54 +164,48 @@ function parse_cli_args(args::Vector{String})
         end
     end
 
+    # Pre-scan for `--config` so the configuration files are located before the
+    # main loop runs, since a file value has lower precedence than a command-line
+    # value and must be in place first. `break` on the first match is deliberate
+    # only in the sense that a single `--config` is the documented form; taking the
+    # last match instead makes a repeated flag behave like every other one, where
+    # the later occurrence wins.
     custom_config_path = ""
     idx = 1
     while idx <= length(args)
         k_str, v_str, next_idx = extract_key_val(idx)
-        if k_str in ("config", "c")
+        if k_str == "config"
             custom_config_path = v_str
-            break
         end
         idx = (next_idx > idx) ? (next_idx + 1) : (idx + 1)
     end
 
-    config_file_to_load = if !isempty(custom_config_path)
-        custom_config_path
-    else
-        candidates = [
-            joinpath(pwd(), "organism_ibm.config"),
-            joinpath(pwd(), "scripts", "organism_ibm.config"),
-            joinpath(pwd(), "scripts", "snowcrab_ibm.config"),
-            joinpath(@__DIR__, "..", "scripts", "organism_ibm.config"),
-            joinpath(@__DIR__, "..", "scripts", "snowcrab_ibm.config")
-        ]
-        found = ""
-        for c in candidates
-            if isfile(c)
-                found = c
-                break
-            end
-        end
-        found
-    end
+    default_config, species_config = resolve_configuration_files(
+        explicit_path = custom_config_path
+    )
 
-    if !isempty(config_file_to_load) && isfile(config_file_to_load)
-        config[:config_file] = config_file_to_load
-        file_cfg = load_ibm_configuration(config_file_to_load)
+    for path in (default_config, species_config)
+        isempty(path) && continue
+        isfile(path) || continue
+        file_cfg = load_ibm_configuration(path; base_config = config)
         for (k, v) in file_cfg
             config[k] = v
         end
     end
+    if !isempty(default_config)
+        config[:config_file] = default_config
+    end
+    if !isempty(species_config)
+        config[:species_config_file] = species_config
+    end
 
-    if haskey(config, :fishing_probability_daily) && !haskey(config, :fishing_prob)
-        config[:fishing_prob] = config[:fishing_probability_daily]
-    end
-    if haskey(config, :temp_amplitude) && !haskey(config, :temp_amp)
-        config[:temp_amp] = config[:temp_amplitude]
-    end
-    if haskey(config, :benthic_carrying_capacity) && !haskey(config, :carrying_capacity)
-        config[:carrying_capacity] = config[:benthic_carrying_capacity]
-    end
+    sync_grid_dimensions!(config)
+
+    # Command-line arguments form the highest-precedence layer. Snapshot the
+    # reconciled state so the keys this layer actually changes can be identified
+    # afterwards, and pass them to the final reconcile so an explicit alias on the
+    # command line is not overwritten by a canonical name inherited from a file.
+    before_cli = copy(config)
 
     i = 1
     while i <= length(args)
@@ -116,70 +216,54 @@ function parse_cli_args(args::Vector{String})
             continue
         end
 
-        if k_str in ("help", "h")
+        # Only the flags that are not declared parameters are handled by name.
+        # Every declared parameter reaches the generic branch below, which looks
+        # the name up in the parameter structs and coerces the value to the field
+        # type. That keeps the command line automatically in step with the
+        # structs, so a new parameter is settable without editing this parser and
+        # an unknown name is reported rather than silently dropped.
+        if k_str == "help"
             config[:help] = true
-        elseif k_str in ("gui", "interactive")
+        elseif k_str == "gui"
             config[:gui] = (lowercase(v_str) != "false")
-        elseif k_str == "days"
-            config[:days] = parse(Int, v_str)
-        elseif k_str in ("n_agents", "agents", "n")
-            config[:n_agents] = parse(Int, v_str)
+        elseif k_str == "config"
+            # Already consumed by the pre-scan that located the configuration
+            # files; it is recorded on the config dict rather than set here.
         elseif k_str == "grid"
-            coords = parse.(Int, split(replace(v_str, r"[\(\)\[\]]" => ""), ','))
-            config[:grid] = (coords[1], coords[2])
-        elseif k_str == "temp_base"
-            config[:temp_base] = parse(Float64, v_str)
-        elseif k_str in ("temp_amp", "temp_amplitude")
-            config[:temp_amp] = parse(Float64, v_str)
-            config[:temp_amplitude] = parse(Float64, v_str)
-        elseif k_str in ("fishing_prob", "harvest_prob")
-            config[:fishing_prob] = parse(Float64, v_str)
-            config[:fishing_probability_daily] = parse(Float64, v_str)
-        elseif k_str in ("carrying_capacity", "k_cap")
-            config[:carrying_capacity] = parse(Float64, v_str)
-            config[:benthic_carrying_capacity] = parse(Float64, v_str)
-        elseif k_str == "dt"
-            config[:dt] = parse(Float64, v_str)
-        elseif k_str in ("seed", "rng_seed")
-            config[:seed] = parse(Int, v_str)
-        elseif k_str == "save"
-            config[:save] = (lowercase(v_str) != "false")
-        elseif k_str == "save_file"
-            config[:save_file] = v_str
-        elseif k_str in ("frequency_days", "save_freq")
-            config[:frequency_days] = parse(Float64, v_str)
-        elseif k_str == "snapshot_day"
-            config[:snapshot_day] = parse(Float64, v_str)
-        elseif k_str == "plot"
-            config[:plot] = (lowercase(v_str) != "false")
-        elseif k_str in ("animate", "video")
-            config[:animate] = (lowercase(v_str) != "false")
-        elseif k_str in ("animation_file", "video_file")
-            config[:animation_file] = v_str
-        elseif k_str == "anim_frames"
-            config[:anim_frames] = parse(Int, v_str)
-        elseif k_str == "anim_dt"
-            config[:anim_dt] = parse(Int, v_str)
-        elseif k_str == "anim_fps"
-            config[:anim_fps] = parse(Int, v_str)
-        elseif k_str == "anim_field"
-            config[:anim_field] = v_str
-        elseif k_str == "output_dir"
-            config[:output_dir] = v_str
-        elseif k_str in ("use_energetics", "energetics")
-            config[:use_energetics] = (lowercase(v_str) != "false")
-        elseif k_str in ("use_thermal_stress", "thermal_stress")
-            config[:use_thermal_stress] = (lowercase(v_str) != "false")
-        elseif k_str in ("use_food_dynamics", "food_dynamics")
-            config[:use_food_dynamics] = (lowercase(v_str) != "false")
-        elseif k_str in ("use_habitat_taxis", "habitat_taxis")
-            config[:use_habitat_taxis] = (lowercase(v_str) != "false")
-        elseif k_str in ("use_cannibalism", "cannibalism")
-            config[:use_cannibalism] = (lowercase(v_str) != "false")
-        elseif k_str in ("use_senescence", "senescence")
-            config[:use_senescence] = (lowercase(v_str) != "false")
+            # `grid` is the `(nx, ny)` pair form of the `grid_nx`/`grid_ny`
+            # parameters; `sync_grid_dimensions!` propagates it to both.
+            parts = parse.(Int, [strip(p) for p in split(replace(v_str, r"[\(\)\[\]]" => ""), ',')])
+            config[:grid] = (parts[1], parts[2])
+        else
+            sym_k = Symbol(k_str)
+            declared = config_field_type(sym_k)
+            if declared === nothing
+                # A CLI switch that reaches the generic branch has already been
+                # consumed (like `--config`, which the pre-scan above uses to
+                # locate the configuration files). Reporting it as an unrecognized
+                # parameter would tell the user to fix a spelling that is correct,
+                # and the message names a different line from the one that made the
+                # decision. `cli_switch_keys()` is the authority on which names are
+                # command-line switches that never appear in a config file.
+                if sym_k in cli_switch_keys()
+                    @debug "configuration switch already handled" key = k_str
+                else
+                    @warn "Ignoring unrecognized configuration key; expected an exact parameter name" key =
+                        k_str
+                end
+            else
+                config[sym_k] = coerce_config_value(declared, v_str)
+            end
         end
     end
+
+    cli_keys = Set{Symbol}()
+    for (key, value) in config
+        if !haskey(before_cli, key) || !isequal(before_cli[key], value)
+            push!(cli_keys, key)
+        end
+    end
+    sync_grid_dimensions!(config; explicit = cli_keys)
 
     return config
 end
@@ -188,9 +272,11 @@ end
     display_cli_help()
 
 Print detailed command-line interface usage instructions.
+
+Takes an `io` so the text can be captured, matching `summarize_empirical_model`.
 """
-function display_cli_help()
-    println("""
+function display_cli_help(io::IO = stdout)
+    println(io, """
 ================================================================================
   ORGANISM INDIVIDUAL-BASED MODEL (IBM) - COMMAND LINE INTERFACE
 ================================================================================
@@ -198,71 +284,93 @@ Usage:
   model_agent [OPTIONS]
   julia scripts/organism_ibm.jl [OPTIONS]
 
-Options:
-  --config=<Path>, -c <Path> Configuration file (TOML format)
-  --gui, --interactive       Launch real-time interactive multi-dashboard GUI
-  --days=<Int>               Total simulation days (default: 730)
-  --n_agents=<Int>, -n <Int> Initial population size (default: 300)
-  --grid=<Nx,Ny>             Spatial grid dimensions (default: 100,100)
-  --temp_base=<Float>        Mean bottom water temperature in °C (default: 5.0)
-  --temp_amp=<Float>         Annual temperature amplitude in °C (default: 4.0)
-  --fishing_prob=<Float>     Daily commercial harvest probability (default: 0.0005)
-  --carrying_capacity=<Float> Benthic carrying capacity per cell (default: 1000.0)
-  --dt=<Float>               Simulation time step in days (default: 1.0)
-  --seed=<Int>               Random seed for reproducibility (default: 42)
-  --save                     Save annual population indicators to CSV (default: true)
-  --save_file=<Path>         Output filename for simulation results CSV
-  --plot                     Export diagnostic figures and dashboard (default: true)
-  --animate, --video         Record simulation video animation (.mp4)
-  --output_dir=<Path>        Output directory for figures and data (default: outputs)
-  --help, -h                 Show this help message
+Every parameter accepts exactly one name, matching the field names declared in
+`configs/default.toml` and the parameter structs. There are no abbreviations or
+alternative spellings: an unrecognized name is reported and ignored.
+
+Flags:
+  --config=<Path>            Configuration file (TOML format)
+  --gui=<Bool>               Launch the real-time interactive dashboard
+  --help                     Show this help message
+
+Common parameters (see configs/default.toml for the full list):
+  --days=<Int>                             Total simulation days (default: 730)
+  --n_agents=<Int>                         Initial population size (default: 300)
+  --grid=<Nx,Ny>                           Spatial grid dimensions (default: 100,100)
+  --grid_nx=<Int>                          Spatial grid width (default: 100)
+  --grid_ny=<Int>                          Spatial grid height (default: 100)
+  --dt=<Float>                             Simulation time step in days (default: 1.0)
+  --seed=<Int>                             Random seed (default: 1234)
+  --temp_base=<Float>                      Mean bottom water temperature (default: 5.0)
+  --temp_amplitude=<Float>                 Annual temperature amplitude (default: 4.0)
+  --benthic_carrying_capacity=<Float>      Total benthic capacity for the whole model,
+                                           not per cell (default: 300.0)
+  --frequency_days=<Float>                 Output sampling interval (default: 365.0)
+  --snapshot_day=<Float>                   Annual survey snapshot day of year (default: 274.0)
+  --save=<Bool>                            Write annual indicators to CSV (default: true)
+  --save_file=<Path>                       Output CSV filename
+  --plot=<Bool>                            Export diagnostic figures (default: false)
+  --animate=<Bool>                         Record an animation (default: false)
+  --animation_file=<Path>                  Animation output filename
+  --output_dir=<Path>                      Output directory (default: outputs)
+
+Any parameter declared in a TOML section is settable, for example:
+  --maturity_l50_male=<Float>              [species] maturity size-at-50 for males
+  --legal_size_male=<Float>                [fishery] minimum legal size
+  --rate_predation=<Float>                 [mortality] annual predation rate
+  --survival_stage1=<Float>                [leslie] stage-4 survival
+  --use_energetics=<Bool>                  [toggles] enable bioenergetics
+  --intermolt_days_schedule=60,75,90       [species] stage-indexed schedule
 ================================================================================
 """)
 end
 
 """
-    print_simulation_report(summary, init_agents, days, elapsed_time)
+    print_simulation_report(summary, init_agents, days, elapsed_time; io = stdout)
 
 Print formatted terminal report of simulation outcomes and population structure.
+
+Takes an `io` so the text can be captured, matching `summarize_empirical_model`.
 """
 function print_simulation_report(
     summary,
     init_agents::Int,
     days::Int,
-    elapsed_time::Float64
+    elapsed_time::Float64;
+    io::IO = stdout
 )
-    println()
-    println("="^80)
-    println("                  ORGANISM IBM SIMULATION RESULTS                     ")
-    println("="^80)
-    @printf(" Simulation Duration   : %d days (%.2f years)\n", days, days / 365.0)
-    @printf(" Computation Time      : %.2f seconds\n", elapsed_time)
-    @printf(" Initial Population    : %d organisms\n", init_agents)
+    println(io)
+    println(io, "="^80)
+    println(io, "                  ORGANISM IBM SIMULATION RESULTS                     ")
+    println(io, "="^80)
+    @printf(io, " Simulation Duration   : %d days (%.2f years)\n", days, days / 365.0)
+    @printf(io, " Computation Time      : %.2f seconds\n", elapsed_time)
+    @printf(io, " Initial Population    : %d organisms\n", init_agents)
     total_orgs = hasproperty(summary, :total_organisms) ? summary.total_organisms :
-                 (hasproperty(summary, :total_crabs) ? summary.total_crabs : 0)
-    @printf(" Final Living Organisms : %d organisms\n", total_orgs)
+                 (hasproperty(summary, :total_organisms) ? summary.total_organisms : 0)
+    @printf(io, " Final Living Organisms : %d organisms\n", total_orgs)
 
     survival_pct = (init_agents > 0) ? (total_orgs / init_agents * 100.0) : 0.0
-    @printf(" Net Population Change : %+.1f%%\n", (survival_pct - 100.0))
-    println("-"^80)
+    @printf(io, " Net Population Change : %+.1f%%\n", (survival_pct - 100.0))
+    println(io, "-"^80)
 
-    println(" [Key Output Indicators]")
-    @printf("   - Total Number of Mature Females   : %4d\n", summary.total_mature_females)
-    @printf("   - Total Number of Mature Males     : %4d\n", summary.total_mature_males)
-    @printf("   - Total Mass of Fishable Males     : %8.3f kg (%.4f tonnes)\n",
+    println(io, " [Key Output Indicators]")
+    @printf(io, "   - Total Number of Mature Females   : %4d\n", summary.total_mature_females)
+    @printf(io, "   - Total Number of Mature Males     : %4d\n", summary.total_mature_males)
+    @printf(io, "   - Total Mass of Fishable Males     : %8.3f kg (%.4f tonnes)\n",
             summary.total_fishable_male_mass_kg, summary.total_fishable_male_mass_kg / 1000.0)
-    @printf("   - Total Living Population Biomass  : %8.3f kg (%.4f tonnes)\n",
+    @printf(io, "   - Total Living Population Biomass  : %8.3f kg (%.4f tonnes)\n",
             summary.total_biomass_kg, summary.total_biomass_kg / 1000.0)
     c_num = hasproperty(summary, :total_catch_numbers) ? summary.total_catch_numbers : 0
     c_bio = hasproperty(summary, :total_catch_biomass_kg) ? summary.total_catch_biomass_kg : 0.0
-    @printf("   - Cumulative Harvest Removals      : %4d organisms (%.3f kg)\n",
+    @printf(io, "   - Cumulative Harvest Removals      : %4d organisms (%.3f kg)\n",
             c_num, c_bio)
-    println("-"^80)
+    println(io, "-"^80)
 
     if hasproperty(summary, :count_by_stage_male)
-        println("   - Demographic Stage & Sex Structure:")
-        println("       Stage | Total Count |   Males | Females | Mean M (mm) | Mean F (mm) | Total Mass (kg)")
-        println("       ------+-------------+---------+---------+-------------+-------------+----------------")
+        println(io, "   - Demographic Stage & Sex Structure:")
+        println(io, "       Stage | Total Count |   Males | Females | Mean M (mm) | Mean F (mm) | Total Mass (kg)")
+        println(io, "       ------+-------------+---------+---------+-------------+-------------+----------------")
         for stg in sort(collect(keys(summary.size_by_stage)))
             count_stg = summary.count_by_stage[stg]
             c_m = get(summary.count_by_stage_male, stg, 0)
@@ -271,34 +379,38 @@ function print_simulation_report(
             sz_f = get(summary.size_by_stage_female, stg, 0.0)
             m_mass = hasproperty(summary, :mass_by_stage) ?
                 get(summary.mass_by_stage, stg, 0.0) : 0.0
-            @printf("         %2d  | %11d | %7d | %7d |      %6.2f |      %6.2f |      %10.2f\n",
+            @printf(io, "         %2d  | %11d | %7d | %7d |      %6.2f |      %6.2f |      %10.2f\n",
                     stg, count_stg, c_m, c_f, sz_m, sz_f, m_mass)
         end
     end
-    println("="^80)
+    println(io, "="^80)
     println()
 end
 
 """
-    print_save_step_outputs(ann_df::DataFrame)
+    print_save_step_outputs(ann_df::DataFrame; io = stdout)
 
 Print formatted table of demographic indicators across all save steps.
+
+Takes an `io` so the text can be captured. An empty frame prints nothing at all,
+rather than a header with no rows.
 """
-function print_save_step_outputs(ann_df::DataFrame)
+function print_save_step_outputs(ann_df::DataFrame; io::IO = stdout)
     if isempty(ann_df)
         return
     end
-    println()
-    println("="^108)
-    println("                                PERIODIC SAVE STEP POPULATION INDICATORS")
-    println("="^108)
-    println(" Yr |   Day  | Total N | Adult F | Adult M | Legal N | Total(kg) | SSB F(kg) | MMB(kg) | Legal(kg) | Eggs(ann) | Catch")
-    println("----+--------+---------+---------+---------+---------+-----------+-----------+---------+-----------+-----------+------")
+    println(io)
+    println(io, "="^108)
+    println(io, "                                PERIODIC SAVE STEP POPULATION INDICATORS")
+    println(io, "="^108)
+    println(io, " Idx|  Day  | Total N | Adult F | Adult M | Legal N | Total(kg) | SSB F(kg) | MMB(kg) | Legal(kg) | Eggs(ann) | Catch")
+    println(io, "----+--------+---------+---------+---------+---------+-----------+-----------+---------+-----------+-----------+------")
     for row in eachrow(ann_df)
         @printf(
+            io,
             " %2d | %6.0f | %7d | %7d | %7d | %7d | %9.2f | %9.2f | %7.2f | %9.2f | %9.2e | %5d\n",
-            row.year,
-            row.time,
+            row.sample_index,
+            row.day,
             round(Int, row.total_numbers),
             round(Int, row.mature_females),
             round(Int, row.mature_males),
@@ -311,8 +423,8 @@ function print_save_step_outputs(ann_df::DataFrame)
             round(Int, row.catch_total)
         )
     end
-    println("="^108)
-    println()
+    println(io, "="^108)
+    println(io)
 end
 
 """
@@ -384,12 +496,12 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     @printf("   - Days            : %d (%.2f years)\n", config[:days], config[:days] / 365.0)
     @printf("   - Grid Size       : %d x %d\n", config[:grid][1], config[:grid][2])
     t_base = get(config, :temp_base, 5.0)
-    t_amp = get(config, :temp_amp, get(config, :temp_amplitude, 4.0))
-    f_prob = get(config, :fishing_prob, get(config, :fishing_probability_daily, 0.0005))
-    k_cap = get(config, :carrying_capacity, get(config, :benthic_carrying_capacity, 1000.0))
+    t_amp = get(config, :temp_amplitude, 4.0)
+    f_prob = get(config, :fishing_probability_daily, 0.0)
+    carrying_cap = get(config, :benthic_carrying_capacity, 300.0)
     @printf("   - Temperature     : %.1f ± %.1f °C\n", t_base, t_amp)
     @printf("   - Harvest Prob    : %.4f daily\n", f_prob)
-    @printf("   - Carrying Cap    : %.1f organisms\n", k_cap)
+    @printf("   - Carrying Cap    : %.1f organisms (model total)\n", carrying_cap)
     @printf("   - Random Seed     : %d\n", config[:seed])
     @printf("   - Save Results    : %s\n", config[:save] ? "Yes" : "No")
     @printf("   - Plot Figures    : %s\n", config[:plot] ? "Yes" : "No")
@@ -398,28 +510,14 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     params = IBMParameters(config)
     t_start = time()
     model = initialize_model(
-        N_agents = config[:n_agents],
-        dims = config[:grid],
-        dt_days = config[:dt],
+        n_agents = config[:n_agents],
+        grid = config[:grid],
+        dt = config[:dt],
         params = params,
-        rng_seed = config[:seed]
+        seed = config[:seed]
     )
 
-    adata = [
-        (:stage, length),
-        (:size, safe_mean),
-        (:mass, safe_mean),
-        (:mass, sum),
-        (is_adult, count),
-        (is_adult_male, count),
-        (is_adult_female, count),
-        (is_legal_male, count),
-        (is_ovigerous, count),
-        (mass_if_adult_female, sum),
-        (mass_if_adult_male, sum),
-        (mass_if_legal_male, sum),
-        (:stage, safe_mean)
-    ]
+    adata = default_agent_observations(params)
     mdata = [
         :total_eggs_spawned,
         :total_recruits_settled,
@@ -438,11 +536,21 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     summary = summarize_population(model)
     print_simulation_report(summary, config[:n_agents], config[:days], elapsed_time)
 
-    ann_df = DataFrame()
-    try
-        ann_df = extract_annual_production(agent_df, model_df)
-        print_save_step_outputs(ann_df)
-    catch
+    # A short run legitimately has no annual samples, but a failure here is not
+    # the same as that and must not be reported as a clean run.
+    ann_df = try
+        df = extract_annual_production(
+            agent_df,
+            model_df;
+            frequency_days = Float64(config[:frequency_days]),
+            snapshot_day = Float64(config[:snapshot_day])
+        )
+        print_save_step_outputs(df)
+        df
+    catch err
+        @warn "annual production extraction failed; no annual output written" exception =
+            err
+        DataFrame()
     end
 
     if config[:save] && !isempty(ann_df)
@@ -456,13 +564,13 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
 
     if config[:plot]
         println(" Generating summary plots in: $(config[:output_dir])")
-        generate_summary_plots(
+        generated = generate_summary_plots(
             model,
             agent_df,
             config[:output_dir];
             model_df = model_df
         )
-        println(" All figures successfully exported.")
+        println(" Exported $(length(generated)) figure(s).")
     end
 
     return 0

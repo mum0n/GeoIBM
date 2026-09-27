@@ -54,7 +54,7 @@ using model_agent
         @test maturity(0, log(20.0); rng=rng) < 0.05
         @test maturity(1, log(15.0); rng=rng) < 0.05
 
-        # Large crabs should have near 1.0 maturity probability
+        # Large individuals should have near 1.0 maturity probability
         @test maturity(0, log(140.0); rng=rng) > 0.90
         @test maturity(1, log(80.0); rng=rng) > 0.90
 
@@ -77,33 +77,39 @@ using model_agent
         rng = MersenneTwister(123)
 
         # Initialize model with 20 agents
-        model = initialize_model(N_agents=20, dims=(20, 20), rng_seed=123)
+        model = initialize_model(n_agents=20, grid=(20, 20), seed=123)
         @test nagents(model) == 20
 
-        # Verify all agents have valid stage and size
+        # Verify all agents have valid stage and size. The seeded range is the whole
+        # benthic span, not the old `6:9` window: seeding stages 6-9 only meant the
+        # maturity test `stg >= 10` could never be true, so nothing was ever mature
+        # or legal at t=0.
+        benthic_lo = model.params.organism.juvenile_max_stage
         for agent in allagents(model)
-            @test agent.stage in 6:9
+            max_stage = agent.sex === female ? model.params.organism.max_stage_female :
+                        model.params.organism.max_stage_male
+            @test benthic_lo <= agent.stage <= max_stage
             @test agent.size > 0.0
             @test agent.age_days >= 0.0
         end
 
         # Test molt progression and stage increment
-        test_crab = first(allagents(model))
-        init_stage = test_crab.stage
-        init_size = test_crab.size
+        test_org = first(allagents(model))
+        init_stage = test_org.stage
+        init_size = test_org.size
 
-        perform_molt!(test_crab, 10.0; rng=rng)
-        @test test_crab.stage == init_stage + 1
-        @test test_crab.size > init_size
-        @test test_crab.last_growth_event_time == 10.0
+        perform_molt!(test_org, 10.0; rng=rng)
+        @test test_org.stage == init_stage + 1
+        @test test_org.size > init_size
+        @test test_org.last_growth_event_time == 10.0
 
         # Terminal molt check: mature organisms should not molt
-        test_crab.is_mature = true
-        @test check_molt_conditions(test_crab, 5.0) == false
+        test_org.is_mature = true
+        @test check_molt_conditions(test_org, 5.0) == false
     end
 
     @testset "Simulation Step and Population Summary" begin
-        model = initialize_model(N_agents=30, dims=(15, 15), rng_seed=456)
+        model = initialize_model(n_agents=30, grid=(15, 15), seed=456)
         init_count = nagents(model)
         @test init_count == 30
 
@@ -113,9 +119,13 @@ using model_agent
             model_step!(model)
         end
 
-        # Summary statistics calculation
+        # Summary statistics calculation.
+        # The seeded count is not an upper bound: aggregate juvenile cohorts can
+        # individuate into new agents, so assert instead that the summary agrees
+        # with the live agent set and that its demographic partition is exact.
         summary = summarize_population(model)
-        @test summary.total_organisms <= 30
+        @test summary.total_organisms == nagents(model)
+        @test summary.total_organisms >= 0
         @test summary.n_males + summary.n_females == summary.total_organisms
         @test summary.mean_size > 0.0
         @test summary.total_biomass_kg > 0.0
@@ -124,49 +134,49 @@ using model_agent
         @test summary.female_ssb_kg + summary.male_mature_biomass_kg == summary.total_ssb_kg
         @test summary.total_biomass_kg >= summary.total_ssb_kg
         @test !isempty(summary.size_by_stage)
-            end
+    end
 
     @testset "Reproduction, Egg Generation, and Recruitment" begin
         # Initialize model in spring mating season (day 40)
-        model = initialize_model(N_agents=0, dims=(10, 10), rng_seed=789)
+        model = initialize_model(n_agents=0, grid=(10, 10), seed=789)
         model.current_time = 40.0
 
         # Add receptive adult female and adult male nearby
         w_f = calculate_mass(65.0, female; mat=1)
         w_m = calculate_mass(110.0, male; mat=1)
-        f_crab = add_agent!(
+        f_org = add_agent!(
             (5, 5), model, 10, female, 1500.0, 65.0, w_f, 50.0,
             0.0, 1000.0, true, 0, 0.0, 0, true
         )
-        m_crab = add_agent!(
+        m_org = add_agent!(
             (5, 6), model, 12, male, 1800.0, 110.0, w_m, 80.0,
             0.0, 1000.0, false, 0, 0.0, 0, true
         )
 
         # Female executes agent_step! -> copulates and extrudes clutch
-        agent_step!(f_crab, model)
+        agent_step!(f_org, model)
 
-        @test f_crab.egg_count > 5000
-        @test f_crab.hatch_day > model.current_time
+        @test f_org.egg_count > 5000
+        @test f_org.hatch_day > model.current_time
         @test model.total_eggs_spawned > 5000
-        @test f_crab.is_mating_ready == false
+        @test f_org.is_mating_ready == false
 
         # Advance time to hatch day
-        model.current_time = f_crab.hatch_day + 1.0
+        model.current_time = f_org.hatch_day + 1.0
         n_groups_before = length(model.aggregate_populations.groups)
 
-        agent_step!(f_crab, model)
+        agent_step!(f_org, model)
 
-        @test f_crab.egg_count == 0
-        @test f_crab.is_mating_ready == true
+        @test f_org.egg_count == 0
+        @test f_org.is_mating_ready == true
         @test length(model.aggregate_populations.groups) > n_groups_before
         @test model.aggregate_populations.groups[end].stage == 0
         @test model.aggregate_populations.groups[end].abundance > 5000
     end
 
     @testset "Visualization Tools & Plotting" begin
-        model = initialize_model(N_agents = 40, dims = (15, 15), rng_seed = 42)
-        adata = [(:stage, length), (:size, safe_mean), (is_adult, count),
+        model = initialize_model(n_agents = 40, grid = (15, 15), seed = 42)
+        adata = [(:stage, length), (:size, safe_mean), (is_mature_male, count),
                  (is_ovigerous, count)]
         mdata = [:total_eggs_spawned, :total_recruits_settled]
 
@@ -178,7 +188,7 @@ using model_agent
 
         # 2. Stage distribution
         p_inst = plot_stage_distribution(model)
-        @test plot_instar_distribution(model) isa Figure
+        @test plot_stage_distribution(model) isa Figure
         @test p_inst isa Figure
 
         # 3. Size distribution by sex
@@ -187,7 +197,7 @@ using model_agent
 
         # 4. Stage allometry
         p_allo = plot_stage_allometry(model)
-        @test plot_instar_allometry(model) isa Figure
+        @test plot_stage_allometry(model) isa Figure
         @test p_allo isa Figure
 
         # 5. Reproduction dynamics
@@ -243,41 +253,41 @@ using model_agent
 
         # 2. Degree-day accumulation and molt conditions
         p = IBMParameters()
-        crab_juv = Organism(
-            1, (5, 5), 6, male, SnowCrabBehavior(), 400.0, 28.0,
+        org_juv_dd = Organism(
+            1, (5, 5), 6, male, default_species_behavior(), 400.0, 28.0,
             calculate_mass(28.0, male; mat = 0),
             50.0, 0.0, 500.0, false, 0, 0.0, 0, false
         )
         # Degree days = 500 < 550 for stage 6 -> cannot molt yet
-        @test check_molt_conditions(crab_juv, 4.0, 50.0; params = p) == false
+        @test check_molt_conditions(org_juv_dd, 4.0, 50.0; params = p) == false
 
         # Accumulate degree days past threshold (550), but intermolt duration < 150 d
-        crab_juv.degree_days = 600.0
-        crab_juv.last_growth_event_time = 0.0
-        @test check_molt_conditions(crab_juv, 4.0, 50.0; params = p) == false
+        org_juv_dd.degree_days = 600.0
+        org_juv_dd.last_growth_event_time = 0.0
+        @test check_molt_conditions(org_juv_dd, 4.0, 50.0; params = p) == false
 
         # Current time = 160 >= 150 d intermolt -> eligible to molt
-        @test check_molt_conditions(crab_juv, 4.0, 160.0; params = p) == true
+        @test check_molt_conditions(org_juv_dd, 4.0, 160.0; params = p) == true
 
         # Perform molt and verify degree-day reset and mass recalculation
-        init_wt = crab_juv.mass
-        perform_molt!(crab_juv, 160.0; rng = MersenneTwister(42))
-        @test crab_juv.degree_days == 0.0
-        @test crab_juv.mass > init_wt
-        @test crab_juv.stage == 7
+        init_wt = org_juv_dd.mass
+        perform_molt!(org_juv_dd, 160.0; rng = MersenneTwister(42))
+        @test org_juv_dd.degree_days == 0.0
+        @test org_juv_dd.mass > init_wt
+        @test org_juv_dd.stage == 7
 
         # 3. Molt seasonality for stages >= 7
         # Inside spring window (day 40, within [15, 140]), having molted in previous year
-        crab_juv.degree_days = 1000.0
-        crab_juv.energy_reserve = 100.0
-        crab_juv.last_growth_event_time = -300.0
-        @test check_molt_conditions(crab_juv, 4.0, 40.0; params = p) == true
+        org_juv_dd.degree_days = 1000.0
+        org_juv_dd.energy_reserve = 100.0
+        org_juv_dd.last_growth_event_time = -300.0
+        @test check_molt_conditions(org_juv_dd, 4.0, 40.0; params = p) == true
 
         # Outside spring window (day 200, summer/autumn) -> blocked by seasonality
-        @test check_molt_conditions(crab_juv, 4.0, 200.0; params = p) == false
+        @test check_molt_conditions(org_juv_dd, 4.0, 200.0; params = p) == false
 
         # 4. Stock Biomass calculation
-        model = initialize_model(N_agents = 50, dims = (20, 20), rng_seed = 999)
+        model = initialize_model(n_agents = 50, grid = (20, 20), seed = 999)
         summary = summarize_population(model)
         @test summary.total_biomass_kg > 0.0
         @test summary.mean_mass > 0.0
@@ -292,7 +302,7 @@ using model_agent
 
     @testset "Stock-Recruitment Relationship Analysis & Visualization" begin
         # 1. Extraction from model
-        model = initialize_model(N_agents = 20, dims = (10, 10), rng_seed = 111)
+        model = initialize_model(n_agents = 20, grid = (10, 10), seed = 111)
         sr_empty = extract_stock_recruitment(model)
         @test sr_empty isa DataFrame
         @test nrow(sr_empty) == 0
@@ -342,7 +352,7 @@ using model_agent
             spawners = s_vals,
             recruits = round.(Int, r_vals),
             recruits_per_spawner = r_vals ./ s_vals,
-            year = 1:length(s_vals)
+            sample_index = 1:length(s_vals)
         )
         p_sr = plot_stock_recruitment(sr_df; fits = fits)
         @test p_sr isa Figure
@@ -368,43 +378,59 @@ using model_agent
             molt_season_end = 140.0,
             dt = 1.0
         )
-        c_juv = SnowCrab(
+        org_juv = Organism(
             1, (1, 1), juvenile, male, 6, 200.0, 30.0, 10.0, 60.0,
             0.0, 600.0, false, 0, 0.0, 0
         )
-        p_m = molt_probability(c_juv, 4.0, 160.0; params = test_params)
+        p_m = molt_probability(org_juv, 4.0, 160.0; params = test_params)
         @test p_m > 0.0
         @test p_m <= 1.0
 
         # Deterministic check vs probabilistic trial
-        @test check_molt_conditions(c_juv, 4.0, 160.0; params = test_params) == true
+        @test check_molt_conditions(org_juv, 4.0, 160.0; params = test_params) == true
         molt_trials = [
-            check_molt_conditions(c_juv, 4.0, 160.0; params = test_params, rng = rng)
+            check_molt_conditions(org_juv, 4.0, 160.0; params = test_params, rng = rng)
             for _ in 1:100
         ]
         @test any(molt_trials)
         @test !all(molt_trials)
 
         # Ineligible when intermolt duration is insufficient
-        @test molt_probability(c_juv, 4.0, 50.0; params = test_params) == 0.0
+        @test molt_probability(org_juv, 4.0, 50.0; params = test_params) == 0.0
 
-        # 3. Predicates for legal fishable crabs
-        c_legal = SnowCrab(
+        # 3. Predicates for legal fishable individuals
+        org_legal = Organism(
             2, (2, 2), adult, male, 12, 1200.0, 102.0, 650.0, 30.0,
             0.0, 0.0, true, 0, 0.0, 0
         )
-        c_sublegal = SnowCrab(
+        org_sublegal = Organism(
             3, (3, 3), adult, male, 10, 800.0, 88.0, 320.0, 25.0,
             0.0, 0.0, true, 0, 0.0, 0
         )
-        c_female = SnowCrab(
+        org_female = Organism(
             4, (4, 4), adult, female, 10, 800.0, 96.0, 280.0, 20.0,
             0.0, 0.0, true, 0, 0.0, 0
         )
-        @test is_legal_male(c_legal) == true
-        @test is_legal(c_legal) == true
-        @test is_legal_male(c_sublegal) == false
-        @test is_legal_male(c_female) == false
+        @test is_legal_male(org_legal, 95.0, 68.0) == true
+        @test is_legal(org_legal, 95.0, 68.0) == true
+        @test is_legal_male(org_sublegal, 95.0, 68.0) == false
+        @test is_legal_male(org_female, 95.0, 68.0) == false
+        # The thresholds are mandatory arguments, so a configured legal size is
+        # honoured rather than a hardcoded default silently applied.
+        @test is_legal_male(org_sublegal, 80.0, 68.0) == true
+        # A large individual that never matured is still legal by size. The
+        # `is_mature` flag must be passed explicitly: the LifeStage forwarding
+        # constructor defaults it to true for the adult stage.
+        large_immature = Organism(
+            7, (7, 7), adult, male, 11, 600.0, 110.0, 700.0, 40.0,
+            0.0, 0.0, false, 0, 0.0, 0, false
+        )
+        @test is_legal_male(large_immature, 95.0, 68.0) == true
+        @test is_mature_male(large_immature) == false
+        @test is_adult(large_immature) == false  # large_immature has is_mature=false
+        @test is_mature_female(large_immature) == false
+        @test mass_if_mature_male(large_immature) == 0.0
+        @test mass_if_legal_male(large_immature, 95.0, 68.0) == 700.0
 
         # 4. Schaefer logistic model fitting on synthetic data
         t_years = 1:10
@@ -442,7 +468,7 @@ using model_agent
         # 6. File persistence and loading (.csv)
         tmp_csv = joinpath(tempdir(), "test_ann_prod.csv")
         ann_df = DataFrame(
-            year = collect(1:10),
+            sample_index = collect(1:10),
             time = Float64.(collect(1:10) .* 365.0),
             total_numbers = n_synth,
             legal_numbers = n_synth .* 0.35,
@@ -559,7 +585,7 @@ using model_agent
 
         # 4. Annual Stage Matrix Extraction
         synth_ann_df = DataFrame(
-            year = collect(1:8),
+            sample_index = collect(1:8),
             total_numbers = [100.0, 110.0, 105.0, 115.0, 120.0, 118.0, 122.0, 125.0],
             legal_numbers = [30.0, 32.0, 31.0, 35.0, 38.0, 37.0, 39.0, 40.0],
             catch_total = fill(5.0, 8),
@@ -633,11 +659,29 @@ using model_agent
         @test cfg_def[:legal_size_male] == 95.0
         @test cfg_def[:benthic_carrying_capacity] == 300.0
 
-        # 2. Loading snowcrab_ibm.config from file
-        config_path = isfile(projectdir("snowcrab_ibm.config")) ?
-            projectdir("snowcrab_ibm.config") : projectdir("scripts", "snowcrab_ibm.config")
-        @test isfile(config_path)
-        loaded_cfg = load_ibm_configuration(config_path)
+        # 2. Section routing is derived from the parameter structs
+        section_map = config_section_map()
+        @test section_map[:use_energetics] == "toggles"
+        @test section_map[:days] == "simulation"
+        @test section_map[:temp_base] == "environment"
+        @test section_map[:max_size_male] == "organism"
+        @test section_map[:maturity_l50_male] == "species"
+        @test section_map[:intermolt_days_schedule] == "species"
+        @test section_map[:molt_season_start] == "phenology"
+        @test section_map[:soft_shell_duration] == "mortality"
+        @test section_map[:legal_size_male] == "fishery"
+        @test section_map[:snapshot_day] == "output"
+        @test section_map[:min_size] == "binning"
+        @test section_map[:survival_stage1] == "leslie"
+        @test issubset(Set(values(section_map)), Set(ibm_configuration_sections()))
+
+        # 3. Loading the generic baseline config, then the species overlay
+        default_path = projectdir("configs", "default.toml")
+        species_path = projectdir("configs", "snowcrab.toml")
+        @test isfile(default_path)
+        @test isfile(species_path)
+
+        loaded_cfg = load_ibm_configuration(default_path)
         @test loaded_cfg[:days] == 730
         @test loaded_cfg[:n_agents] == 300
         @test loaded_cfg[:grid] == (100, 100)
@@ -646,8 +690,21 @@ using model_agent
         @test loaded_cfg[:mating_search_radius] == 5
         @test loaded_cfg[:egg_survival_base] ≈ 5.0e-5
 
-        # 3. Constructing IBMParameters from loaded configuration
-        params = IBMParameters(loaded_cfg)
+        # Ecdysis schedules and maturity gates are config-driven
+        @test loaded_cfg[:intermolt_days_schedule] isa Vector{Float64}
+        @test loaded_cfg[:degree_days_schedule] isa Vector{Float64}
+        @test loaded_cfg[:maturity_size_gate] == 35.0
+
+        # Species overlay replaces the corresponding [species] values
+        species_cfg = load_ibm_configuration(species_path; base_config = loaded_cfg)
+        @test species_cfg[:maturity_l50_male] == 91.8
+        @test species_cfg[:maturity_l50_female] == 51.6
+        @test species_cfg[:selectivity_s50] == 95.0
+        @test species_cfg[:legal_size_male] == 95.0
+        @test species_cfg[:molt_season_start] == 15.0
+
+        # 4. Constructing IBMParameters from the merged configuration
+        params = IBMParameters(species_cfg)
         @test params isa IBMParameters
         @test params.temp_base == 5.0
         @test params.temp_amplitude == 4.0
@@ -655,56 +712,409 @@ using model_agent
         @test params.benthic_carrying_capacity == 300.0
         @test params.mating_search_radius == 5
         @test params.egg_survival_base ≈ 5.0e-5
+        @test params.maturity_l50_male == 91.8
+        @test params.survival_stage1 == 0.74
+        @test params.intermolt_days_schedule == [
+            60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0,
+        ]
+        @test params.maturity_size_gate == 35.0
+        @test params.rate_baseline == 0.20
+        @test params.days_per_year == 365.0
 
-        # 4. Initialize model directly from configuration dictionary
-        test_model = initialize_model(loaded_cfg; N_agents = 10, days = 5)
+        # Configured schedules are what the ecdysis logic actually reads
+        cfg_behavior = SpeciesBehaviorImpl(params.species)
+        @test min_intermolt_days(cfg_behavior, 7) == 200.0
+        @test required_degree_days(cfg_behavior, 7) == 750.0
+
+        # 5. Initialize model directly from configuration dictionary
+        test_model = initialize_model(species_cfg; n_agents = 10, days = 5)
         @test nagents(test_model) == 10
         @test test_model.params.temp_base == 5.0
+        @test test_model.params.maturity_l50_male == 91.8
 
-        # 5. Serialization and round-trip verification
-        tmp_cfg_file = joinpath(tempdir(), "test_snowcrab_ibm.config")
-        save_ibm_configuration(tmp_cfg_file, loaded_cfg)
+        # 6. Serialization and round-trip verification
+        tmp_cfg_file = joinpath(tempdir(), "test_ibm_config.toml")
+        save_ibm_configuration(tmp_cfg_file, species_cfg)
         @test isfile(tmp_cfg_file)
         reloaded_cfg = load_ibm_configuration(tmp_cfg_file)
-        @test reloaded_cfg[:days] == loaded_cfg[:days]
-        @test reloaded_cfg[:grid] == loaded_cfg[:grid]
-        @test reloaded_cfg[:temp_base] ≈ loaded_cfg[:temp_base]
-        @test reloaded_cfg[:legal_size_male] ≈ loaded_cfg[:legal_size_male]
-        rm(tmp_cfg_file, force=true)
+        @test reloaded_cfg[:days] == species_cfg[:days]
+        @test reloaded_cfg[:grid] == species_cfg[:grid]
+        @test reloaded_cfg[:temp_base] ≈ species_cfg[:temp_base]
+        @test reloaded_cfg[:legal_size_male] ≈ species_cfg[:legal_size_male]
+        @test reloaded_cfg[:maturity_l50_male] ≈ species_cfg[:maturity_l50_male]
+        @test reloaded_cfg[:survival_stage1] ≈ species_cfg[:survival_stage1]
+        @test reloaded_cfg[:intermolt_days_schedule] == species_cfg[:intermolt_days_schedule]
+        rm(tmp_cfg_file, force = true)
 
-        # 6. CLI '=' argument syntax parsing
+        # 7. Grid dimensions stay in sync whichever exact spelling is supplied
+        grid_nx_first = Dict{Symbol, Any}(:grid_nx => 50, :grid_ny => 60)
+        sync_grid_dimensions!(grid_nx_first)
+        @test grid_nx_first[:grid] == (50, 60)
+
+        grid_pair_first = Dict{Symbol, Any}(:grid => (30, 40))
+        sync_grid_dimensions!(grid_pair_first)
+        @test grid_pair_first[:grid_nx] == 30
+        @test grid_pair_first[:grid_ny] == 40
+
+        # An inherited `grid` pair must not override what the current layer set
+        layer = Dict{Symbol, Any}(:grid => (100, 100), :grid_nx => 50, :grid_ny => 60)
+        sync_grid_dimensions!(layer; explicit = [:grid_nx, :grid_ny])
+        @test layer[:grid] == (50, 60)
+
+        # Parameter names are resolved from the structs, not a hand-kept list
+        @test config_field_type(:maturity_l50_male) === Float64
+        @test config_field_type(:max_stage_male) === Int
+        @test config_field_type(:use_energetics) === Bool
+        @test config_field_type(:fecundity_parameterization) === String
+        @test config_field_type(:intermolt_days_schedule) <: AbstractVector
+        @test config_field_type(:definitely_not_a_parameter) === nothing
+
+        # String coercion to the declared type
+        @test coerce_config_value(Float64, "2.5") == 2.5
+        @test coerce_config_value(Int, "42") == 42
+        @test coerce_config_value(Bool, "false") === false
+        @test coerce_config_value(Bool, "true") === true
+        @test coerce_config_value(String, " st.marie ") == "st.marie"
+        @test coerce_config_value(Vector{Float64}, "10,20,30") == [10.0, 20.0, 30.0]
+        @test coerce_config_value(Tuple{Int, Int}, "(7,9)") == (7, 9)
+
+        # 8. CLI '=' argument syntax parsing
         include(projectdir("scripts", "organism_ibm.jl"))
         cli_parsed = parse_cli_args([
-            "--config=snowcrab_ibm.config",
+            "--config=$(default_path)",
             "--temp_base=3.5",
             "--days=100",
             "--grid=80,80",
             "--n_agents=50",
-            "--fishing_prob=0.03"
+            "--fishing_probability_daily=0.03"
         ])
         @test cli_parsed[:temp_base] == 3.5
         @test cli_parsed[:days] == 100
         @test cli_parsed[:grid] == (80, 80)
         @test cli_parsed[:n_agents] == 50
-        @test cli_parsed[:fishing_prob] == 0.03
         @test cli_parsed[:fishing_probability_daily] == 0.03
+
+        # 9. Configuration layering: the explicit --config is the overlay.
+        #    Passing a species file used to treat it as the baseline and load
+        #    default.toml on top of it, so the baseline silently overwrote the
+        #    file the user had asked for.
+        species_path = projectdir("configs", "snowcrab.toml")
+        b_species, o_species = resolve_configuration_files(explicit_path = species_path)
+        @test basename(b_species) == "default.toml"
+        @test basename(o_species) == "snowcrab.toml"
+
+        b_base, o_base = resolve_configuration_files(explicit_path = default_path)
+        @test basename(b_base) == "default.toml"
+        @test basename(o_base) == "snowcrab.toml"
+
+        b_auto, o_auto = resolve_configuration_files()
+        @test basename(b_auto) == "default.toml"
+        @test basename(o_auto) == "snowcrab.toml"
+
+        # A value in the overlay must survive the baseline load and reach the
+        # model, whichever file the user names.
+        layered = load_ibm_configuration(b_species; base_config = default_ibm_configuration())
+        for path in (b_species, o_species)
+            isfile(path) || continue
+            for (k, v) in load_ibm_configuration(path)
+                layered[k] = v
+            end
+        end
+        overlay_only = load_ibm_configuration(
+            species_path; base_config = default_ibm_configuration()
+        )
+        # n_agents in the overlay must not be replaced by the baseline value
+        @test layered[:n_agents] == overlay_only[:n_agents]
+        @test layered[:maturity_l50_male] == 91.8
+
+        cli_species_cfg = parse_cli_args(["--config=$(species_path)"])
+        @test cli_species_cfg[:n_agents] == overlay_only[:n_agents]
+        @test cli_species_cfg[:maturity_l50_male] == 91.8
+        @test cli_species_cfg[:molt_season_min_stage] == 7
+
+        # A command-line argument still outranks both files
+        cli_override = parse_cli_args(["--config=$(species_path)", "--n_agents=50"])
+        @test cli_override[:n_agents] == 50
+
+        # `--config` is consumed by the pre-scan and must not warn as unknown
+        @test parse_cli_args(String[]) isa Dict{Symbol, Any}
+    end
+
+    @testset "Configuration Surface Integrity" begin
+        using TOML
+        types = config_field_types()
+        default_raw = TOML.parsefile(projectdir("configs", "default.toml"))
+        species_raw = TOML.parsefile(projectdir("configs", "snowcrab.toml"))
+
+        # 1. The baseline must document every declared parameter. This is the
+        #    check that makes an undocumented parameter impossible to add.
+        documented = Set{Symbol}()
+        for (_, values) in default_raw
+            isa(values, AbstractDict) || continue
+            for key in keys(values)
+                push!(documented, Symbol(key))
+            end
+        end
+        missing_docs = sort(collect(setdiff(Set(keys(types)), documented)))
+        @test isempty(missing_docs) ||
+              error("parameters declared but absent from configs/default.toml: $(missing_docs)")
+
+        # 2. Every TOML key must name a declared parameter, in both files.
+        for (label, raw) in (("default.toml", default_raw), ("snowcrab.toml", species_raw))
+            unknown = Symbol[]
+            for (_, values) in raw
+                isa(values, AbstractDict) || continue
+                for key in keys(values)
+                    sym = Symbol(key)
+                    haskey(types, sym) || push!(unknown, sym)
+                end
+            end
+            @test isempty(unknown) ||
+                  error("$label declares keys that are not parameters: $(unknown)")
+        end
+
+        # 3. No duplicate section across the two files (TOML forbids repeated
+        #    tables, and a repeated key silently shadows).
+        default_sections = Set(Symbol.(collect(keys(default_raw))))
+        species_sections = Set(Symbol.(collect(keys(species_raw))))
+        @test issubset(species_sections, default_sections)
+
+        # 4. Values must match the declared types, so a typo cannot turn a
+        #    numeric field into text.
+        for (label, raw) in (("default.toml", default_raw), ("snowcrab.toml", species_raw))
+            for (section, values) in raw
+                isa(values, AbstractDict) || continue
+                for (key, value) in values
+                    sym = Symbol(key)
+                    haskey(types, sym) || continue
+                    declared = types[sym]
+                    ok = if declared <: AbstractVector
+                        value isa AbstractVector
+                    elseif declared === Bool
+                        value isa Bool
+                    elseif declared <: Integer
+                        value isa Integer
+                    elseif declared <: AbstractFloat
+                        value isa Real
+                    else
+                        value isa AbstractString
+                    end
+                    @test ok || error("$(label) [$(section)] $(key): expected $(declared), got $(typeof(value))")
+                end
+            end
+        end
+
+        # 5. The baseline must agree with the declared defaults field for field,
+        #    proving no field is silently dropped or mistyped. The species overlay
+        #    is exempt: its whole purpose is to differ. Fields are compared
+        #    individually because the default `==` on a struct holding a vector
+        #    compares that vector by identity, which is never true here.
+        baseline_only = load_ibm_configuration(projectdir("configs", "default.toml"))
+        for T in (OrganismParams, SpeciesParams, MortalityParams, PhenologyParams,
+                  EnvironmentParams, FisheryParams, LeslieParams, SimulationParams,
+                  OutputParams, BinningParams, ProcessToggles)
+            rebuilt = struct_from_config(T, baseline_only)
+            reference = T()
+            mismatched = Symbol[]
+            for field in fieldnames(T)
+                a = getfield(rebuilt, field)
+                b = getfield(reference, field)
+                same = if a isa AbstractVector || b isa AbstractVector
+                    a == b
+                elseif a isa Real && b isa Real
+                    isapprox(Float64(a), Float64(b); rtol = 1e-12)
+                else
+                    a == b
+                end
+                same || push!(mismatched, field)
+            end
+            @test isempty(mismatched) ||
+                  error("$(T): default.toml disagrees with the declared default for $(mismatched)")
+        end
+
+        # 6. The overlay must still produce a usable parameter set, and the
+        #    species values must win over the baseline.
+        merged = default_ibm_configuration()
+        baseline, overlay = resolve_configuration_files(
+            explicit_path = projectdir("configs", "snowcrab.toml")
+        )
+        for path in (baseline, overlay)
+            isfile(path) || continue
+            for (k, v) in load_ibm_configuration(path)
+                merged[k] = v
+            end
+        end
+        rebuilt_species = struct_from_config(SpeciesParams, merged)
+        @test rebuilt_species.maturity_l50_male == 91.8
+        @test struct_from_config(SimulationParams, merged).n_agents ==
+              merged[:n_agents]
+    end
+
+    @testset "Every Declared Parameter Is Read" begin
+        # A parameter that nothing reads is a silent no-op: it appears in the
+        # TOML, invites tuning, and does nothing. This scans the sources for a
+        # use of each declared field name.
+        body = ""
+        for dir in ("src", "scripts")
+            for file in readdir(projectdir(dir); join = true)
+                endswith(file, ".jl") && (body *= read(file, String))
+            end
+        end
+        # Exclude the struct declarations themselves, which are the definition
+        # rather than a use.
+        declarations = join(readlines(projectdir("src", "types.jl")), "\n")
+        consumers = replace(body, declarations => "")
+
+        never_read = Symbol[]
+        for field in keys(config_field_types())
+            pattern = Regex("[\\.:\\[, ]" * string(field) * "\\b")
+            occursin(pattern, consumers) || push!(never_read, field)
+        end
+        @test isempty(never_read) ||
+              error("parameters declared and exposed but never read: $(sort(never_read))")
+    end
+
+    @testset "Carrying Capacity, Ecdysial Energy, and Hazard Bounds" begin
+        # Carrying capacity must be evaluated against the *total* benthic
+        # population, including the aggregate cohorts that hold the juveniles.
+        # Counting only individuated agents understated density by an order of
+        # magnitude and made K inert once the cohorts were exhausted.
+        base_params = IBMParameters()
+        @test base_params.environment.benthic_carrying_capacity_exponent == 2.0
+
+        model = initialize_model(;
+            n_agents = 40, grid = (12, 12), seed = 11,
+            params = IBMParameters(benthic_carrying_capacity = 100.0)
+        )
+        total = total_benthic_abundance(model)
+        @test total >= nagents(model)
+        @test total == nagents(model) ||
+              total > nagents(model)   # aggregate cohorts present at the start
+
+        # Feedback is 1 + (N/K)^p: unity below K, 2 at K, and 5 at 2K for p = 2.
+        # A linear feedback would stay at 3 at 2K and never bound the population.
+        @test benthic_density_feedback(model) ≈ 1.0 + (total / 100.0)^2
+        @test benthic_density_feedback(model) > 1.0
+
+        # The ecdysial energy requirement must be reachable from the daily energy
+        # surplus. At energy_molt_slope = 1.5 the requirement was ~1.5 per mm
+        # (240 units at 160 mm) against a surplus of ~0.03-0.2 per day, so nothing
+        # could ever moult and the population stalled at the first gated instar.
+        slope = base_params.organism.energy_molt_slope
+        for sz in (20.0, 60.0, 100.0, 160.0)
+            required = max(2.0, slope * sz)
+            dE, _ = calculate_energy_change(5.0, base_params.environment.food_max, sz;
+                                            params = base_params)
+            surplus = max(0.0, -dE)
+            # Reachable within a plausible intermolt period, not a lifetime.
+            if surplus > 0.0
+                @test required / surplus < 3650.0
+            end
+        end
+        @test max(2.0, slope * 160.0) < 10.0
+
+        # A terminal-molt individual never moults again, so its time since ecdysis
+        # grows without bound and the raw senescence hazard is unbounded. Hazards
+        # must saturate instead of aborting the run with a probability above one.
+        old_adult = Organism(
+            9, (5, 5), adult, male, 12, 0.0, 150.0, 900.0, 100.0, 0.0, 0.0,
+            false, 0, 0.0, 0, true
+        )
+        cap = base_params.mortality.hazard_cap
+        for elapsed in (0.0, 3650.0, 36500.0, 365000.0)
+            p = calculate_mortality_probability(old_adult, 9.0, 1.0, elapsed;
+                                                params = base_params)
+            @test p >= 0.0
+            @test p <= cap
+        end
+
+        # Extremely warm water must also saturate rather than exceed one.
+        hot = calculate_mortality_probability(old_adult, 60.0, 1.0, 36500.0;
+                                             params = base_params)
+        @test hot <= cap
+
+        # The seasonal molt gate is configurable and defaults to a stage above
+        # the individuating stage.
+        @test base_params.phenology.molt_season_min_stage == 7
+        all_stages = IBMParameters(
+            phenology = PhenologyParams(molt_season_min_stage = 1)
+        )
+        @test all_stages.phenology.molt_season_min_stage == 1
+    end
+
+    @testset "Config-Driven Ecdysis Schedules and Maturity Gates" begin
+        # Baseline schedule is monotone and stage-indexed
+        @test min_intermolt_days(zoea, 1) < min_intermolt_days(megalopa, 3)
+        @test min_intermolt_days(megalopa, 3) < min_intermolt_days(juvenile, 4)
+        @test min_intermolt_days(juvenile, 4) < min_intermolt_days(juvenile, 6)
+        @test min_intermolt_days(juvenile, 6) < min_intermolt_days(juvenile, 8)
+
+        @test required_degree_days(zoea, 1) < required_degree_days(megalopa, 3)
+        @test required_degree_days(megalopa, 3) < required_degree_days(juvenile, 4)
+        @test required_degree_days(juvenile, 4) < required_degree_days(juvenile, 6)
+        @test required_degree_days(juvenile, 6) < required_degree_days(juvenile, 8)
+
+        # Out-of-range stages clamp to the terminal schedule entry
+        @test min_intermolt_days(99) == min_intermolt_days(8)
+        @test required_degree_days(99) == required_degree_days(8)
+
+        # Overriding the schedule in SpeciesParams changes the reported values,
+        # proving the thresholds are not hardcoded
+        beh = SpeciesBehaviorImpl(SpeciesParams(
+            intermolt_days_schedule = [11.0, 22.0, 33.0],
+            degree_days_schedule = [1.0, 2.0, 3.0],
+        ))
+        @test min_intermolt_days(beh, 0) == 11.0
+        @test min_intermolt_days(beh, 2) == 33.0
+        @test min_intermolt_days(beh, 50) == 33.0
+        @test required_degree_days(beh, 1) == 2.0
+        @test required_degree_days(beh, 50) == 3.0
+
+        # Maturity size gate is likewise configurable
+        gated = SpeciesBehaviorImpl(SpeciesParams(maturity_size_gate = 60.0))
+        @test maturity(gated, :male, log(30.0)) == 0.0
+        @test maturity(gated, :male, log(50.0)) == 0.0
+        @test maturity(gated, :male, log(70.0); deterministic = true) > 0.0
+
+        # A non-positive gate disables the gate entirely
+        ungated = SpeciesBehaviorImpl(SpeciesParams(maturity_size_gate = 0.0))
+        @test maturity(ungated, :male, log(10.0); deterministic = true) < 0.01
+
+        # Maturity temperature response is configurable
+        cold = SpeciesBehaviorImpl(SpeciesParams(
+            maturity_l50_temp_slope = -4.0, maturity_temp_reference = 4.0
+        ))
+        p_cold = maturity(cold, :male, log(92.0); temp = 1.0, deterministic = true)
+        p_warm = maturity(cold, :male, log(92.0); temp = 7.0, deterministic = true)
+        @test p_warm > p_cold
     end
 
     @testset "Enhanced Simulation Output Metrics" begin
         # 1. Weight filter functions
-        crab_f_ad = SnowCrab(1, (1, 1), adult, female, 10, 500.0, 65.0, 150.0, 50.0, 0.0, 100.0, false, 0, 0.0, 0)
-        crab_m_ad = SnowCrab(2, (1, 1), adult, male, 11, 600.0, 96.0, 450.0, 60.0, 0.0, 100.0, false, 0, 0.0, 0)
-        crab_m_juv = SnowCrab(3, (1, 1), juvenile, male, 7, 200.0, 40.0, 30.0, 20.0, 0.0, 50.0, false, 0, 0.0, 0)
+        # These must be genuinely mature: the old predicate treated any
+        # stage-10 individual as an adult even with `is_mature == false`, which
+        # is what let non-spawners into the spawning stock.
+        org_f_ad = Organism(1, (1, 1), adult, female, 10, 500.0, 65.0, 150.0, 50.0, 0.0, 100.0, false, 0, 0.0, 0, true)
+        org_m_ad = Organism(2, (1, 1), adult, male, 11, 600.0, 96.0, 450.0, 60.0, 0.0, 100.0, false, 0, 0.0, 0, true)
+        org_m_juv = Organism(3, (1, 1), juvenile, male, 7, 200.0, 40.0, 30.0, 20.0, 0.0, 50.0, false, 0, 0.0, 0)
+        # Same size as the mature male, but never matured: the `LifeStage`
+        # constructor would default this to mature, so it is stated explicitly.
+        # It must not appear in mature biomass while still being legal by size.
+        org_m_big_immature = Organism(5, (1, 1), adult, male, 11, 600.0, 96.0, 450.0, 60.0, 0.0, 100.0, false, 0, 0.0, 0, false)
 
-        @test weight_if_adult_female(crab_f_ad) == 150.0
-        @test weight_if_adult_female(crab_m_ad) == 0.0
-        @test weight_if_adult_male(crab_m_ad) == 450.0
-        @test weight_if_adult_male(crab_m_juv) == 0.0
-        @test weight_if_legal_male(crab_m_ad) == 450.0
-        @test weight_if_legal_male(crab_m_juv) == 0.0
+        # Spawning stock uses the *mature* classes, so a same-sized individual
+        # that never matured contributes nothing to SSB.
+        @test mass_if_mature_female(org_f_ad) == 150.0
+        @test mass_if_mature_female(org_m_ad) == 0.0
+        @test mass_if_mature_male(org_m_ad) == 450.0
+        @test mass_if_mature_male(org_m_juv) == 0.0
+        @test mass_if_mature_male(org_m_big_immature) == 0.0
+        @test mass_if_legal_male(org_m_big_immature, 95.0, 68.0) == 450.0
+        @test mass_if_legal_male(org_m_ad, 95.0, 68.0) == 450.0
+        @test mass_if_legal_male(org_m_juv, 95.0, 68.0) == 0.0
 
         # 2. summarize_population indicators
-        m = initialize_model(N_agents = 20, dims = (20, 20), rng_seed = 42)
+        m = initialize_model(n_agents = 20, grid = (20, 20), seed = 42)
         summ = summarize_population(m)
         @test haskey(summ, :total_mature_females)
         @test haskey(summ, :total_mature_males)
@@ -744,7 +1154,7 @@ using model_agent
         rm(tmp_csv, force=true)
 
         # CLI --snapshot_day parsing test
-        cli_parsed2 = parse_cli_args(["--snapshot_day=260.0", "--survey_day=260.0"])
+        cli_parsed2 = parse_cli_args(["--snapshot_day=260.0", "--snapshot_day=260.0"])
         @test cli_parsed2[:snapshot_day] == 260.0
 
         # Output frequency tests (frequency_days)
@@ -761,15 +1171,46 @@ using model_agent
         @test loaded_freq_df.time == [120.0, 240.0, 360.0]
         rm(tmp_csv2, force=true)
 
-        # CLI --frequency argument parsing
-        cli_parsed_freq = parse_cli_args(["--frequency=90.0"])
+        # CLI sampling-interval and snapshot-day parsing, exact names only
+        cli_parsed_freq = parse_cli_args(["--frequency_days=90.0"])
         @test cli_parsed_freq[:frequency_days] == 90.0
-        @test cli_parsed_freq[:output_frequency] == 90.0
+        @test parse_cli_args(["--frequency_days=45.0"])[:frequency_days] == 45.0
+        @test parse_cli_args(["--snapshot_day=260.0"])[:snapshot_day] == 260.0
+
+        # Every declared parameter is settable by its exact name, coerced to the
+        # declared type, without the parser needing a per-key branch
+        cli_species = parse_cli_args([
+            "--maturity_l50_male=100.0",
+            "--survival_stage1=0.5",
+            "--legal_size_male=120.0",
+            "--max_stage_male=18",
+            "--use_energetics=false",
+            "--intermolt_days_schedule=10,20,30",
+        ])
+        @test cli_species[:maturity_l50_male] === 100.0
+        @test cli_species[:survival_stage1] === 0.5
+        @test cli_species[:legal_size_male] === 120.0
+        @test cli_species[:max_stage_male] === 18
+        @test cli_species[:use_energetics] === false
+        @test cli_species[:intermolt_days_schedule] == [10.0, 20.0, 30.0]
+
+        # Those command-line values reach the parameter structs
+        cli_params = IBMParameters(cli_species)
+        @test cli_params.maturity_l50_male == 100.0
+        @test cli_params.survival_stage1 == 0.5
+        @test cli_params.legal_size_male == 120.0
+        @test cli_params.max_stage_male == 18
+        @test cli_params.use_energetics == false
+        @test cli_params.intermolt_days_schedule == [10.0, 20.0, 30.0]
+
+        # Abbreviated names are not accepted
+        @test !haskey(parse_cli_args(["--freq=10.0"]), :freq)
+        @test parse_cli_args(["--k_cap=250.0"])[:benthic_carrying_capacity] != 250.0
     end
 
     @testset "Multi-Attribute Criteria Evaluation & Orchestrator" begin
         # 1. Evaluate population criteria on a running model
-        m_test = initialize_model(N_agents = 25, dims = (20, 20), rng_seed = 99)
+        m_test = initialize_model(n_agents = 25, grid = (20, 20), seed = 99)
         agent_df, model_df = run_simulation(m_test, 60;
             adata = [(:stage, length), (:size, safe_mean)],
             mdata = [:total_catch_numbers]
@@ -814,50 +1255,53 @@ using model_agent
 
     @testset "Agents.jl Visualization and Animation Tools" begin
         # 1. Attribute mappings
-        test_juv_m = SnowCrab(
+        test_juv_m = Organism(
             1, (5, 5), juvenile, male, 5, 100.0, 15.0, 1.5, 20.0, 0.0, 50.0,
             false, 0, 0.0, 0
         )
-        test_juv_f = SnowCrab(
+        test_juv_f = Organism(
             2, (5, 5), juvenile, female, 5, 100.0, 15.0, 1.5, 20.0, 0.0, 50.0,
             false, 0, 0.0, 0
         )
-        test_ovig = SnowCrab(
+        test_ovig = Organism(
             3, (5, 5), adult, female, 10, 800.0, 75.0, 120.0, 40.0, 0.0, 150.0,
             false, 50000, 365.0, 1
         )
-        test_legal = SnowCrab(
+        test_legal = Organism(
             4, (5, 5), adult, male, 12, 1200.0, 105.0, 450.0, 60.0, 0.0, 200.0,
             false, 0, 0.0, 0
         )
-        test_subleg = SnowCrab(
+        test_subleg = Organism(
             5, (5, 5), adult, male, 10, 900.0, 80.0, 180.0, 40.0, 0.0, 160.0,
             false, 0, 0.0, 0
         )
-        test_larva = SnowCrab(
+        test_larva = Organism(
             6, (5, 5), zoea, undifferentiated, 1, 10.0, 1.5, 0.01, 5.0, 0.0, 10.0,
             false, 0, 0.0, 0
         )
 
-        @test crab_color(test_juv_m) == "#56B4E9"
-        @test crab_color(test_juv_f) == "#CC79A7"
-        @test crab_color(test_ovig) == "#D55E00"
-        @test crab_color(test_legal) == "#003B73"
-        @test crab_color(test_subleg) == "#0072B2"
-        @test crab_color(test_larva) == "#E69F00"
+        @test organism_color(test_juv_m, IBMParameters()) == "#56B4E9"
+        @test organism_color(test_juv_f, IBMParameters()) == "#CC79A7"
+        @test organism_color(test_ovig, IBMParameters()) == "#D55E00"
+        @test organism_color(test_legal, IBMParameters()) == "#003B73"
+        @test organism_color(test_subleg, IBMParameters()) == "#0072B2"
+        @test organism_color(test_larva, IBMParameters()) == "#E69F00"
+        # The colour ramp follows the configured legal size, not a hardcoded one
+        loose = IBMParameters(fishery = FisheryParams(legal_size_male = 80.0))
+        @test organism_color(test_subleg, loose) == "#003B73"
 
-        @test crab_marker(test_juv_m) === :rect
-        @test crab_marker(test_juv_f) === :circle
-        @test crab_marker(test_larva) === :diamond
+        @test organism_marker(test_juv_m) === :rect
+        @test organism_marker(test_juv_f) === :circle
+        @test organism_marker(test_larva) === :diamond
 
-        @test crab_size(test_larva) >= 4.0
-        @test crab_size(test_legal) > crab_size(test_juv_m)
+        @test organism_size(test_larva) >= 4.0
+        @test organism_size(test_legal) > organism_size(test_juv_m)
 
         # 2. Environmental heatarray extraction
-        model_test = initialize_model(N_agents = 10, dims = (15, 15), rng_seed = 99)
-        t_mat = crab_heatarray(model_test, :temperature_field)
+        model_test = initialize_model(n_agents = 10, grid = (15, 15), seed = 99)
+        t_mat = organism_heatarray(model_test, :temperature_field)
         @test size(t_mat) == (15, 15)
-        f_mat = crab_heatarray(model_test, :food_availability_field)
+        f_mat = organism_heatarray(model_test, :food_availability_field)
         @test size(f_mat) == (15, 15)
 
         # 3. Spatial summary plot
@@ -869,7 +1313,7 @@ using model_agent
 
         # 4. Animation video generation
         out_anim = joinpath(tempdir(), "test_anim_$(rand(1000:9999)).mp4")
-        anim_path = animate_snowcrab_simulation(
+        anim_path = animate_organism_simulation(
             model_test;
             filepath = out_anim,
             frames = 3,
@@ -923,7 +1367,7 @@ using model_agent
         @test p_warm > p_cold
 
         mock_fem = Organism(
-            1, (5, 5), 10, female, SnowCrabBehavior(), 800.0, 75.0, 120.0, 40.0, 0.0, 150.0,
+            1, (5, 5), 10, female, default_species_behavior(), 800.0, 75.0, 120.0, 40.0, 0.0, 150.0,
             false, 50000, 365.0, 1, true
         )
         fec_agent = fecundity(mock_fem; rng = rng)
@@ -963,7 +1407,7 @@ using model_agent
         @test size(emp_model.trait_cov) == (4, 4)
         @test isposdef(emp_model.trait_cov)
 
-        # 7. Sample crab traits from empirical model
+        # 7. Sample individual traits from empirical model
         traits_m = sample_organism_traits(
             emp_model;
             size = 100.0,
@@ -985,6 +1429,29 @@ using model_agent
         )
         @test traits_f.mass > 50.0
         @test traits_f.estimated_stage in (9, 10, 11)
+
+        # 8b. Deterministic demographic prediction from the same fitted model
+        demo_m = estimate_demographics(
+            emp_model;
+            size = 100.0,
+            sex = :male,
+            temp = 3.5,
+            rng = rng
+        )
+        @test haskey(demo_m, :maturity_prob)
+        @test haskey(demo_m, :mass)
+        @test 0.0 <= demo_m.maturity_prob <= 1.0
+        @test demo_m.mass > 0.0
+        @test demo_m.mass > sample_organism_traits(
+            emp_model;
+            size = 60.0, sex = :male, temp = 3.5, rng = rng
+        ).mass
+
+        # A non-positive size is rejected rather than extrapolated.
+        @test estimate_demographics(
+            emp_model;
+            size = 0.0, sex = :male, rng = rng
+        ).maturity_prob == 0.0
         
         # 8. Model summary display
         io_buf = IOBuffer()
@@ -995,7 +1462,7 @@ using model_agent
         @test occursin("Trait Covariance Matrix", summary_str)
     end
 
-    @testset "Enhanced Crab Dynamics & Bioenergetics" begin
+    @testset "Organism Dynamics & Bioenergetics" begin
         rng = MersenneTwister(99)
 
         # 1. Developmental intermolt and degree-day scaling
@@ -1010,63 +1477,78 @@ using model_agent
         @test required_degree_days(juvenile, 6) < required_degree_days(juvenile, 8)
 
         # 2. Shell condition index (1 through 5)
-        mock_c = SnowCrab(
+        mock_org = Organism(
             1, (5, 5), adult, male, 11, 1000.0, 95.0, 350.0, 50.0, 1000.0, 0.0,
             false, 0, 0.0, 0
         )
-        @test shell_condition(mock_c, 1010.0) == 1 # 10 days post-molt -> Soft shell
-        @test shell_condition(mock_c, 1100.0) == 2 # 100 days post-molt -> New hard clean shell
-        @test shell_condition(mock_c, 1500.0) == 3 # 500 days (~1.4 yr) -> Intermediate shell
-        @test shell_condition(mock_c, 1900.0) == 4 # 900 days (~2.5 yr) -> Old shell
-        @test shell_condition(mock_c, 2500.0) == 5 # 1500 days (~4.1 yr) -> Senescent shell
+        @test shell_condition(mock_org, 1010.0) == 1 # 10 days post-molt -> Soft shell
+        @test shell_condition(mock_org, 1100.0) == 2 # 100 days post-molt -> New hard clean shell
+        @test shell_condition(mock_org, 1500.0) == 3 # 500 days (~1.4 yr) -> Intermediate shell
+        @test shell_condition(mock_org, 1900.0) == 4 # 900 days (~2.5 yr) -> Old shell
+        @test shell_condition(mock_org, 2500.0) == 5 # 1500 days (~4.1 yr) -> Senescent shell
 
         # 3. Bioenergetics and functional response
-        dE_low, intake_low = calculate_energy_change(mock_c, 3.0, 1.0)
-        dE_high, intake_high = calculate_energy_change(mock_c, 3.0, 10.0)
+        dE_low, intake_low = calculate_energy_change(mock_org, 3.0, 1.0)
+        dE_high, intake_high = calculate_energy_change(mock_org, 3.0, 10.0)
         @test intake_high > intake_low
         @test dE_high > dE_low
 
         # Saturating functional response: intake at food=50 vs food=100 should be near asymptote
-        _, intake_50 = calculate_energy_change(mock_c, 3.0, 50.0)
-        _, intake_100 = calculate_energy_change(mock_c, 3.0, 100.0)
+        _, intake_50 = calculate_energy_change(mock_org, 3.0, 50.0)
+        _, intake_100 = calculate_energy_change(mock_org, 3.0, 100.0)
         @test intake_100 / intake_50 < 1.10
 
-        # Scalar vs SnowCrab dispatch consistency
+        # Scalar vs agent dispatch consistency
         dE_scalar, intake_scalar = calculate_energy_change(
             3.0, 5.0, 95.0; mass = 350.0
         )
-        dE_agent, intake_agent = calculate_energy_change(mock_c, 3.0, 5.0)
+        dE_agent, intake_agent = calculate_energy_change(mock_org, 3.0, 5.0)
         @test dE_scalar ≈ dE_agent
         @test intake_scalar ≈ intake_agent
 
-        # 4. Thermal ecdysial inhibition
-        juv_ready = SnowCrab(
+        # 4. Thermal ecdysial inhibition.
+        #    The onset is configurable, so drive it explicitly to prove the
+        #    mechanism responds to `molt_thermal_onset` rather than to a
+        #    hardcoded threshold.
+        org_ready = Organism(
             2, (5, 5), juvenile, male, 5, 200.0, 18.0, 2.5, 50.0, 50.0, 400.0,
             false, 0, 0.0, 0
         )
-        p_cold = molt_probability(juv_ready, 3.0, 180.0)
-        p_warm = molt_probability(juv_ready, 7.5, 180.0)
+        inhibition_params = IBMParameters(
+            phenology = PhenologyParams(
+                molt_thermal_onset = 5.0, molt_thermal_bandwidth = 3.0
+            )
+        )
+        p_cold = molt_probability(org_ready, 3.0, 180.0; params = inhibition_params)
+        p_warm = molt_probability(org_ready, 7.5, 180.0; params = inhibition_params)
         @test p_cold > 0.0
         @test p_warm < p_cold
 
+        # With the default onset above the seasonal maximum, no inhibition occurs
+        # within the normal thermal range, so molting is not shut off mid-season.
+        default_params = IBMParameters()
+        @test default_params.phenology.molt_thermal_onset >
+              default_params.environment.temp_base + default_params.environment.temp_amplitude
+        @test molt_probability(org_ready, 7.5, 180.0) == molt_probability(org_ready, 3.0, 180.0)
+
         # 5. Multi-component mortality: soft shell vulnerability & adult senescence
-        soft_crab = SnowCrab(
+        org_soft = Organism(
             3, (5, 5), juvenile, male, 6, 205.0, 20.0, 3.5, 10.0, 200.0, 10.0,
             false, 0, 0.0, 0
         )
-        hard_crab = SnowCrab(
+        org_hard = Organism(
             4, (5, 5), juvenile, male, 6, 260.0, 20.0, 3.5, 10.0, 150.0, 100.0,
             false, 0, 0.0, 0
         )
-        m_soft = calculate_mortality_probability(soft_crab, 3.0, 5.0, 205.0)
-        m_hard = calculate_mortality_probability(hard_crab, 3.0, 5.0, 260.0)
+        m_soft = calculate_mortality_probability(org_soft, 3.0, 5.0, 205.0)
+        m_hard = calculate_mortality_probability(org_hard, 3.0, 5.0, 260.0)
         @test m_soft > m_hard
 
-        young_adult = SnowCrab(
+        young_adult = Organism(
             5, (5, 5), adult, male, 12, 1200.0, 105.0, 450.0, 60.0, 1000.0, 100.0,
             false, 0, 0.0, 0
         )
-        old_adult = SnowCrab(
+        old_adult = Organism(
             6, (5, 5), adult, male, 12, 2800.0, 105.0, 450.0, 60.0, 1000.0, 100.0,
             false, 0, 0.0, 0
         )
@@ -1093,9 +1575,9 @@ using model_agent
         base_cfg[:n_agents] = 20
         base_cfg[:grid] = (12, 12)
 
-        m_dict = initialize_model(base_cfg; N_agents = 15)
+        m_dict = initialize_model(base_cfg; n_agents = 15)
         @test nagents(m_dict) == 15
-        @test haskey(abmproperties(m_dict), :n_benthic_crabs)
+        @test haskey(abmproperties(m_dict), :n_benthic_organisms)
         @test haskey(abmproperties(m_dict), :n_mature_males)
         @test haskey(abmproperties(m_dict), :n_mature_females)
         @test haskey(abmproperties(m_dict), :n_legal_males)
@@ -1110,13 +1592,13 @@ using model_agent
         tmp_cfg_file = tempname() * ".config"
         save_ibm_configuration(tmp_cfg_file, base_cfg)
         @test isfile(tmp_cfg_file)
-        m_toml = initialize_model(tmp_cfg_file; N_agents = 10)
+        m_toml = initialize_model(tmp_cfg_file; n_agents = 10)
         @test nagents(m_toml) == 10
         rm(tmp_cfg_file; force = true)
 
         # 2. Demographic caching in model_step!
-        model = initialize_model(N_agents = 0, dims = (10, 10), rng_seed = 999)
-        @test model.n_benthic_crabs == 0
+        model = initialize_model(n_agents = 0, grid = (10, 10), seed = 999)
+        @test model.n_benthic_organisms == 0
         @test model.n_mature_males == 0
 
         # Add 1 mature legal male and 1 mature female
@@ -1129,33 +1611,33 @@ using model_agent
             100.0, 500.0, true, 0, 0.0, 0
         )
         model_step!(model)
-        @test model.n_benthic_crabs == 2
+        @test model.n_benthic_organisms == 2
         @test model.n_mature_males == 1
         @test model.n_mature_females == 1
         @test model.n_legal_males == 1
 
-        # 3. crab_disperse! behavior
+        # 3. organism_disperse! behavior
         # Pelagic zoea dispersion
-        zoea_crab = add_agent!(
+        zoea_org = add_agent!(
             (5, 5), model, zoea, female, 1, 10.0, 1.0, 0.01, 5.0,
             0.0, 10.0, false, 0, 0.0, 0
         )
-        pos_before = zoea_crab.pos
-        crab_disperse!(zoea_crab, model)
+        pos_before = zoea_org.pos
+        organism_disperse!(zoea_org, model)
         # Position after randomwalk should be a valid grid coordinate
-        @test 1 <= zoea_crab.pos[1] <= 10
-        @test 1 <= zoea_crab.pos[2] <= 10
+        @test 1 <= zoea_org.pos[1] <= 10
+        @test 1 <= zoea_org.pos[2] <= 10
 
-        # Starved benthic crab lethargy (mostly remains in place)
-        starved_crab = add_agent!(
+        # Starved benthic lethargy (mostly remains in place)
+        starved_org = add_agent!(
             (2, 2), model, juvenile, male, 5, 200.0, 18.0, 2.5, -5.0,
             50.0, 100.0, false, 0, 0.0, 0
         )
         stationary_count = 0
         for _ in 1:20
-            old_p = starved_crab.pos
-            crab_disperse!(starved_crab, model)
-            if starved_crab.pos == old_p
+            old_p = starved_org.pos
+            organism_disperse!(starved_org, model)
+            if starved_org.pos == old_p
                 stationary_count += 1
             end
         end
@@ -1176,7 +1658,7 @@ using model_agent
         for _ in 1:30
             # Reset to (5, 5) and disperse
             move_agent!(forager, (5, 5), model)
-            crab_disperse!(forager, model)
+            organism_disperse!(forager, model)
             if forager.pos == (5, 6)
                 moved_to_optimal += 1
             end
@@ -1185,45 +1667,45 @@ using model_agent
         @test moved_to_optimal >= 5
 
         # 4. Male-size scaled sperm clutches & ovigerous female mass (complex model)
-        m_mate = initialize_model(
-            N_agents = 0, dims = (10, 10), rng_seed = 123, model_mode = :complex
+        model_mate = initialize_model(
+            n_agents = 0, grid = (10, 10), seed = 123, model_mode = :complex
         )
-        m_mate.current_time = 45.0  # Spring mating season
+        model_mate.current_time = 45.0  # Spring mating season
 
         # Test sub-legal male (Size = 80 mm < 95 mm) -> confers 2 clutches
         sub_male = add_agent!(
-            (5, 5), m_mate, 11, male, 1200.0, 80.0, 200.0, 50.0,
+            (5, 5), model_mate, 11, male, 1200.0, 80.0, 200.0, 50.0,
             0.0, 800.0, false, 0, 0.0, 0, true
         )
-        fem_crab = add_agent!(
-            (5, 6), m_mate, 10, female, 1200.0, 65.0,
+        fem_org = add_agent!(
+            (5, 6), model_mate, 10, female, 1200.0, 65.0,
             calculate_mass(65.0, female; mat = 1), 50.0, 0.0, 800.0, true, 0, 0.0, 0, true
         )
-        base_somatic_w = fem_crab.mass
-        agent_step!(fem_crab, m_mate)
+        base_somatic_w = fem_org.mass
+        agent_step!(fem_org, model_mate)
         # Copulated with sub-legal male -> 2 clutches, then extruded 1 -> 1 clutch left
-        @test fem_crab.sperm_clutches == 1
-        @test fem_crab.egg_count >= 1000
-        @test fem_crab.mass > base_somatic_w # Includes egg clutch mass
+        @test fem_org.sperm_clutches == 1
+        @test fem_org.egg_count >= 1000
+        @test fem_org.mass > base_somatic_w # Includes egg clutch mass
 
         # Test legal male (Size = 110 mm >= 95 mm) -> confers 3 clutches
-        m_mate2 = initialize_model(
-            N_agents = 0, dims = (10, 10), rng_seed = 123
+        model_mate2 = initialize_model(
+            n_agents = 0, grid = (10, 10), seed = 123
         )
-        m_mate2.current_time = 45.0
+        model_mate2.current_time = 45.0
         leg_male = add_agent!(
-            (5, 5), m_mate2, 12, male, 1400.0, 110.0, 450.0, 50.0,
+            (5, 5), model_mate2, 12, male, 1400.0, 110.0, 450.0, 50.0,
             0.0, 800.0, false, 0, 0.0, 0, true
         )
-        fem_crab2 = add_agent!(
-            (5, 6), m_mate2, 10, female, 1200.0, 65.0,
+        fem_org2 = add_agent!(
+            (5, 6), model_mate2, 10, female, 1200.0, 65.0,
             calculate_mass(65.0, female; mat = 1), 50.0, 0.0, 800.0, true, 0, 0.0, 0, true
         )
-        agent_step!(fem_crab2, m_mate2)
+        agent_step!(fem_org2, model_mate2)
         # Copulated with legal male -> 3 clutches, then extruded 1 -> 2 clutches left
-        @test fem_crab2.sperm_clutches == 2
-        @test fem_crab2.egg_count >= 1000
-        @test fem_crab2.mass > base_somatic_w
+        @test fem_org2.sperm_clutches == 2
+        @test fem_org2.egg_count >= 1000
+        @test fem_org2.mass > base_somatic_w
 
         # 5. Process Toggles and Probabilistic Aggregate Dynamics
         p_toggles = IBMParameters(
@@ -1233,7 +1715,7 @@ using model_agent
                 use_spermatheca = false
             )
         )
-        m_toggled = initialize_model(params = p_toggles, N_agents = 0, dims = (10, 10), rng_seed = 456)
+        m_toggled = initialize_model(params = p_toggles, n_agents = 0, grid = (10, 10), seed = 456)
         @test m_toggled.params.toggles.use_movement == false
         @test m_toggled.params.toggles.use_degree_days == false
 
@@ -1261,7 +1743,7 @@ using model_agent
         @test s_fem.sperm_clutches == 0 # Spermathecal storage not used
 
         # Test Probabilistic Aggregate Groups
-        agg_model = initialize_model(N_agents = 0, dims = (10, 10), rng_seed = 777)
+        agg_model = initialize_model(n_agents = 0, grid = (10, 10), seed = 777)
         # Seed an aggregate group in stage 5 (near individuation to stage 6)
         grp5 = AggregateGroup(
             id = 99,
@@ -1298,10 +1780,10 @@ using model_agent
 
     @testset "Interactive GUI Dashboard" begin
         fig, state = launch_organism_gui(
-            N_agents = 25,
-            dims = (15, 15),
-            dt_days = 1.0,
-            rng_seed = 42,
+            n_agents = 25,
+            grid = (15, 15),
+            dt = 1.0,
+            seed = 42,
             display_window = false
         )
         @test isa(fig, Figure)
@@ -1315,6 +1797,1357 @@ using model_agent
         @test length(state.t_history) >= 2
         @test state.t_history[end] == 10.0
         @test length(state.obs_agent_x[]) > 0
+    end
+
+    @testset "GUI annual frame matches the production schema" begin
+        # The GUI kept its own hand-written annual column list, which lacked
+        # `day`, `total_biomass_kg` and `annual_egg_production` and called the
+        # sample counter `year`. It must now be a superset of the shared schema.
+        gui_schema = create_empty_annual_data()
+        shared = first.(ANNUAL_PRODUCTION_SCHEMA)
+        for col in shared
+            @test col in propertynames(gui_schema)
+        end
+        @test :year ∉ propertynames(gui_schema)
+        @test :recruits in propertynames(gui_schema)
+        @test :cumulative_catch in propertynames(gui_schema)
+
+        # Stepping past an annual snapshot must produce a row in that schema.
+        fig, state = launch_organism_gui(
+            n_agents = 15,
+            grid = (10, 10),
+            dt = 1.0,
+            seed = 21,
+            display_window = false
+        )
+        step_gui_simulation!(state, 300.0)
+        @test nrow(state.annual_data) >= 1
+        for col in shared
+            @test col in propertynames(state.annual_data)
+        end
+        @test state.annual_data.sample_index[1] == 1
+        @test state.annual_data.total_biomass_kg[1] > 0.0
+    end
+
+    @testset "Configured legal size drives every reported count" begin
+        # Regression: the legal-male count, the legal-male biomass column, and
+        # the GUI colour ramp each previously derived the threshold
+        # independently, so a reconfigured fishery produced numbers that
+        # disagreed with each other.
+
+        adult_sz = 68.0
+        # Sizes 100 / 90 / 78 mm, so the 95 mm and 80 mm legal sizes select
+        # different subsets and a hardcoded threshold would be caught.
+        legal_a = Organism(
+            1, (1, 1), adult, male, 10, 900.0, 100.0, 400.0, 30.0, 0.0, 200.0,
+            true, 0, 0.0, 0, true
+        )
+        legal_b = Organism(
+            2, (2, 2), adult, male, 11, 900.0, 90.0, 350.0, 30.0, 0.0, 200.0,
+            true, 0, 0.0, 0, true
+        )
+        legal_c = Organism(
+            3, (3, 3), adult, male, 12, 900.0, 78.0, 250.0, 30.0, 0.0, 200.0,
+            true, 0, 0.0, 0, true
+        )
+
+        tight = IBMParameters(fishery = FisheryParams(legal_size_male = 95.0))
+        loose = IBMParameters(fishery = FisheryParams(legal_size_male = 80.0))
+
+        tight_leg = count(o -> is_legal_male(o, 95.0, adult_sz), (legal_a, legal_b, legal_c))
+        loose_leg = count(o -> is_legal_male(o, 80.0, adult_sz), (legal_a, legal_b, legal_c))
+        @test tight_leg == 1
+        @test loose_leg == 2
+
+        # The GUI colour ramp must use the same threshold
+        @test organism_color(legal_b, tight) == "#0072B2"
+        @test organism_color(legal_b, loose) == "#003B73"
+        # ... and so must the model's demographic cache. Seed a model with known
+        # individuals and confirm the cache tracks the configured legal size.
+        for (params, expected) in ((tight, 1), (loose, 2))
+            m = initialize_model(n_agents = 0, grid = (10, 10), seed = 3, params = params)
+            for org in (legal_a, legal_b, legal_c)
+                add_agent!(org.pos, m, org.stage, org.sex, org.age_days, org.size,
+                    org.mass, org.energy_reserve, org.last_growth_event_time,
+                    org.degree_days, org.is_mating_ready, org.egg_count,
+                    org.hatch_day, org.sperm_clutches, org.is_mature)
+            end
+            model_step!(m)
+            @test m.n_legal_males == expected
+            @test m.n_mature_males == 3
+        end
+    end
+
+    @testset "Agent observation column names are config independent" begin
+        # Regression: the threshold-taking predicates were wrapped in anonymous
+        # closures, and `Agents.dataname` names a column after the function
+        # object, so the schema came out as `count_#7` and every downstream
+        # column lookup silently resolved to `nothing`.
+        expected = [
+            "length_stage", "safe_mean_stage", "safe_mean_size", "safe_mean_mass",
+            "sum_mass", "count_is_adult_male", "count_is_mature_male",
+            "count_is_mature_female", "count_is_legal_male", "count_is_ovigerous",
+            "sum_mass_if_mature_female", "sum_mass_if_mature_male",
+            "sum_mass_if_legal_male"
+        ]
+        default_p = IBMParameters()
+        alt_p = IBMParameters(
+            fishery = FisheryParams(legal_size_male = 80.0),
+            organism = OrganismParams(adult_size_threshold = 55.0)
+        )
+        @test [Agents.dataname(o) for o in default_agent_observations(default_p)] == expected
+        @test [Agents.dataname(o) for o in default_agent_observations(alt_p)] == expected
+
+        # A real run must expose exactly those columns, populated.
+        m = initialize_model(n_agents = 20, grid = (12, 12), seed = 11)
+        agent_df, _ = run_simulation(m, 10)
+        for col in expected
+            @test Symbol(col) in propertynames(agent_df)
+        end
+    end
+
+    @testset "Annual production schema parity" begin
+        # Regression: the empty path returned 14 columns and the populated path
+        # 17, so `.day` failed only on runs too short to produce a sample.
+        schema_names = [String(n) for (n, _) in ANNUAL_PRODUCTION_SCHEMA]
+        @test :day in first.(ANNUAL_PRODUCTION_SCHEMA)
+        @test :total_biomass_kg in first.(ANNUAL_PRODUCTION_SCHEMA)
+        @test :annual_egg_production in first.(ANNUAL_PRODUCTION_SCHEMA)
+        @test nrow(empty_annual_production()) == 0
+        @test names(empty_annual_production()) == schema_names
+
+        m_short = initialize_model(n_agents = 15, grid = (10, 10), seed = 4)
+        a_short, d_short = run_simulation(m_short, 20)
+        short = extract_annual_production(
+            a_short,
+            d_short;
+            frequency_days = 365.0,
+            snapshot_day = 274.0
+        )
+        @test nrow(short) == 0
+        @test names(short) == schema_names
+        @test :year ∉ propertynames(short)
+
+        m_long = initialize_model(n_agents = 15, grid = (10, 10), seed = 4)
+        a_long, d_long = run_simulation(m_long, 800)
+        long = extract_annual_production(
+            a_long,
+            d_long;
+            frequency_days = 365.0,
+            snapshot_day = 274.0
+        )
+        @test nrow(long) > 0
+        @test names(long) == names(short)
+        for col in schema_names
+            @test eltype(long[!, col]) == eltype(short[!, col])
+        end
+    end
+
+    @testset "Sampling regime follows frequency, not the snapshot_day value" begin
+        # Regression: the first sample was chosen by
+        # `snapshot_day == 274.0 && freq < 274.0`, so an explicit 274 behaved
+        # differently from an explicit 100 under a sub-annual frequency.
+        @test annual_production_targets(1095.0; frequency_days = 365.0, snapshot_day = 274.0) ==
+              [274.0, 639.0, 1004.0]
+        @test annual_production_targets(1095.0; frequency_days = 365.0, snapshot_day = 100.0) ==
+              [100.0, 465.0, 830.0]
+
+        # Sub-annual: the regime is chosen by frequency alone, so the snapshot day
+        # is irrelevant and cannot silently move the sampling instants.
+        @test annual_production_targets(300.0; frequency_days = 90.0, snapshot_day = 274.0) ==
+              annual_production_targets(300.0; frequency_days = 90.0, snapshot_day = 100.0)
+        @test annual_production_targets(300.0; frequency_days = 90.0, snapshot_day = 274.0) ==
+              [90.0, 180.0, 270.0]
+
+        # `day` is a genuine day of year in both regimes.
+        m = initialize_model(n_agents = 15, grid = (10, 10), seed = 6)
+        a, d = run_simulation(m, 800)
+        ann = extract_annual_production(
+            a,
+            d;
+            frequency_days = 365.0,
+            snapshot_day = 100.0
+        )
+        @test nrow(ann) > 0
+        @test all(isapprox.(ann.day, 100.0))
+        @test all(isapprox.(ann.time, (ann.sample_index .- 1) .* 365.0 .+ 100.0))
+
+        # `sample_index` counts snapshots; it must not be called `year`, and the
+        # calendar position lives in `day`.
+        @test :year ∉ propertynames(ann)
+        @test :sample_index in propertynames(ann)
+        @test ann.sample_index == collect(1:nrow(ann))
+    end
+
+    @testset "Soft-shell vulnerability window is finite" begin
+        # Regression: `soft_shell_duration` was declared and configurable but the
+        # hazard ignored it, so a long-lived individual accrued soft-shell risk
+        # forever, set only by how long ago it last molted.
+        function soft_shell_params(window, tau)
+            mort = MortalityParams(
+                rate_baseline = 0.0,
+                rate_predation = 0.0,
+                rate_soft_shell = 0.12,
+                rate_starvation = 0.0,
+                rate_thermal = 0.0,
+                rate_senescence = 0.0,
+                rate_cannibalism = 0.0,
+                soft_shell_duration = window,
+                soft_shell_decay_days = tau,
+                predation_size_reference = 1.0e9,
+                predation_size_decay = 1.0,
+                cannibalism_size_threshold = 1.0e9,
+                cannibalism_density_reference = 1.0e9,
+                cannibalism_density_cap = 1.0,
+                senescence_age_threshold = 1.0e9
+            )
+            return IBMParameters(mortality = mort)
+        end
+
+        function soft_shell_only(params, days_since_molt)
+            mm = initialize_model(n_agents = 1, grid = (8, 8), seed = 2, params = params)
+            org = first(allagents(mm))
+            org.last_growth_event_time = -Float64(days_since_molt)
+            return calculate_mortality_probability(
+                org,
+                3.0,
+                0.0,
+                0.0;
+                params = params,
+                density_feedback = 1.0
+            )
+        end
+
+        narrow = soft_shell_params(1.0, 15.0)
+        wide = soft_shell_params(400.0, 15.0)
+
+        @test soft_shell_only(narrow, 0.0) > 0.0
+        @test soft_shell_only(narrow, 0.0) ≈ soft_shell_only(wide, 0.0)
+        @test soft_shell_only(narrow, 0.5) ≈ soft_shell_only(wide, 0.5)
+
+        # Past the short window, still inside the long one: the distinction the
+        # old windowless hazard could not represent.
+        @test soft_shell_only(narrow, 10.0) == 0.0
+        @test soft_shell_only(wide, 10.0) > 0.0
+        @test soft_shell_only(narrow, 100.0) == 0.0
+        @test soft_shell_only(wide, 100.0) > 0.0
+
+        # Past both windows the risk is gone, not merely small.
+        @test soft_shell_only(narrow, 500.0) == 0.0
+        @test soft_shell_only(wide, 500.0) == 0.0
+
+        # Monotone decay while inside the window.
+        @test soft_shell_only(wide, 0.0) > soft_shell_only(wide, 5.0) >
+              soft_shell_only(wide, 20.0) > 0.0
+
+        # A zero decay time must not yield NaN.
+        zero_tau = soft_shell_params(400.0, 0.0)
+        @test isfinite(soft_shell_only(zero_tau, 0.0))
+        @test isfinite(soft_shell_only(zero_tau, 5.0))
+    end
+
+    @testset "Population bounds are not derived from the carrying capacity" begin
+        # Regression: `is_persistent` compared the final population against
+        # `max(15, 0.10 * K)` — a floor derived from the same K the model regulates
+        # around. A population that self-regulated at a fraction of K was therefore
+        # reported as not persistent, and a larger K made a healthy run look extinct
+        # and a failing one look healthy.
+
+        m = initialize_model(n_agents = 40, grid = (12, 12), seed = 13)
+        adf, _ = run_simulation(m, 120; adata = [(:stage, length)])
+
+        # Default: floor is "not extinct", and does not scale with K.
+        res = evaluate_population_criteria(m, adf)
+        @test res.n_min == 1
+        @test res.n_max == round(Int, 3.0 * m.params.benthic_carrying_capacity)
+        @test res.n_living == length(allagents(m))
+        @test res.peak_population >= res.n_living
+        @test res.is_persistent == (res.n_living >= 1)
+
+        # The floor must not move when K does. (Varying K on a *fresh* run would
+        # also change the dynamics — density-dependent mortality scales with K — so
+        # this compares the arithmetic on one fixed model rather than the verdict of
+        # several different simulations.)
+        for k in (30.0, 300.0, 30_000.0)
+            p = reconstruct_params(m.params; benthic_carrying_capacity = k)
+            mk = initialize_model(n_agents = 0, grid = (12, 12), seed = 13, params = p)
+            for org in allagents(m)
+                add_agent!(org.pos, mk, org.stage, org.sex, org.age_days, org.size,
+                    org.mass, org.energy_reserve, org.last_growth_event_time,
+                    org.degree_days, org.is_mating_ready, org.egg_count,
+                    org.hatch_day, org.sperm_clutches, org.is_mature)
+            end
+            rk = evaluate_population_criteria(mk, adf)
+            @test rk.n_min == 1
+            @test rk.n_max == round(Int, 3.0 * k)
+            @test rk.is_persistent == (rk.n_living >= 1)
+        end
+
+        # The floor is configuration, not a constant.
+        strict = reconstruct_params(m.params; min_population = 10_000)
+        mstrict = initialize_model(
+            n_agents = 40,
+            grid = (12, 12),
+            seed = 13,
+            params = strict
+        )
+        run_simulation(mstrict, 120; adata = [(:stage, length)])
+        rstrict = evaluate_population_criteria(mstrict, adf)
+        @test rstrict.n_min == 10_000
+        @test rstrict.is_persistent == false
+
+        # The ceiling is an explicit multiple of K, and is overridable in absolute
+        # terms for programmatic callers.
+        tight = reconstruct_params(m.params; max_population_multiple = 0.5)
+        mtight = initialize_model(n_agents = 40, grid = (12, 12), seed = 13, params = tight)
+        run_simulation(mtight, 120; adata = [(:stage, length)])
+        rtight = evaluate_population_criteria(mtight, adf)
+        @test rtight.n_max == round(Int, 0.5 * m.params.benthic_carrying_capacity)
+        @test evaluate_population_criteria(m, adf; max_population = 1).n_max == 1
+
+        # Both return paths report the same field set.
+        empty_res = evaluate_population_criteria(
+            initialize_model(n_agents = 0, grid = (8, 8), seed = 2),
+            DataFrame(length_stage = Int[], time = Float64[])
+        )
+        @test Set(propertynames(empty_res)) == Set(propertynames(res))
+        @test empty_res.peak_population == 0
+    end
+
+    @testset "Optimizer failures name their cause" begin
+        # Regression: bare `catch; continue` blocks around the optimizer made a
+        # genuine objective bug indistinguishable from a diverging trial. The
+        # search proceeded, converged nowhere, and reported only that every
+        # starting point failed.
+
+        # An objective that always throws: the error must name the real cause,
+        # not "did not converge".
+        boom = x -> error("objective exploded at $(x)")
+        err = try
+            optimize_model(boom, [0.0, 0.0], [1.0, 1.0], [[0.5, 0.5]])
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("objective exploded", sprint(showerror, err))
+
+        # A collectable hook lets a caller see the objective's own failures.
+        seen = Any[]
+        safe_objective(boom; label = "test", failures = seen)([1.0])
+        @test length(seen) == 1
+        @test occursin("objective exploded", sprint(showerror, seen[1]))
+
+        # A finite objective still works, and NaN is mapped to a penalty.
+        best_x, best_f = optimize_model(x -> (x[1] - 0.3)^2, [0.0], [1.0], [[0.5], [0.1]])
+        @test best_f < 1.0
+        @test 0.0 <= best_x[1] <= 1.0
+
+        hooked = Any[]
+        penalised = safe_objective(
+            x -> (isnan(x[1]) ? NaN : x[1]^2);
+            label = "test",
+            failures = hooked
+        )
+        @test !isnan(penalised([2.0]))
+        @test penalised([NaN]) == OBJECTIVE_PENALTY
+        @test isempty(hooked)   # NaN is a value, not an exception
+
+        # An objective that is non-finite everywhere must fail rather than
+        # "converge" to the penalty and return a meaningless vector.
+        nan_err = try
+            optimize_model(x -> NaN, [0.0], [1.0], [[0.5]])
+            nothing
+        catch e
+            e
+        end
+        @test nan_err isa ErrorException
+        @test occursin("divergence penalty", sprint(showerror, nan_err))
+
+        # Blocks report failures but still return usable parameters.
+        bad_blocks = optimize_blocks(
+            x -> error("block objective exploded"),
+            [[1], [2]],
+            [0.5, 0.5],
+            [([0.0], [1.0]), ([0.0], [1.0])];
+            passes = 1
+        )
+        @test length(bad_blocks[1]) == 2
+        @test all(isfinite, bad_blocks[1])
+    end
+
+    @testset "Hazard clamping is reported" begin
+        # Regression: the daily hazard was clamped to `hazard_cap` silently, so a
+        # mis-specified rate could bind every step of every run with no signal.
+        function clamp_events(params, org, temp, t)
+            events = Tuple{Symbol, Float64, Float64}[]
+            on_clamp = (source, raw, cap) -> push!(events, (source, raw, cap))
+            p = calculate_mortality_probability(
+                org,
+                temp,
+                0.0,
+                t;
+                params = params,
+                density_feedback = 1.0,
+                on_clamp = on_clamp
+            )
+            return p, events
+        end
+
+        mort = MortalityParams(
+            rate_baseline = 0.0, rate_predation = 0.0, rate_soft_shell = 0.0,
+            rate_starvation = 0.0, rate_thermal = 0.0, rate_senescence = 0.0,
+            rate_cannibalism = 0.0,
+            hazard_cap = 0.25,
+            predation_size_reference = 1.0e9, predation_size_decay = 1.0,
+            cannibalism_size_threshold = 1.0e9, cannibalism_density_reference = 1.0e9,
+            cannibalism_density_cap = 1.0, senescence_age_threshold = 1e9
+        )
+        calm = IBMParameters(mortality = mort)
+        m = initialize_model(n_agents = 1, grid = (8, 8), seed = 4, params = calm)
+        org = first(allagents(m))
+        org.trait_mortality_quantile = 0.5
+
+        # A calm configuration never clamps and never reports.
+        p, events = clamp_events(calm, org, 3.0, 10.0)
+        @test p == 0.0
+        @test isempty(events)
+
+        # An extreme thermal stress exceeds the cap: reported, and capped.
+        hot = reconstruct_params(calm; rate_thermal = 1.0e6, temp_thermal_stress = 1.0)
+        p, events = clamp_events(hot, org, 40.0, 10.0)
+        @test p == 0.25
+        @test !isempty(events)
+        @test any(e -> first(e) == :thermal_stress, events)
+
+        # A high baseline rate drives the total past the cap.
+        hotbase = reconstruct_params(calm; rate_baseline = 1.0e6)
+        p, events = clamp_events(hotbase, org, 3.0, 10.0)
+        @test p == 0.25
+        @test any(e -> first(e) == :total, events)
+
+        # A senescence clock far past the threshold does too. Senescence is keyed
+        # on inferred shell age, so the organism has to actually be old. A stage
+        # well past `shell_age_first_stage` keeps the age inference on the age side
+        # of the subtraction.
+        senescing = reconstruct_params(
+            calm;
+            rate_senescence = 1.0e6,
+            senescence_age_threshold = 1.0
+        )
+        old_stage = calm.organism.shell_age_first_stage + 1
+        mature = deepcopy(org)
+        mature.is_mature = true
+        mature.stage = old_stage
+        mature.age_days = 100_000.0
+        p, events = clamp_events(senescing, mature, 3.0, 100_000.0)
+        @test p == 0.25
+        @test any(e -> first(e) == :senescence, events)
+
+        # ... and a young organism at the same stage and the same molt clock does not.
+        young = deepcopy(org)
+        young.is_mature = true
+        young.stage = old_stage
+        young.age_days = 100.0
+        p_young, events_young = clamp_events(senescing, young, 3.0, 100_000.0)
+        @test p_young == 0.0
+        @test !any(e -> first(e) == :senescence, events_young)
+    end
+
+    @testset "Unknown configuration keys are reported" begin
+        # Regression: a misspelled or renamed key in a TOML overlay was copied
+        # into the configuration and then dropped without a word, so the run
+        # completed and the setting simply never applied.
+        path = joinpath(tempdir(), "unknown_key_config.toml")
+        write(path, """
+        [organism]
+        adult_size_threshold = 55.0
+        this_is_not_a_parameter = 1.0
+        also_not_this = 2.0
+        """)
+        cfg = load_ibm_configuration(path)
+        @test cfg[:adult_size_threshold] == 55.0
+        @test cfg[:this_is_not_a_parameter] == 1.0
+        @test unknown_config_keys(Set(keys(cfg))) ==
+              sort([:this_is_not_a_parameter, :also_not_this])
+        @test Set(keys(cfg)) != unknown_config_keys(Set(keys(cfg)))
+
+        # Declared parameters and runtime keys are never reported.
+        @test isempty(unknown_config_keys(Set(keys(config_field_types()))))
+        @test isempty(unknown_config_keys(runtime_config_keys()))
+        @test :grid in known_config_keys()
+        @test :min_population in known_config_keys()
+
+        # The shipped files declare nothing unknown.
+        for f in ("default.toml", "snowcrab.toml")
+            raw = TOML.parsefile(projectdir("configs", f))
+            declared = Set{Symbol}()
+            for (_, v) in raw
+                isa(v, AbstractDict) || continue
+                for k in keys(v)
+                    push!(declared, Symbol(k))
+                end
+            end
+            @test isempty(unknown_config_keys(declared))
+        end
+        rm(path; force = true)
+    end
+
+    @testset "Exported surface: small utilities and constants" begin
+        # Every exported name must actually resolve. The module exported six
+        # `FECUNDITY_*` names that were declared as `DEFAULT_FECUNDITY_*`, so
+        # `using model_agent` gave you nothing to import under the exported name.
+        exported = names(model_agent)
+        undefined_exports = filter(n -> !isdefined(model_agent, n), exported)
+        @test isempty(undefined_exports)
+        for n in undefined_exports
+            @info "exported but undefined" name = n
+        end
+
+        # logistic_unit / logit are inverses over the representable range.
+        for u in (-20.0, -1.0, 0.0, 0.5, 3.0, 20.0)
+            p = logistic_unit(u)
+            @test 0.0 < p < 1.0
+            @test logit(p) ≈ u atol = 1e-6
+        end
+        # Extreme inputs saturate rather than overflowing.
+        @test logistic_unit(1e6) == logistic_unit(60.0)
+        @test logistic_unit(-1e6) == logistic_unit(-60.0)
+        @test logistic_unit(0.0) == 0.5
+        # logit clamps its argument, so the exact endpoints stay finite instead of
+        # producing -Inf / Inf.
+        @test isfinite(logit(0.0))
+        @test isfinite(logit(1.0))
+        @test logit(0.0) < logit(0.01)
+        @test logit(0.99) > 0.0
+        @test logit(0.5) == 0.0
+
+        # Fecundity regression defaults are finite, and the fitted surface must
+        # actually increase with size on the relevant branch.
+        for c in (
+            DEFAULT_FECUNDITY_PRIMIPAROUS_INTERCEPT, DEFAULT_FECUNDITY_PRIMIPAROUS_SLOPE,
+            DEFAULT_FECUNDITY_PRIMIPAROUS_ERR, DEFAULT_FECUNDITY_MULTIPAROUS_INTERCEPT,
+            DEFAULT_FECUNDITY_MULTIPAROUS_SLOPE, DEFAULT_FECUNDITY_MULTIPAROUS_ERR
+        )
+            @test isfinite(c)
+        end
+        @test DEFAULT_FECUNDITY_PRIMIPAROUS_SLOPE > 0.0
+        @test DEFAULT_FECUNDITY_MULTIPAROUS_SLOPE > 0.0
+        @test DEFAULT_FECUNDITY_PRIMIPAROUS_ERR > 0.0
+        @test DEFAULT_FECUNDITY_MULTIPAROUS_ERR > 0.0
+        pri = exp(
+            DEFAULT_FECUNDITY_PRIMIPAROUS_INTERCEPT +
+            DEFAULT_FECUNDITY_PRIMIPAROUS_SLOPE * 100.0
+        )
+        mul = exp(
+            DEFAULT_FECUNDITY_MULTIPAROUS_INTERCEPT +
+            DEFAULT_FECUNDITY_MULTIPAROUS_SLOPE * 100.0
+        )
+        # Both branches must predict a finite, positive egg count at a realistic
+        # size; the slopes differ, so which is larger is not the invariant.
+        @test pri > 0.0
+        @test mul > 0.0
+        # The struct defaults are these same numbers, so the constants and the
+        # shipped configuration cannot drift apart.
+        @test IBMParameters().species.fecundity_primiparous_intercept ==
+              DEFAULT_FECUNDITY_PRIMIPAROUS_INTERCEPT
+        @test IBMParameters().species.fecundity_multiparous_slope ==
+              DEFAULT_FECUNDITY_MULTIPAROUS_SLOPE
+
+        # with_overrides preserves untouched fields and applies the rest.
+        base = MortalityParams()
+        bumped = with_overrides(MortalityParams, base; rate_predation = 0.5)
+        @test bumped.rate_predation == 0.5
+        @test bumped.rate_baseline == base.rate_baseline
+        @test bumped.soft_shell_duration == base.soft_shell_duration
+        @test with_overrides(MortalityParams, base) == base
+        @test reconstruct_params(IBMParameters(); rate_predation = 0.25).mortality.rate_predation == 0.25
+
+        # E1: reconstruct_params must carry *every* field through, not just the
+        # ones it happened to be edited to mention. The GUI Reset button is its
+        # only caller, and the defect it had was constructing a fresh parameter
+        # set from ten hardcoded fields, silently reverting everything else to
+        # struct defaults. Compare every field of every section against the input.
+        custom = IBMParameters(
+            simulation = SimulationParams(n_agents = 123, days = 456, seed = 789),
+            environment = EnvironmentParams(benthic_carrying_capacity = 1234.0),
+            organism = OrganismParams(adult_size_threshold = 55.5),
+            mortality = MortalityParams(rate_predation = 0.42, hazard_cap = 0.7),
+            fishery = FisheryParams(legal_size_male = 80.0, fishing_probability_daily = 0.3),
+            criteria = CriteriaParams(min_population = 7, max_population_multiple = 2.5)
+        )
+        round_tripped = reconstruct_params(custom)
+        for (field, struct_type, _) in parameter_structs()
+            for name in fieldnames(struct_type)
+                @test getfield(getfield(round_tripped, field), name) ==
+                      getfield(getfield(custom, field), name)
+            end
+        end
+        # A field not named in the original defect's ten hardcoded kwargs.
+        @test round_tripped.species.fecundity_multiparous_slope ==
+              custom.species.fecundity_multiparous_slope
+        @test round_tripped.criteria.min_population == 7
+        # ... and an override still applies on top of a full carry-through.
+        overridden = reconstruct_params(custom; rate_predation = 0.99)
+        @test overridden.mortality.rate_predation == 0.99
+        @test overridden.mortality.hazard_cap == 0.7
+        @test overridden.fishery.legal_size_male == 80.0
+
+        # parameter_structs is the single source of truth for the config surface.
+        structs = parameter_structs()
+        @test length(structs) == 12
+        @test all(t -> length(t) == 3, structs)
+        @test Set(s for (_, _, s) in structs) == Set(ibm_configuration_sections())
+        @test Set(f for (f, _, _) in structs) == Set(fieldnames(IBMParameters))
+        smap = config_section_map()
+        for (_, struct_type, section) in structs
+            for field in fieldnames(struct_type)
+                @test smap[field] == section
+            end
+        end
+        @test config_field_type(:min_population) === Int
+        @test config_field_type(:definitely_not_a_parameter) === nothing
+
+        # Field names must be unique across the parameter structs. The flat
+        # configuration maps a key to its section by name, so a duplicated name
+        # makes one of the two settings unreachable: `days_per_year` was declared
+        # in both SimulationParams and MortalityParams, so a leap-year calendar
+        # set under [simulation] was silently configuring mortality instead.
+        owners = Dict{Symbol, Vector{String}}()
+        for (_, struct_type, _) in structs
+            for field in fieldnames(struct_type)
+                push!(get!(owners, field, String[]), string(struct_type))
+            end
+        end
+        duplicates = sort([f for (f, o) in owners if length(o) > 1])
+        @test isempty(duplicates)
+
+        # parameter_struct_defaults covers every declared field.
+        defaults = parameter_struct_defaults()
+        @test Set(keys(defaults)) == Set(keys(config_field_types()))
+        @test defaults[:min_population] == 1
+        @test defaults[:legal_size_male] == 95.0
+        @test default_ibm_configuration()[:grid] ==
+              (defaults[:grid_nx], defaults[:grid_ny])
+
+        # coerce_to_declared converts, and refuses what it cannot convert.
+        @test coerce_to_declared(Float64, "3.5", :rate_predation) == 3.5
+        @test coerce_to_declared(Float64, 7, :rate_predation) === 7.0
+        @test coerce_to_declared(Int, 7, :days) === 7
+        @test coerce_to_declared(Int, "7.0", :days) === 7
+        @test coerce_to_declared(Bool, "true", :use_molting) === true
+        @test coerce_to_declared(Bool, "off", :use_molting) === false
+        @test coerce_to_declared(String, "abc", :label) == "abc"
+        @test coerce_to_declared(Any, :anything, :label) === :anything
+
+        # An impossible conversion names the field and the value.
+        msg = try
+            coerce_to_declared(Int, "nonsense", :days)
+            ""
+        catch e
+            sprint(showerror, e)
+        end
+        @test occursin("days", msg)
+        @test occursin("nonsense", msg)
+
+        # ... and the non-throwing form reports it as `nothing`.
+        @test try_coerce_to_declared(Int, "7", :days) == Some(7)
+        @test try_coerce_to_declared(Int, "nonsense", :days) === nothing
+    end
+
+    @testset "Exported surface: types and predicates" begin
+    # NamedPredicate / named_predicate
+    adult_sz = 68.0
+    p = named_predicate(is_adult, :is_adult)
+    @test p isa NamedPredicate
+    @test p isa Function
+    @test string(p) == "is_adult"
+    @test propertynames(p) == ()
+    small = Organism(
+        1, (1, 1), juvenile, male, 5, 200.0, 30.0, 1.0, 5.0, 0.0, 0.0,
+        false, 0, 0.0, 0, false
+    )
+    @test p(small) == is_adult(small)
+    multi = named_predicate(is_legal_male, :is_legal_male, 95.0, adult_sz)
+    @test string(multi) == "is_legal_male"
+    @test propertynames(multi) == ()
+
+# is_adult_female is the female half of the maturity check.
+        juvenile_f = Organism(
+            2, (2, 2), juvenile, female, 5, 200.0, 30.0, 1.0, 5.0, 0.0, 0.0,
+            false, 0, 0.0, 0, false
+        )
+        big_f = Organism(
+            3, (3, 3), juvenile, female, 5, 200.0, 90.0, 5.0, 5.0, 0.0, 0.0,
+            false, 0, 0.0, 0, false
+        )
+        @test is_adult_female(juvenile_f) == false
+        @test is_adult_female(big_f) == false  # juvenile, not mature
+        @test is_adult_female(big_f) == false
+        # is_adult_female == is_adult for females
+        @test is_adult_female(big_f) == is_adult(big_f)
+        @test is_adult_female(big_f) == false
+        @test is_adult_female(big_f) == false
+
+        # Sex / StageDefinition / CriteriaParams / AggregatePopulations
+        @test Sex <: Any
+        @test Sex(0) === male
+        @test Sex(1) === female
+        @test Sex(2) === undifferentiated
+        @test length(instances(Sex)) == 3
+        st = build_stages()
+        @test st isa Vector{StageDefinition}
+        @test !isempty(st)
+        @test all(s -> s.size_range[1] <= s.size_mean <= s.size_range[2], st)
+        @test all(s -> s.size_range[1] < s.size_range[2], st)
+
+        cp = CriteriaParams()
+        @test cp.min_population == 1
+        @test cp.max_population_multiple == 3.0
+        @test CriteriaParams(min_population = 5).min_population == 5
+        @test CriteriaParams(max_population_multiple = 0.5).max_population_multiple == 0.5
+
+        agg = AggregatePopulations()
+        @test isempty(agg.groups)
+        @test agg.next_group_id == 1
+        g = AggregateGroup(
+            id = agg.next_group_id, stage = 4, abundance = 10.0, size = 5.0,
+            mass = 0.1, age_days = 200.0, degree_days = 100.0,
+            last_growth_time = 0.0, pos = (1, 1)
+        )
+        push!(agg.groups, g)
+        @test length(agg.groups) == 1
+        @test agg.groups[1].abundance == 10.0
+
+        # abmrng is the model's reproducible stream.
+        m = initialize_model(n_agents = 4, grid = (8, 8), seed = 5)
+        @test abmrng(m) isa AbstractRNG
+        @test abmrng(m) === abmrng(m)
+        other = initialize_model(n_agents = 4, grid = (8, 8), seed = 99)
+        @test abmrng(m) !== abmrng(other)
+    end
+
+    @testset "Exported surface: species and analysis helpers" begin
+        m = initialize_model(n_agents = 60, grid = (12, 12), seed = 7)
+        behavior = default_species_behavior()
+
+        # stage_size_lower_bound: monotonic and per-sex.
+        lbs_m = [stage_size_lower_bound(behavior, Float64(s), :male) for s in 0:8]
+        lbs_f = [stage_size_lower_bound(behavior, Float64(s), :female) for s in 0:8]
+        @test all(isfinite, lbs_m)
+        @test all(diff(lbs_m) .>= 0.0)
+        @test all(diff(lbs_f) .>= 0.0)
+        @test stage_size_lower_bound(behavior, 6.0, :male) > 0.0
+        @test stage_size_lower_bound(behavior, [0.0, 6.0], :male) == lbs_m[[1, 7]]
+        # Broadcast form and scalar form agree.
+        @test stage_size_lower_bound(behavior, 6.0, :male) ==
+              stage_size_lower_bound(behavior, [6.0], :male)[1]
+
+        # sample_population returns a recruit record, not a bare size.
+        rng = MersenneTwister(42)
+        for _ in 1:20
+            s = sample_population(behavior, 3; rng = rng)
+            @test s isa NamedTuple
+            @test s.size > 0.0
+            @test isfinite(s.size)
+            @test isfinite(s.degdays)
+            @test 0.0 <= s.degdays <= 0.2
+            @test s.sex in (0, 1)
+            @test s.stage in 4:7
+            @test s.mat == 0
+        end
+        # Deterministic under a fixed seed, and sex allocation follows sex_ratio.
+        a1 = sample_population(behavior, 3; rng = MersenneTwister(1))
+        a2 = sample_population(behavior, 3; rng = MersenneTwister(1))
+        @test a1 == a2
+        all_male = [
+            sample_population(behavior, 3; sex_ratio = 0.0, rng = MersenneTwister(i)).sex
+            for i in 1:10
+        ]
+        @test all(==(1), all_male)   # sex_ratio 0.0 always takes the second branch
+
+        # growth_simulate: returns (weights, operculated) for the requested modes.
+        gs = growth_simulate([50.0, 70.0, 90.0]; gcv = 0.4, rng = MersenneTwister(3))
+        W, O = gs
+        @test size(W, 2) == 3            # one column per requested mode
+        @test size(O, 2) == 3
+        @test size(W, 1) == size(O, 1)
+        @test all(>=(0.0), W)
+        # O is the operculum size, NaN where a cohort has not reached that stage.
+        @test all(x -> (isnan(x) || x >= 0.0), O)
+        @test any(!isnan, O)
+
+        # perform_development! / perform_reproduction! dispatch on the behavior
+        # and never throw; a matured individual skips molting entirely.
+        model = initialize_model(n_agents = 8, grid = (10, 10), seed = 8)
+        model.current_time = 200.0
+        org = first(allagents(model))
+        before_stage = org.stage
+        perform_development!(behavior, org, model)
+        @test org.stage >= before_stage
+        perform_reproduction!(behavior, org, model)
+        @test org.stage >= before_stage
+        # A matured male never molts, so its mass is unchanged.
+        mature_male = deepcopy(org)
+        mature_male.is_mature = true
+        before_mass = mature_male.mass
+        perform_development!(behavior, mature_male, model)
+        @test mature_male.mass == before_mass
+        # With molting disabled the immature one is also untouched.
+        no_molt = reconstruct_params(model.params; use_molting = false)
+        nomodel = initialize_model(
+            n_agents = 4, grid = (10, 10), seed = 8, params = no_molt
+        )
+        nomodel.current_time = 200.0
+        norg = first(allagents(nomodel))
+        n_mass = norg.mass
+        perform_development!(behavior, norg, nomodel)
+        @test norg.mass == n_mass
+
+        # compute_empirical_ogive: shape and bounds.
+        run_simulation(m, 200; adata = default_agent_observations(m.params))
+        og = compute_empirical_ogive(m, male, 20.0:10.0:140.0; min_count = 1)
+        @test length(og.bin_centers) == length(og.prop_mature) == length(og.counts)
+        @test all(0.0 .<= og.prop_mature .<= 1.0)
+        @test all(og.counts .>= 1)
+        @test all(diff(og.bin_centers) .> 0.0)
+        @test isempty(compute_empirical_ogive(
+            initialize_model(n_agents = 0, grid = (8, 8)),
+            male,
+            20.0:10.0:140.0
+        ).bin_centers)
+    end
+
+    @testset "Exported surface: CLI and reporting" begin
+        # display_cli_help
+        help_io = IOBuffer()
+        display_cli_help(help_io)
+        help_text = String(take!(help_io))
+        @test occursin("--n_agents", help_text)
+        @test occursin("--benthic_carrying_capacity", help_text)
+        # C9: the help states the K semantics (wrapped across two lines).
+        @test occursin("whole model", help_text)
+        @test occursin("not per cell", help_text)
+
+        m = initialize_model(n_agents = 30, grid = (12, 12), seed = 12)
+        adf, _ = run_simulation(m, 60; adata = default_agent_observations(m.params))
+        summary = summarize_population(m)
+
+        # print_simulation_report
+        rep_io = IOBuffer()
+        print_simulation_report(summary, 30, 60, 1.25; io = rep_io)
+        rep = String(take!(rep_io))
+        @test occursin("SIMULATION RESULTS", rep)
+        @test occursin("Initial Population", rep)
+        @test occursin("1.25", rep)
+        @test occursin("$(summary.total_mature_females)", rep)
+
+        # print_save_step_outputs, over the real schema
+        ann = extract_annual_production(adf, adf; frequency_days = 1.0, snapshot_day = 1.0)
+        tbl_io = IOBuffer()
+        print_save_step_outputs(ann; io = tbl_io)
+        tbl = String(take!(tbl_io))
+        @test occursin("PERIODIC SAVE STEP", tbl)
+        @test occursin("Idx", tbl)                  # S2: not "Yr"
+        @test !occursin("| Yr ", tbl)
+        @test occursin("Sample F | Sample M", tbl) ||
+              occursin("Adult F | Adult M", tbl)     # column labels are still "Adult"
+
+        # An empty frame prints nothing at all rather than a bare header.
+        empty_io = IOBuffer()
+        print_save_step_outputs(DataFrame(); io = empty_io)
+        @test String(take!(empty_io)) == ""
+        # ... and the schema-shaped empty frame too, since it is rowless.
+        schema_empty_io = IOBuffer()
+        print_save_step_outputs(empty_annual_production(); io = schema_empty_io)
+        @test String(take!(schema_empty_io)) == ""
+
+        # generate_summary_plots writes files and reports the real count.
+        dir = mktempdir()
+        generated = generate_summary_plots(m, adf, dir; model_df = adf)
+        @test generated isa Vector{String}
+        @test all(isfile, generated)
+        @test !isempty(generated)
+        @test all(f -> startswith(f, dir), generated)
+        # The spatial summary must be among them (E2/N3).
+        @test any(endswith("abm_spatial_summary.png"), generated)
+        # Every file the caller is told about is real, and nothing else was written.
+        @test length(readdir(dir)) == length(generated)
+        rm(dir; recursive = true, force = true)
+
+        # run_ibm_cli: --help short-circuits, and a bad key is reported not ignored.
+        @test run_ibm_cli(String["--help"]) == 0
+        bad = run_ibm_cli(String["--definitely_not_a_parameter=1", "--days=5",
+                            "--n_agents=5", "--grid=(6,6)", "--save=false",
+                            "--plot=false", "--output_dir=$(mktempdir())"])
+        @test bad == 0    # unknown key warns; the run still completes
+
+        # `--config` is a switch, not a parameter. The pre-scan consumes it to
+        # locate the configuration files before the main loop runs, so if the
+        # generic branch also saw it, it would warn the user to fix a spelling
+        # that is correct — pointing at a line that never made the decision.
+        for form in (
+            String["--config=./configs/snowcrab.toml", "--gui"],
+            String["--config", "./configs/snowcrab.toml", "--gui"],
+            String["--gui", "--config=./configs/default.toml"]
+        )
+            logs, _ = Test.collect_test_logs() do
+                parse_cli_args(form)
+            end
+            offending = filter(logs) do entry
+                entry.level == Base.CoreLogging.Warn &&
+                    occursin("unrecognized configuration key", string(entry.message))
+            end
+            @test isempty(offending)
+        end
+
+        # It still selects the overlay, and a repeated flag takes the last value.
+        cfg_switch = parse_cli_args(String["--config=./configs/default.toml", "--gui"])
+        @test cfg_switch[:gui] == true
+        @test !haskey(cfg_switch, :config)
+        @test endswith(cfg_switch[:config_file], joinpath("configs", "default.toml"))
+        repeated = parse_cli_args(
+            String["--config=./configs/default.toml",
+                "--config=./configs/snowcrab.toml"]
+        )
+        @test endswith(repeated[:config_file], joinpath("configs", "default.toml"))
+        @test endswith(repeated[:species_config_file], joinpath("configs", "snowcrab.toml"))
+
+        # A genuine typo is still reported, and is in neither key set.
+        @test :config in cli_switch_keys()
+        @test !(:config in known_config_keys())   # a switch is not a TOML key
+        @test !(:not_a_real_key in cli_switch_keys())
+        @test !(:not_a_real_key in runtime_config_keys())
+        typo_logs, _ = Test.collect_test_logs() do
+            parse_cli_args(String["--definitely_not_a_parameter=1"])
+        end
+        @test any(
+            e -> occursin("unrecognized configuration key", string(e.message)),
+            filter(e -> e.level == Base.CoreLogging.Warn, typo_logs)
+        )
+
+        # plot_functional_relationships: one curve per parameter set, in every
+        # branch. It was broken in all of them -- it passed a whole IBMParameters
+        # to species functions that take a SpeciesParams.
+        for kind in (:maturity, :fecundity, :selectivity, :growth)
+            @test plot_functional_relationships(
+                [IBMParameters(),
+                 reconstruct_params(IBMParameters(); legal_size_male = 80.0)];
+                type = kind,
+                label_prefix = "Set"
+            ) isa Figure
+        end
+        @test_throws ErrorException plot_functional_relationships(
+            [IBMParameters()];
+            type = :nonsense
+        )
+
+        # to_number is the text-to-numeric step coercion relies on.
+        @test to_number(3, :f) === 3.0
+        @test to_number(3.5, :f) === 3.5
+        @test to_number("3.5", :f) === 3.5
+        @test to_number(" 3.5 ", :f) === 3.5
+        @test to_number(:2.5, :f) === 2.5
+        @test_throws model_agent.CoercionError to_number("nope", :f)
+
+        # julia_main is the `Base.@ccallable` C entry point. It is not invoked
+        # here: it runs the CLI against this process's own ARGS, which under
+        # `Pkg.test()` is the test runner's arguments. Its contract is only that
+        # it exists and takes no arguments and returns a C int.
+        @test isdefined(model_agent, :julia_main)
+        @test hasmethod(julia_main, Tuple{})
+        @test Base.return_types(julia_main, Tuple{})[1] <: Cint
+    end
+
+    @testset "Seeding represents every stage and stage-0 group" begin
+        # Regression: the initial cohort drew stages from `6:9` only, and set
+        # `mat = (stg >= 10)`. Stages 10+ were therefore never seeded, which made
+        # that maturity test permanently false — so no individual was mature, and
+        # no legal male, at t=0. The run began with an empty spawning and fishable
+        # stock and could not produce a brood for a full year.
+        m = initialize_model(n_agents = 300, grid = (24, 24), seed = 11)
+        p = m.params
+        orgs = collect(allagents(m))
+
+        # Every pre-individuation stage has a group, and the range is config-driven
+        # rather than a literal `0:5`.
+        pop = Agents.abmproperties(m)[:aggregate_populations]
+        @test sort(unique([g.stage for g in pop.groups])) ==
+              collect(0:(p.organism.juvenile_max_stage - 1))
+        @test length(pop.groups) == p.organism.juvenile_max_stage
+
+        # Every benthic stage is represented, for each sex, within its ceiling.
+        # Recruits are individuated into `juvenile_max_stage`, so that is where
+        # the benthic range starts.
+        for (sex, maxs) in (
+            (male, p.organism.max_stage_male),
+            (female, p.organism.max_stage_female)
+        )
+            present = sort(unique([o.stage for o in orgs if o.sex === sex]))
+            @test present == collect(p.organism.juvenile_max_stage:maxs)
+        end
+        @test all(
+            o.stage <=
+            (o.sex === female ? p.organism.max_stage_female : p.organism.max_stage_male)
+            for o in orgs
+        )
+
+        # The requested count is honoured exactly, whether or not the budget covers
+        # every (sex, stage) cell: the guaranteed representatives come out of it.
+        @test length(orgs) == 300
+        for n in (0, 1, 5, 19, 20, 21, 60)
+            mm = initialize_model(n_agents = n, grid = (10, 10), seed = 4)
+            @test nagents(mm) == n
+        end
+
+        # Maturity and the legal class are populated at t=0, and the model cache
+        # agrees with a direct count.
+        @test count(is_mature_male, orgs) > 0
+        @test count(is_mature_female, orgs) > 0
+        @test count(
+            o -> is_legal_male(o, p.fishery.legal_size_male,
+                               p.organism.adult_size_threshold), orgs
+        ) > 0
+        @test Agents.abmproperties(m)[:n_legal_males] == count(
+            o -> is_legal_male(o, p.fishery.legal_size_male,
+                               p.organism.adult_size_threshold), orgs
+        )
+        @test Agents.abmproperties(m)[:n_mature_males] == count(is_mature_male, orgs)
+        @test Agents.abmproperties(m)[:n_mature_females] == count(is_mature_female, orgs)
+
+        # Maturity follows the ogive at the individual's own size, rather than a
+        # stage threshold: large males are mostly mature and medium ones are not.
+        big_males = [o for o in orgs if o.sex === male && o.size >= 100.0]
+        mid_males = [o for o in orgs if o.sex === male && 60.0 <= o.size < 90.0]
+        if !isempty(big_males) && !isempty(mid_males)
+            @test count(is_mature_male, big_males) / length(big_males) >
+                  count(is_mature_male, mid_males) / length(mid_males)
+        end
+
+        # A zero-agent model seeds no individuals and no aggregate groups.
+        empty_m = initialize_model(n_agents = 0, grid = (10, 10), seed = 5)
+        @test isempty(collect(allagents(empty_m)))
+        @test isempty(Agents.abmproperties(empty_m)[:aggregate_populations].groups)
+
+        # Seeding is reproducible for a given seed.
+        a = initialize_model(n_agents = 40, grid = (10, 10), seed = 99)
+        b = initialize_model(n_agents = 40, grid = (10, 10), seed = 99)
+        @test [(o.sex, o.stage, o.size) for o in allagents(a)] ==
+              [(o.sex, o.stage, o.size) for o in allagents(b)]
+    end
+
+    @testset "Macro model legends carry the estimated parameters" begin
+        # A Schaefer-shaped trajectory, so the optimiser converges interior rather
+        # than pinning K to its upper bound — a bound-hitting fit would make every
+        # assertion below meaningless.
+        n = 8
+        function macro_frame(scale::Float64 = 1.0)
+            k_true, r_true, harvest = 400.0, 0.45, 0.12
+            N = Float64[]
+            cur = 300.0
+            for _ in 1:n
+                push!(N, cur)
+                cur = cur + r_true * cur * (1 - cur / k_true) - harvest * cur
+            end
+            DataFrame(
+                sample_index = collect(1:n),
+                time = Float64.((0:n .- 1) .* 365 .+ 274),
+                total_numbers = N .* scale,
+                legal_numbers = (N .* 0.07) .* scale,
+                mature_females = Float64.(100 .+ (1:n)),
+                mature_males = Float64.(25 .+ (1:n)),
+                total_biomass_kg = Float64.(500 .+ 20 .* (1:n)),
+                fishable_male_biomass_kg = Float64.(15 .+ 1.5 .* (1:n)),
+                mature_male_biomass_kg = Float64.(15 .+ 1.5 .* (1:n)),
+                mature_female_biomass_kg = Float64.((15 .+ 1.5 .* (1:n)) .* 0.7),
+                total_egg_production = Float64.(1e6 .* (1:n)),
+                annual_egg_production = Float64.(1e6 .* (1:n)),
+                catch_total = (harvest .* N) .* scale,
+                catch_legal = (harvest .* N .* 0.07) .* scale,
+                surplus_production_total = Float64.(zeros(n)),
+                surplus_production_legal = Float64.(zeros(n))
+            )
+        end
+        ann = macro_frame()
+        stage_mat, catch_mat, yrs = extract_annual_stage_matrix(ann)
+        fit = fit_generalized_leslie_model(stage_mat, catch_mat; years = yrs)
+        comp = compare_macro_models(ann, fit; lag = 1)
+
+        @test occursin("K=", comp.label_schaefer)
+        @test occursin("r=", comp.label_schaefer)
+        @test occursin("MSY=", comp.label_schaefer)
+        @test occursin("s=", comp.label_delay_diff)
+        @test occursin("α=", comp.label_delay_diff)
+        @test occursin("λ=", comp.label_leslie)
+        @test occursin("biomass", comp.label_observed)
+        @test all(!isempty, (comp.label_schaefer, comp.label_delay_diff, comp.label_leslie))
+
+        # The fits are in NUMBER, so the legend must say so: K is a carrying
+        # capacity in individuals and MSY is individuals per year, and a bare
+        # "K=..." beside a kg axis would be read as a biomass.
+        @test occursin("ind", comp.label_schaefer)
+        @test occursin("ind/yr", comp.label_schaefer)
+        @test occursin("/yr", comp.label_schaefer)
+
+        # And it must be true: scaling the number series scales K, while the
+        # biomass column is held fixed. If anything in the fit chain read biomass,
+        # K would not move.
+        f_base = fit_population_dynamics(ann)
+        f_scaled = fit_population_dynamics(macro_frame(7.0))
+        @test ann.fishable_male_biomass_kg == macro_frame(7.0).fishable_male_biomass_kg
+        @test isapprox(
+            f_scaled.fishable_stock.schaefer.K / f_base.fishable_stock.schaefer.K,
+            7.0;
+            rtol = 1e-4
+        )
+        @test f_base.fishable_stock.schaefer.is_fitted
+        @test f_scaled.fishable_stock.schaefer.is_fitted
+        # The fit recovers the trajectory's own scale: K_legal = 0.07 * K_true.
+        @test isapprox(f_base.fishable_stock.schaefer.K, 0.07 * 400.0; rtol = 0.02)
+
+        # The biomass series are the number fits rescaled by one pooled mean
+        # legal mass, applied identically to observed and predicted.
+        leg_stages = filter(s -> s.is_legal_male, fit.stages)
+        pooled = mean([s.mean_mass for s in leg_stages]) / 1000.0
+        @test isapprox(comp.biomass_obs_kg, ann.legal_numbers .* pooled; rtol = 1e-9)
+
+        # Every series shares the same x grid, so the GUI can overlay them.
+        @test length(comp.years) == nrow(ann)
+        @test length(comp.biomass_obs_kg) == nrow(ann)
+        @test length(comp.biomass_schaefer_kg) == nrow(ann)
+        @test length(comp.biomass_delay_diff_kg) == nrow(ann)
+        @test length(comp.biomass_leslie_kg) == nrow(ann)
+
+        # The model basis is a stage-mean approximation, not the measured sum, and
+        # runs below it. This is why the GUI plots `fishable_male_biomass_kg` for
+        # the survey markers: plotting the approximation as measured biomass put two
+        # different quantities on one pair of axes.
+        @test all(
+            comp.biomass_obs_kg .< ann.fishable_male_biomass_kg
+        )
+
+        @test fmt_param(2000.0) == "2e+03"
+        @test fmt_param(0.0004321) == "0.000432"
+        @test fmt_param(95.25) == "95.2"
+        @test fmt_param(1.0 / 3.0) == "0.333"
+    end
+
+    @testset "Death causes are attributed to the hazard that produced them" begin
+        # Regression: the summed daily probability was computed correctly, but the
+        # death was then attributed by `is_mature -> senescence, else -> predation`
+        # — a rule unrelated to the sum. Every juvenile death was reported as a
+        # predation death and every mature death as a senescence death, so the
+        # published cause breakdown was fiction, and `deaths_starvation` and
+        # `deaths_thermal` were never incremented at all.
+
+        p = IBMParameters()
+        m = initialize_model(n_agents = 60, grid = (16, 16), seed = 7, params = p)
+        org = first(allagents(m))
+        c = mortality_components(org, 3.0, 1.0, 10.0; params = p, density_feedback = 1.0)
+
+        # The components sum to the raw total, and the cap applies to the total.
+        parts = (:baseline, :predation, :soft_shell, :starvation,
+                 :thermal, :senescence, :cannibalism)
+        @test isapprox(sum(getfield(c, k) for k in parts), c.raw_total)
+        @test c.total == clamp(c.raw_total, 0.0, p.mortality.hazard_cap)
+        @test all(getfield(c, k) >= 0.0 for k in parts)
+        @test all(isfinite, [getfield(c, k) for k in parts])
+
+        # The convenience wrapper agrees with the breakdown.
+        @test calculate_mortality_probability(
+            org, 3.0, 1.0, 10.0; params = p, density_feedback = 1.0
+        ) == c.total
+
+        # Dominant cause is the largest component, and `:none` when all are zero.
+        @test dominant_mortality_cause(c) == :baseline   # background dominates
+        zeroed = merge(c, NamedTuple{parts}(ntuple(_ -> 0.0, length(parts))))
+        @test dominant_mortality_cause(zeroed) == :none
+        one_cause = merge(c, (predation = c.baseline + 1.0,))
+        @test dominant_mortality_cause(one_cause) == :predation
+
+        # Every counter is live in a real run, and they partition the deaths.
+        _, mdf = run_simulation(m, 400)
+        death_cols = (:deaths_baseline, :deaths_predation, :deaths_soft_shell,
+            :deaths_starvation, :deaths_thermal, :deaths_senescence,
+            :deaths_cannibalism, :deaths_fishery)
+        cols = Set(propertynames(mdf))
+        for col in death_cols
+            @test col in cols
+        end
+        @test sum(mdf[end, col] for col in death_cols) > 0
+
+        # A run with every mortality rate zero must record no deaths, and grow.
+        immortal = IBMParameters(mortality = MortalityParams(
+            rate_baseline = 0.0, rate_predation = 0.0, rate_soft_shell = 0.0,
+            rate_starvation = 0.0, rate_thermal = 0.0, rate_senescence = 0.0,
+            rate_cannibalism = 0.0
+        ))
+        m2 = initialize_model(n_agents = 60, grid = (16, 16), seed = 7, params = immortal)
+        _, mdf2 = run_simulation(m2, 400)
+        @test sum(mdf2[end, col] for col in death_cols) == 0
+        @test mdf2[end, :n_benthic_organisms] >= 60
+    end
+
+    @testset "Shell age is one definition, and senescence follows age" begin
+        # Regression: mortality senescence used *time since the last ecdysis* while
+        # fecundity senescence used inferred shell age. Those are different
+        # quantities, so senescence was keyed on molt recency rather than age: a
+        # ten-year-old that had molted yesterday had zero mortality senescence, and
+        # a one-year-old that last molted 2000 days ago matched the ten-year-old
+        # exactly. Because a terminal-molt individual never molts again, its
+        # "shell age" also grew without bound and the daily hazard reached 6.6e3
+        # before the cap hid it.
+
+        p = IBMParameters()
+        m = initialize_model(n_agents = 1, grid = (8, 8), seed = 1, params = p)
+        org = first(allagents(m))
+        org.is_mature = true
+        op = p.organism
+
+        # The documented inference, and it is age-based.
+        org.stage = 12
+        org.age_days = 4000.0
+        @test shell_age_years(org, p) ≈
+              (4000.0 - op.shell_age_stage_offset * (12 - op.shell_age_first_stage)) /
+              p.simulation.days_per_year
+        @test shell_age_years(org, p) >= 1.0     # floored
+        org.age_days = 0.0
+        @test shell_age_years(org, p) == 1.0     # floored, never negative
+
+        # Fecundity and mortality now read the same value.
+        fem = deepcopy(org)
+        fem.sex = female
+        fem.is_mature = true
+        fem.age_days = 4000.0
+        fem.last_growth_event_time = -10.0       # molted just now
+        aged = deepcopy(fem)
+        aged.last_growth_event_time = -4000.0    # has not molted in 11 years
+
+        # Senescence must depend on age and NOT on molt recency.
+        q = IBMParameters(
+            rate_baseline = 0.0, rate_predation = 0.0, rate_soft_shell = 0.0,
+            rate_starvation = 0.0, rate_thermal = 0.0, rate_cannibalism = 0.0,
+            rate_senescence = 0.2, senescence_age_threshold = 3.0
+        )
+        s_recent = mortality_components(fem, 3.0, 0.0, 10.0; params = q).senescence
+        s_stale = mortality_components(aged, 3.0, 0.0, 4000.0; params = q).senescence
+        @test s_recent ≈ s_stale                # molt recency is irrelevant
+        @test s_recent > 0.0                     # and it is genuinely age-based
+
+        young = deepcopy(fem)
+        young.age_days = 200.0
+        @test mortality_components(young, 3.0, 0.0, 4000.0; params = q).senescence == 0.0
+
+        # Fecundity senescence uses the same inferred age, so the two agree.
+        @test fecundity(fem; params = p, deterministic = true) ==
+              fecundity(aged; params = p, deterministic = true)
+    end
+
+    @testset "Individuation follows the configured juvenile boundary" begin
+        # Regression: the aggregate-to-agent transition tested the literal
+        # `next_stage == 6`, so configuring `juvenile_max_stage` to anything else
+        # meant no individual was ever individuated and the benthic population
+        # silently received no recruits.
+        p = IBMParameters()
+        @test individuation_stage(p) == p.organism.juvenile_max_stage
+
+        for jms in (5, 6, 7)
+            pj = IBMParameters(organism = OrganismParams(juvenile_max_stage = jms))
+            @test individuation_stage(pj) == jms
+        end
+
+        # Aggregate groups must cover exactly the pre-individuation stages, so the
+        # cohort that completes the last one lands on the individuation stage.
+        for jms in (5, 6, 7)
+            pj = IBMParameters(organism = OrganismParams(juvenile_max_stage = jms))
+            m = initialize_model(n_agents = 1, grid = (10, 10), seed = 2, params = pj)
+            groups = Agents.abmproperties(m)[:aggregate_populations].groups
+            stages = sort(unique([g.stage for g in groups]))
+            @test stages == collect(0:(jms - 1))
+            @test (jms - 1) + 1 == individuation_stage(pj)
+        end
+    end
+
+    @testset "Runs survive population extinction" begin
+        # Regression: `Agents._add_col_data!` calls `agg(generator)` with no `init`,
+        # so a bare `sum` threw "reducing over an empty collection" the moment the
+        # population reached zero — which is the normal outcome of the default
+        # calibration, so a long run crashed inside data collection rather than
+        # recording the final empty state.
+        m = initialize_model(n_agents = 60, grid = (16, 16), seed = 4)
+        adf, mdf = run_simulation(m, 4000)
+        nn = mdf.n_benthic_organisms
+        @test length(nn) == 4001              # inclusive of the initial frame
+        @test nn[end] >= 0
+        # The mass column is the one that used to throw; it must be present and
+        # zero (not missing) once the population is gone.
+        @test :sum_mass in propertynames(adf)
+        @test adf[end, :sum_mass] == 0.0
+        @test adf[end, :length_stage] == 0.0
+
+        # Directly: the aggregators must be total on an empty input.
+        @test safe_sum(Float64[]) == 0.0
+        @test safe_mean(Float64[]) == 0.0
+        @test safe_sum(1.0:3.0) == 6.0
+        @test safe_mean(1.0:3.0) == 2.0
+        # A one-shot generator is what Agents actually passes.
+        @test safe_mean(x for x in Float64[]) == 0.0
+        @test safe_sum(x for x in Float64[]) == 0.0
+        @test safe_mean(x for x in 1.0:3.0) == 2.0
+    end
+
+    @testset "Maturity ogive criterion compares like with like" begin
+        # Regression: the criterion scored a cross-sectional ogive (probability of
+        # having *ever* matured) against `maturity`, the probability of maturing at
+        # a *single ecdysis*, so it was biased against realistic values by
+        # construction.
+
+        sizes = collect(20.0:10.0:140.0)
+        cum_m, cum_f = cumulative_maturity_curves(sizes)
+        @test length(cum_m) == length(sizes)
+        @test length(cum_f) == length(sizes)
+
+        # Monotone in size, and bounded.
+        @test all(diff(cum_m) .>= -1e-12)
+        @test all(diff(cum_f) .>= -1e-12)
+        @test all(0.0 .<= cum_m .<= 1.0)
+        @test all(0.0 .<= cum_f .<= 1.0)
+
+        # Strictly above the per-ecdysis curve: an individual at a given size has
+        # already ecdysed through every earlier stage.
+        pm = [maturity(0, log(s); deterministic = true) for s in sizes]
+        @test all(cum_m .>= pm .- 1e-12)
+        @test cum_m[end] > pm[end]
+        @test cum_m[end] > 0.95
+
+        # Data drawn from the cumulative process must score ~0, and must not have
+        # scored ~0 under the old per-ecdysis comparison.
+        perfect = (
+            bin_centers = sizes,
+            prop_mature = cum_m,
+            counts = fill(50, length(sizes))
+        )
+        @test maturity_ogive_mismatch(perfect, male) < 1e-9
+        old_sq = [(cum_m[i] - pm[i])^2 for i in eachindex(sizes)]
+        @test sqrt(mean(old_sq)) > 0.03
+
+        # Data drawn from the per-ecdysis curve instead must now be penalised.
+        single = (
+            bin_centers = sizes,
+            prop_mature = pm,
+            counts = fill(50, length(sizes))
+        )
+        @test maturity_ogive_mismatch(single, male) > 0.01
+
+        # An empty ogive is "no data", not "perfect fit" and not "total failure".
+        empty_ogive = (bin_centers = Float64[], prop_mature = Float64[], counts = Int[])
+        @test maturity_ogive_mismatch(empty_ogive, male) == 0.0
+        @test isempty(maturity_ogive_residuals(empty_ogive, male))
+
+        # Single-sex form agrees with the two-sex form, for both enum and int.
+        @test cumulative_maturity_curves(sizes, male) == cum_m
+        @test cumulative_maturity_curves(sizes, 0) == cum_m
+        @test cumulative_maturity_curves(sizes, female) == cum_f
     end
 
 end
