@@ -39,7 +39,6 @@ parameter_structs() = (
     (:mortality, MortalityParams, "mortality"),
     (:fishery, FisheryParams, "fishery"),
     (:output, OutputParams, "output"),
-    (:binning, BinningParams, "binning"),
     (:leslie, LeslieParams, "leslie"),
     (:criteria, CriteriaParams, "criteria"),
 )
@@ -569,7 +568,16 @@ Construct and populate an `Agents.StandardABM` representing the organism ecosyst
 - `dt::Float64`: Time step in days (default: 1.0).
 - `params::IBMParameters`: Parameters and process toggles.
 - `behavior::Union{Nothing, SpeciesBehavior}`: Optional custom species behavior. If nothing, created from params.species.
-- `seed::Union{Nothing, Int}`: Optional RNG seed.
+- `seed::Union{Nothing, Int}`: Optional RNG seed. A fixed seed makes a run
+  repeatable only up to the activation order; see `scheduler`.
+- `scheduler`: Agent activation order. Defaults to
+  `Agents.Schedulers.Randomly()`, which draws its order from the model's RNG, so
+  a fixed seed fixes the activation order by construction while still using every
+  thread. The Agents.jl default, `Schedulers.fastest`, takes the agent
+  container's own id order, which is not derived from the RNG and is not
+  guaranteed stable. That matters here because organisms interact: mortality,
+  mate search and cannibalism all read neighbours, so the activation order is
+  part of the state transition.
 
 # Returns
 Configured and populated `StandardABM` instance ready for simulation.
@@ -584,6 +592,7 @@ function initialize_model(;
     params::IBMParameters = IBMParameters(),
     behavior::Union{Nothing, SpeciesBehavior} = nothing,
     seed::Union{Nothing, Int} = nothing,
+    scheduler = Agents.Schedulers.Randomly(),
     kwargs...
 )
     # Create species behavior from params if not provided
@@ -654,6 +663,9 @@ function initialize_model(;
         ),
         :aggregate_populations => AggregatePopulations(),
         :species_behavior => behavior,
+        # Published by `model_step!` and read by `agent_step!` and the accessors, so
+        # neither recomputes it per organism. Seeded to the value for time zero.
+        :day_of_year => 0.0,
         :step_callback => get(kwargs, :step_callback, nothing)
     )
 
@@ -663,8 +675,21 @@ function initialize_model(;
         agent_step! = agent_step!,
         model_step! = model_step!,
         properties = properties,
-        rng = rng
+        rng = rng,
+        scheduler = scheduler
     )
+    properties[:scheduler] = scheduler
+    # `Schedulers.fastest` returns the agent container's own id order, which for a
+    # `Dict` container is whatever the hash table happens to hold and is not
+    # derived from the RNG. `Randomly` draws its order from the model's RNG, so a
+    # fixed seed fixes the activation order by construction. That matters here
+    # because organisms interact: mortality, mate search and cannibalism all read
+    # neighbours, so the activation order is part of the model's state transition.
+    properties[:seeded_activation_order] =
+        scheduler !== Agents.Schedulers.fastest
+    # Seeded so the accessor below never has to fall back to recomputing on the
+    # first step. `model_step!` refreshes it once per step.
+    properties[:density_feedback] = benthic_density_feedback(model)
 
     # --- Initialize Aggregate Populations (stage 0 through juvenile_max_stage - 1) ---
     #
@@ -673,21 +698,25 @@ function initialize_model(;
     # would silently mis-seed any other value: individuation happens at stage 6, so
     # a group per stage below that is what feeds the benthic population.
     pop = AggregatePopulations()
-    juvenile_max = params.organism.juvenile_max_stage
+    sim_params = params.simulation
+    org_params = params.organism
+    juvenile_max = org_params.juvenile_max_stage
     if n_agents > 0 && juvenile_max > 0
         for stg in 0:(juvenile_max - 1)
-            sz = (stg == 0) ? 0.60 :
-                 ((stg < 4) ? stage_size_lower_bound(behavior, Float64(stg), :male) :
-                  stage_size(behavior, stg, :male; type = :random, rng = rng))
-            wt = (stg == 0) ? 0.00007 :
+            sz = (stg == 0) ? org_params.egg_size_mm :
+                 ((stg < Int(params.species.benthic_anchor_stage)) ?
+                  stage_size_lower_bound(behavior, Float64(stg), :male) :
+                  stage_size(behavior, stg, :male; type = :random, rng = rng, params = params))
+            wt = (stg == 0) ? org_params.egg_mass_g :
                  calculate_mass(behavior, sz, :male; mat = 0, stochastic = true, rng = rng)
             grp = AggregateGroup(
                 id = pop.next_group_id,
                 stage = stg,
-                abundance = (stg == 0) ? 2000.0 : 500.0,
+                abundance = (stg == 0) ? sim_params.initial_egg_cohort_abundance :
+                           sim_params.initial_stage_cohort_abundance,
                 size = sz,
                 mass = wt,
-                age_days = stg * 90.0,
+                age_days = stg * sim_params.initial_cohort_days_per_stage,
                 degree_days = 0.0,
                 last_growth_time = 0.0,
                 pos = (rand(rng, 1:grid[1]), rand(rng, 1:grid[2]))
@@ -731,14 +760,22 @@ function initialize_model(;
     # cohort is juvenile-skewed as a real population is, while every benthic stage is
     # still represented. The decay is a calibration choice; that a stage must be
     # reachable at all is not.
-    stage_decay = 0.75
+    stage_decay = sim_params.initial_stage_decay
 
     function seed_one(stg::Int, sex, position)
-        sz = stage_size(behavior, stg, sex; type = :random, rng = rng)
-        age_days = (stg - 3.0) * 180.0 + rand(rng) * 90.0
+        sz = stage_size(behavior, stg, sex; type = :random, rng = rng, params = params)
+        age_days = (stg - sim_params.initial_age_first_stage) *
+                   sim_params.initial_age_days_per_stage +
+                   rand(rng) * sim_params.initial_age_jitter_days
         energy_reserve = params.organism.initial_energy
         last_molt_time = -age_days
-        degree_days = rand(rng, Uniform(50.0, 300.0))
+        degree_days = rand(
+            rng,
+            Uniform(
+                sim_params.initial_degree_days_min,
+                sim_params.initial_degree_days_max
+            )
+        )
         max_stage = max_stage_of(sex)
 
         new_org = add_agent!(
@@ -823,6 +860,26 @@ function initialize_model(;
     properties[:n_benthic_organisms] = benthic_cnt
     properties[:n_mature_males] = mat_m
     properties[:n_mature_females] = mat_f
+
+    # The density feedback multiplies every mortality hazard by
+    # `1 + (N / K)^exponent`, so a stock that starts above K is not a slow
+    # calibration problem: at K = 300 against the default seed of 4800 the
+    # multiplier is 257 and every hazard is a certainty on day one. That looks
+    # like an extinction the model never modelled, so it is reported here rather
+    # than discovered in the results.
+    k_cap = params.environment.benthic_carrying_capacity
+    seeded_stock = total_benthic_abundance(model)
+    if k_cap > 0.0 && seeded_stock > k_cap
+        multiplier = 1.0 +
+                     (seeded_stock / k_cap)^params.environment.benthic_carrying_capacity_exponent
+        @warn "seeded benthic stock already exceeds the carrying capacity" stock =
+            round(seeded_stock; digits = 1) capacity = k_cap ratio = round(
+            seeded_stock / k_cap;
+            digits = 2,
+        ) mortality_multiplier = round(multiplier; digits = 1) initial_egg_cohort_abundance =
+            sim_params.initial_egg_cohort_abundance initial_stage_cohort_abundance =
+            sim_params.initial_stage_cohort_abundance n_agents = n_agents
+    end
     properties[:n_legal_males] = leg_m
 
     return model
@@ -890,10 +947,14 @@ function organism_disperse!(
         return org.pos
     end
 
-    # Benthic habitat taxis: evaluate local environmental suitability
-    t_opt = 2.5
-    t_sigma = 1.5
-    half_sat = model.params.environment.half_saturation_food
+    # Benthic habitat taxis: evaluate local environmental suitability. The thermal
+    # preference governs direction of travel and is distinct from the metabolic
+    # optimum in [organism], which sets the energetic cost curve instead.
+    env = model.params.environment
+    t_opt = env.habitat_temperature_optimum
+    t_sigma = env.habitat_temperature_sigma
+    food_weight = env.habitat_food_weight
+    half_sat = env.half_saturation_food
 
     utilities = Float64[]
     for pos in candidates
@@ -906,16 +967,17 @@ function organism_disperse!(
 
         # Hyperbolic food suitability
         s_food = cfood / (cfood + half_sat)
-        
+
         # Substrate/Refuge quality
         chabitat = model.habitat_quality_field[cx, cy]
 
-        u = chabitat * s_temp * (1.0 + 0.5 * s_food)
+        u = chabitat * s_temp * (1.0 + food_weight * s_food)
         push!(utilities, u)
     end
 
-    # Softmax probabilities with temperature parameter tau = 0.5
-    tau = 0.5
+    # Softmax over suitability. A larger temperature spreads the heading
+    # distribution over more directions; a smaller one concentrates it.
+    tau = env.movement_softmax_temperature
     max_u = maximum(utilities)
     weights = [exp((u - max_u) / tau) for u in utilities]
 
@@ -935,33 +997,62 @@ are applied modularly based on the feature toggles in `model.params.toggles`.
 """
 function agent_step!(org::Organism, model)
     org.age_days += model.dt
-    day_of_year = mod(model.current_time, 365.0)
+    # `model.params` is a symbol lookup into the model's properties dictionary on
+    # every access, and this function reads it a dozen times per organism per day.
+    # At a few thousand organisms over a two-year run that is tens of millions of
+    # dictionary lookups. Hoist it once.
+    params = model.params
+    # The day of year is the same for every organism on a given day. `model_step!`
+    # has already computed it for the seasonal cycle, so read that rather than
+    # recomputing the modulo per organism.
+    day_of_year = current_day_of_year(model)
+    dt = model.dt
+
+    # Constants for this step, resolved once. Each of these is a nested parameter
+    # access, and none of them varies between organisms.
+    toggles = params.toggles
+    use_energetics = toggles.use_energetics
+    use_degree_days = toggles.use_degree_days
+    use_cannibalism = toggles.use_cannibalism
+    use_fishery = toggles.use_fishery
+    # Whether the fishery is open, and the maturity threshold for a legal animal,
+    # are properties of the day, not of the organism.
+    in_fishing_season = use_fishery &&
+                        params.fishery.fishing_probability_daily > 0.0 &&
+                        params.fishery.fishing_season_start <= day_of_year <=
+                        params.fishery.fishing_season_end
+    # The organism does not move until step 6 and the environment does not change
+    # within a step, so its own cell's temperature is fixed for steps 1 to 5. It was
+    # read four times: energetics, degree-day accrual, the molt decision inside
+    # `perform_development!`, and mortality.
+    temp = model.temperature_field[org.pos...]
 
     # 1. Energetics (Holling Type II & Kleiber consumption)
-    if model.params.toggles.use_energetics
-        temp = model.temperature_field[org.pos...]
+    if use_energetics
         food = model.food_availability_field[org.pos...]
-        dE_dt, intake = calculate_energy_change(temp, food, org.size; params = model.params, mass = org.mass)
-        org.energy_reserve += dE_dt * model.dt
-        model.food_availability_field[org.pos...] = max(0.0, food - intake * model.dt)
+        dE_dt, intake = calculate_energy_change(temp, food, org.size; params = params, mass = org.mass)
+        org.energy_reserve += dE_dt * dt
+        model.food_availability_field[org.pos...] = max(0.0, food - intake * dt)
     end
 
     # 2. Degree-day accumulation
-    if model.params.toggles.use_degree_days
-        temp = model.temperature_field[org.pos...]
-        dd_inc = max(0.0, temp - model.params.environment.temp_base_degreedays) * model.dt
-        org.degree_days += dd_inc
+    if use_degree_days
+        org.degree_days += max(0.0, temp - params.environment.temp_base_degreedays) * dt
     end
 
     # 3. Development & Molting
-    perform_development!(org.behavior, org, model)
+    perform_development!(org.behavior, org, model; temp = temp)
 
     # 4. Mortality
-    temp = model.temperature_field[org.pos...]
-    local_density = Float64(count(_ -> true, nearby_agents(org, model, 1)))
+    # `temp` is still the organism's own cell: nothing before this step moves it.
+    # The neighbourhood query that feeds the cannibalism hazard is only worth its
+    # cost when cannibalism is switched on. It was run for every organism on every
+    # day regardless, and it is a grid lookup over the surrounding cells.
+    local_density = use_cannibalism ?
+                    Float64(count(_ -> true, nearby_agents(org, model, 1))) : 0.0
     causes = mortality_components(org, temp, local_density, model.current_time;
-        params = model.params,
-        density_feedback = benthic_density_feedback(model))
+        params = params,
+        density_feedback = density_feedback(model))
 
     if rand(abmrng(model)) < causes.total
         # Attribute the death to the hazard that produced it. The previous rule —
@@ -983,24 +1074,27 @@ function agent_step!(org::Organism, model)
     end
 
     # 5. Fishery Harvest
-    if model.params.toggles.use_fishery &&
-       model.params.fishery.fishing_probability_daily > 0.0 &&
-       (model.params.fishery.fishing_season_start <= day_of_year <= model.params.fishery.fishing_season_end) &&
-       is_legal_male(org, model.params.fishery.legal_size_male,
-                     model.params.organism.adult_size_threshold)
-
-        fishing_probability_daily = model.params.fishery.fishing_probability_daily *
-                       selectivity(
-                           org.size;
-                           s50 = model.params.fishery.legal_size_male,
-                           s50_sigma = org.behavior.params.selectivity_s50_sigma
-                       )
-        if rand(abmrng(model)) < fishing_probability_daily
-            model.total_catch_numbers += 1
-            model.total_catch_biomass_kg += (org.mass / 1000.0)
-            model.deaths_fishery += 1
-            remove_agent!(org, model)
-            return nothing
+    if in_fishing_season
+        legal_size = params.fishery.legal_size_male
+        if is_legal_male(org, legal_size, params.organism.adult_size_threshold)
+            # Legality is checked before the draw, not after. It used to consume one
+            # random number per organism in season — selectivity already zeroes the
+            # probability for a sublegal animal, so those draws were spent on
+            # nothing and only shifted the stream for everything after them.
+            fishing_probability_daily = params.fishery.fishing_probability_daily *
+                                       selectivity(
+                                           org.size;
+                                           s50 = legal_size,
+                                           s50_sigma =
+                                               org.behavior.params.selectivity_s50_sigma
+                                       )
+            if rand(abmrng(model)) < fishing_probability_daily
+                model.total_catch_numbers += 1
+                model.total_catch_biomass_kg += (org.mass / 1000.0)
+                model.deaths_fishery += 1
+                remove_agent!(org, model)
+                return nothing
+            end
         end
     end
 
@@ -1014,6 +1108,11 @@ function agent_step!(org::Organism, model)
 end
 
 function update_demographic_caches!(model)
+    # Both thresholds are read once per organism. The compiler cannot hoist them
+    # out of the loop because the loop body is opaque, so leaving them in place
+    # meant resolving two nested parameter accesses per agent per day.
+    legal_size = model.params.fishery.legal_size_male
+    adult_size = model.params.organism.adult_size_threshold
     benthic_count = 0
     mat_males = 0
     mat_females = 0
@@ -1025,8 +1124,7 @@ function update_demographic_caches!(model)
         elseif is_mature_female(org)
             mat_females += 1
         end
-        if is_legal_male(org, model.params.fishery.legal_size_male,
-                         model.params.organism.adult_size_threshold)
+        if is_legal_male(org, legal_size, adult_size)
             legal_males += 1
         end
     end
@@ -1055,28 +1153,64 @@ function model_step!(model)
     end
 
     # 1. Environmental updates (Temperature & Food)
+    #
+    # These touch every cell, so at a 1000 x 1000 grid they are 1e6 elements per
+    # field per day. Both updates are written to avoid allocating: a
+    # `rand(rng, Normal(0, sd), dims)` here would allocate a second full-size
+    # matrix every step, which is 8 MB per day and 5.8 GB over a two-year run, and
+    # would also make every other allocation in the step wait on the collector.
     day_of_year = mod(model.current_time, sim.days_per_year)
     sinusoidal_factor = sin(2.0 * π * (day_of_year - sim.temp_seasonal_phase_day) /
                            sim.days_per_year)
 
-    t_base = model.params.environment.temp_base
-    t_amp = model.params.environment.temp_amplitude
-    t_sd = model.params.environment.temp_noise_sd
+    env = model.params.environment
+    t_base = env.temp_base
+    t_amp = env.temp_amplitude
+    t_sd = env.temp_noise_sd
 
-    noise = rand(abmrng(model), Normal(0.0, t_sd), size(model.temperature_field))
-    @. model.temperature_field = t_base + t_amp * sinusoidal_factor + noise
+    # The seasonal target is spatially uniform; the field's only structure is the
+    # white noise. Drawing the standard normals straight into the field and scaling
+    # in place gives the same values from the same RNG stream with one pass and no
+    # allocation.
+    seasonal_target = t_base + t_amp * sinusoidal_factor
+    temperature = model.temperature_field
+    if t_sd > 0.0
+        randn!(abmrng(model), temperature)
+        @. temperature = seasonal_target + t_sd * temperature
+    else
+        fill!(temperature, seasonal_target)
+    end
 
-    f_max = model.params.environment.food_max
-    f_rate = model.params.environment.food_replenishment_rate
-    @. model.food_availability_field += f_rate * (f_max - model.food_availability_field) * dt
+    # Published for the agent phase, which needs the same day of year for every
+    # organism and used to recompute the modulo once per agent per day.
+    model.day_of_year = day_of_year
+
+    f_max = env.food_max
+    f_rate = env.food_replenishment_rate
+    # `F += r * (f_max - F) * dt` written as the affine map it is: one multiply
+    # and one add per cell rather than a subtract, two multiplies and an add.
+    food_decay = 1.0 - f_rate * dt
+    food_gain = f_rate * f_max * dt
+    @. model.food_availability_field = food_decay * model.food_availability_field +
+                                       food_gain
 
     # 2. Advance pre-individuation aggregate cohort groups (stages 0 through 5)
     step_aggregate_groups!(model)
 
-    # 3. Update demographic aggregate caches
+    # 3. Refresh the density multiplier once for this step.
+    #
+    # It depends only on the population, so evaluating it per organism recomputed
+    # the same value once per agent per day, walking the aggregate cohorts each
+    # time. It is refreshed once per step instead, and *after* the cohorts have
+    # advanced: individuation adds recruits to the population the agents are about
+    # to face, so reading it before would apply last step's density to this step's
+    # animals.
+    model.density_feedback = benthic_density_feedback(model)
+
+    # 4. Update demographic aggregate caches
     update_demographic_caches!(model)
 
-    # 4. Optional step callback hook
+    # 5. Optional step callback hook
     if haskey(abmproperties(model), :step_callback) && model.step_callback !== nothing
         model.step_callback(model)
     end
@@ -1089,13 +1223,24 @@ end
 
 Mean of `x`, returning `0.0` when it is empty.
 
-Materialises `x` exactly once before testing it. `Agents` hands aggregators a
-one-shot generator, not a collection, so probing emptiness with `isempty(x)` and
-then calling `mean(x)` either consumes an element or fails outright.
+`Agents` hands aggregators a one-shot generator, not a collection, so
+`mean(x)` throws on an empty one and probing with `isempty(x)` first consumes an
+element. The obvious fix is `collect(x)` then `mean`, which is correct but
+allocates a `Vector` per column per step: with about ten mean columns collected
+every day, that is ten population-sized allocations per simulated day, and it is
+why observation collection costs so much more than the dynamics themselves.
+
+This accumulates in one pass with no allocation. The population counts change
+between steps and can reach zero, so it has to handle an empty input anyway.
 """
 function safe_mean(x)
-    values = collect(x)
-    return isempty(values) ? 0.0 : mean(values)
+    total = 0.0
+    n = 0
+    for v in x
+        total += v
+        n += 1
+    end
+    return n == 0 ? 0.0 : total / n
 end
 
 """
@@ -1202,6 +1347,7 @@ function run_simulation(
     if when === nothing
         return run!(model, n_steps; adata = actual_adata, mdata = actual_mdata)
     else
-        return run!(model, n_steps; adata = actual_adata, mdata = actual_mdata, when = when)
+        return run!(model, n_steps; adata = actual_adata, mdata = actual_mdata,
+                    when = when)
     end
 end

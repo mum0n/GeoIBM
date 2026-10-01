@@ -42,6 +42,27 @@ grid_nx                 = 100     # Grid width in cells
 grid_ny                 = 100     # Grid height in cells
 days_per_year           = 365.0   # Calendar length; day-of-year is taken modulo this
 temp_seasonal_phase_day = 80.0    # Day of year at peak temperature
+# --- Initial aggregate cohorts ---
+# Every stage below [organism] juvenile_max_stage is seeded with one aggregate
+# group. The egg stage carries initial_egg_cohort_abundance, every later stage
+# initial_stage_cohort_abundance, each at initial_cohort_days_per_stage days of age.
+initial_egg_cohort_abundance   = 2000.0
+initial_stage_cohort_abundance = 500.0
+initial_cohort_days_per_stage  = 90.0
+# --- Initial benthic agents ---
+# Stage-abundance weighting is initial_stage_decay^(stage - first_benthic), so a
+# value below 1 makes the seeded cohort juvenile-skewed while still reaching
+# every stage.
+initial_stage_decay            = 0.75
+# A seeded individual's age is initial_age_days_per_stage * (stage -
+# initial_age_first_stage), plus a uniform draw on [0, initial_age_jitter_days].
+initial_age_days_per_stage     = 180.0
+initial_age_first_stage        = 3.0
+initial_age_jitter_days        = 90.0
+# Pre-ecdysial thermal requirement a seeded individual starts with, drawn
+# uniformly on [initial_degree_days_min, initial_degree_days_max].
+initial_degree_days_min        = 50.0
+initial_degree_days_max        = 300.0
 
 # -----------------------------------------------------------------------------
 # [environment] — external drivers
@@ -55,21 +76,49 @@ temp_base_degreedays  = 0.0        # Extra degree-days contributed by temperatur
 # --- Food and habitat ---
 food_max                        = 10.0    # Maximum local benthic food density
 food_replenishment_rate         = 0.1     # Daily replenishment increment per cell
-benthic_carrying_capacity       = 300.0   # Total benthic capacity for the WHOLE
+# Density-dependent crowding. Total benthic abundance N is `individuated +
+# aggregate`, and the mortality feedback is 1 + (N / K)^exponent.
+#
+# K must exceed the seeded stock, which at the defaults is 300 individuals plus
+# the aggregate cohorts (2000 eggs, then 500 per stage over stages 1 to 5) = 4800.
+# At K = 300 the multiplier at time zero was 257, which drove every hazard to
+# certainty on day one: nothing survived to reach the benthic stages, so
+# individuation never ran and the run reported an extinction it had not modelled.
+# At K = 12000 the multiplier is 1.16, so crowding corrects the configured
+# mortality by about two points a year instead of replacing it. The model warns at
+# initialization if the seeded stock already exceeds K.
+benthic_carrying_capacity       = 12000.0 # Total benthic capacity for the WHOLE
                                             # model, not per cell
-benthic_carrying_capacity_exponent = 2.0   # Exponent in 1 + (N / K)^exponent
+benthic_carrying_capacity_exponent = 2.0  # Exponent in 1 + (N / K)^exponent
 half_saturation_food            = 2.0     # Half-saturation constant for intake
 assimilation_efficiency         = 0.75    # Food to energy conversion efficiency
 habitat_quality_mean            = 1.0     # Mean habitat quality on [0, 1]
 habitat_quality_sd              = 0.1     # Spatial habitat quality stochasticity
+# --- Habitat-directed movement ---
+# Dispersal scores each candidate cell by thermal suitability and food density,
+# then samples a heading from a softmax of those scores. The thermal optimum and
+# sigma here describe the direction of travel; they are independent of the
+# `metabolic_optimal_*` values in [organism], which set the energetic cost curve.
+habitat_temperature_optimum = 2.5    # Preferred temperature for movement (deg C)
+habitat_temperature_sigma   = 1.5    # Width of the thermal preference (deg C)
+# Weight of food density relative to the thermal term. Zero makes dispersal
+# purely thermal.
+habitat_food_weight          = 0.5
+# Softmax temperature of the heading distribution. Larger spreads movement over
+# more directions; smaller concentrates it on the best cells.
+movement_softmax_temperature = 0.5
+# --- Settlement (individuation) ---
+settlement_dispersal_radius = 2      # Radius in cells a new recruit settles within
+settlement_size_log_sd     = 0.04   # Lognormal SD of recruit size about its cohort
 
 # -----------------------------------------------------------------------------
 # [organism] — generic morphometry, energetics and growth
 # -----------------------------------------------------------------------------
 [organism]
 # --- Size limits and stage structure ---
-max_size_male                = 160.0   # Maximum male carapace width (mm)
-max_size_female              = 95.0    # Maximum female carapace width (mm)
+# The asymptotic carapace width of each sex is declared in [species]
+# (max_size_male / max_size_female), because it is the saturating limit of the
+# stage size curve. See the stage lower bounds section there.
 max_stage_male               = 16      # Terminal developmental stage, males
 max_stage_female             = 14      # Terminal developmental stage, females
 juvenile_max_stage           = 6       # Last stage before benthic life
@@ -130,6 +179,28 @@ maturity_slope_female_sd  = 0.4         # SD of the female slope
 maturity_size_gate        = 35.0        # No maturation below this size (mm)
 maturity_l50_temp_slope   = -2.0        # L50 shift per deg C from reference
 maturity_temp_reference   = 4.0         # Reference temperature for that shift
+# --- Stage table (Leslie projection and maturity analysis) ---
+# Four parallel vectors per block: developmental stage, size range lower edge,
+# size range upper edge, representative size. The block is emitted in order and
+# truncated at leslie_max_*_stage. Pooled sexes come first (the recruit and
+# juvenile bins), then the male and female series.
+stage_size_range_stage1      = [4.0, 5.0]
+stage_size_range_lower_stage1 = [7.0, 14.5]
+stage_size_range_upper_stage1 = [14.5, 22.0]
+stage_size_range_mean_stage1  = [10.7, 18.0]
+stage_size_range_stage_male  = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+stage_size_range_lower_male  = [22.0, 31.0, 42.5, 58.0, 78.0, 95.0, 115.0]
+stage_size_range_upper_male  = [31.0, 42.5, 58.0, 78.0, 95.0, 115.0, 160.0]
+stage_size_range_mean_male   = [26.5, 36.5, 50.0, 68.0, 86.5, 105.0, 130.0]
+stage_size_range_stage_female  = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+stage_size_range_lower_female  = [22.0, 30.5, 41.5, 54.5, 68.0, 82.0]
+stage_size_range_upper_female  = [30.5, 41.5, 54.5, 68.0, 82.0, 110.0]
+stage_size_range_mean_female   = [26.0, 35.5, 47.5, 61.0, 75.0, 90.0]
+leslie_max_male_stage           = 12     # Last stage emitted from the male table
+leslie_max_female_stage         = 11     # Last stage emitted from the female table
+leslie_legal_size_male          = 95.0   # Size at or above which a stage is legal
+leslie_first_legal_stage_male   = 11     # Backstop for the largest male stages
+leslie_first_repro_stage_female = 9      # First female stage counted as reproductive
 # --- Fecundity (Moncton form) ---
 fecundity_parameterization     = "moncton"    # "moncton" or "stmarie"
 fecundity_primiparous_intercept = -0.7229     # Primiparous log-eggs intercept
@@ -146,18 +217,36 @@ fecundity_stmarie_coefficient = 0.7311   # St. Mary power-law coefficient
 fecundity_senescence_threshold = 3.0    # Shell age at which decline starts (y)
 fecundity_senescence_floor     = 0.6    # Multiplier floor
 fecundity_senescence_rate      = 0.08   # Decline rate per year past threshold
+# Shell age (years) at or below which a female is treated as primiparous, i.e.
+# extruding her first brood. Parity is a property of the female's reproductive
+# history, not of how much sperm she happens to be holding.
+primiparous_shell_age_max      = 2.0
+# Carapace width (mm) separating the primiparous and multiparous fecundity forms.
+# This is the split used only when shell age is unavailable: the two forms are
+# distinguished by reproductive history, and size is the best proxy in a survey
+# that did not record it. Females at or below this size are scored primiparous.
+fecundity_parity_size_split    = 65.0
 # --- Growth: females ---
-growth_int_female              = 0.1931     # Growth intercept
-growth_beta1_female            = 0.0545     # Size coefficient
-growth_slp_female              = 1.0372     # Temperature coefficient
-growth_beta2_female            = -0.017376  # Quadratic size term
-growth_beta3_female            = 0.005068   # Cubic size term
+# log(CW_next) = intercept + slope * log(CW_prev) + terms, so `growth_slp_*` is the
+# slope on log size and `growth_int_*` its intercept. A slope above 1 means the
+# size increment compounds with each ecdysis, which is why post-molt size is capped
+# at max_size_female / max_size_male: without the cap an immature animal that keeps
+# molting grows without bound.
+#
+# Note the labels: these are NOT temperature coefficients (that is
+# growth_temperature_coefficient below), and `growth_beta1_*` is the scaling of the
+# intercept by an individual's growth-trait quantile, not a size term.
+growth_int_female              = 0.1931     # Intercept on log size
+growth_beta1_female            = 0.0545     # Intercept scaling by growth quantile
+growth_slp_female              = 1.0372     # Slope on log size
+growth_beta2_female            = -0.017376  # Slope scaling by growth quantile
+growth_beta3_female            = 0.005068   # Slope scaling by a second draw
 # --- Growth: males ---
-growth_int_male                = 0.30153    # Growth intercept
-growth_beta1_male              = 0.02198    # Size coefficient
-growth_slp_male                = 1.00027    # Temperature coefficient
-growth_beta2_male              = -0.00643655 # Quadratic size term
-growth_beta3_male              = 0.0017492  # Cubic size term
+growth_int_male                = 0.30153    # Intercept on log size
+growth_beta1_male              = 0.02198    # Intercept scaling by growth quantile
+growth_slp_male                = 1.00027    # Slope on log size
+growth_beta2_male              = -0.00643655 # Slope scaling by growth quantile
+growth_beta3_male              = 0.0017492  # Slope scaling by a second draw
 # --- Growth: shared ---
 growth_maturation_penalty_male_mean   = -0.13564 # Log-size penalty at maturity
 growth_maturation_penalty_male_sd     = 0.00922
@@ -169,17 +258,34 @@ growth_temperature_reference   = 4.0    # Reference temperature (deg C)
 growth_residual_sd             = 0.04   # Between-individual growth SD
 growth_min_expansion_immature  = 0.12   # Minimum fractional growth, immature
 growth_min_expansion_mature    = 0.06   # Minimum fractional growth, mature
-# --- Stage lower bounds ---
-# Pre-benthic stages come from a small lookup split at the breakpoints.
+# --- Stage size bounds ---
+# Asymptotic carapace width of each sex (mm). This is the saturating limit of the
+# stage size curve below and the hard ceiling on any modelled or drawn size, so it
+# lives here rather than in [organism]: a limit the curve cannot see is a limit it
+# cannot obey.
+max_size_male                = 160.0
+max_size_female              = 95.0
+# The empirical lower bound of carapace width per stage saturates at the
+# asymptotic size:
+#   ln S(stage) = ln L + (intercept - ln L) * exp(-decay * (stage - anchor))
+# so it equals exp(intercept) at the anchor stage and tends to L. `intercept` and
+# `decay` are least-squares fitted to the lower edge of each tabulated stage
+# (stage_size_range_lower_*); the fit is monotone, bounded, and carries about 8%
+# log-scale error against that data.
+#
+# The earlier form, exp(intercept + slope * (stage - anchor)), is unbounded for
+# every positive slope: it put a stage-12 female at 112 mm against a 95 mm ceiling
+# and a stage-14 female at 210 mm. Pre-benthic stages come from a small lookup
+# split at the breakpoints, because size there is far from the curve.
 size_lb_immature_sizes       = [0.95, 1.45, 2.5]  # Lower bounds (mm)
 size_lb_immature_breakpoints = [1.5, 2.5]          # Stage split points
-size_lb_male_intercept       = 1.917564
-size_lb_male_slope           = 0.298914
-size_lb_male_anchor_stage    = 3.0      # Stage at which the fit is anchored
-size_lb_female_intercept     = 2.198848
-size_lb_female_slope         = 0.315026
+size_lb_male_intercept       = 1.102422  # ln(carapace width) at the male anchor stage
+size_lb_male_decay           = 0.235833  # Convergence to max_size_male, per stage
+size_lb_male_anchor_stage    = 3.0       # Stage at which the fit is anchored
+size_lb_female_intercept     = 1.930054
+size_lb_female_decay         = 0.308476
 size_lb_female_anchor_stage  = 4.0
-benthic_anchor_stage         = 4.0      # First stage with sex-specific bounds
+benthic_anchor_stage         = 4.0       # First stage with sex-specific bounds
 # --- Fishery selectivity (logistic in size) ---
 selectivity_s50       = 95.0   # Size at 50% retention (mm)
 selectivity_s50_sigma = 5.0    # Retention bandwidth (mm)
@@ -196,7 +302,13 @@ mass_sigma                 = 0.08  # Between-individual mass SD
 # --- Ecdysis schedules, indexed by benthic stage ---
 intermolt_days_schedule = [60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0]
 degree_days_schedule   = [150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0]
-# --- Larval schedules, indexed by zoea stage ---
+# --- Larval schedules, indexed by pelagic stage ---
+# egg, then zoea, then megalopa. Their length is what defines how far the pelagic
+# block reaches: stages below it develop on these numbers, and every stage from
+# `length(intermolt_days_larval)` upward develops on the benthic schedules above.
+# The simulation reads them through `min_intermolt_days` and
+# `required_degree_days`; an egg at zero days and zero degree-days therefore
+# hatches on a hazard rather than after 60 days and 150 degree-days.
 intermolt_days_larval = [0.0, 5.0, 10.0]
 degree_days_larval    = [0.0, 20.0, 40.0]
 
@@ -209,10 +321,29 @@ molt_season_end              = 140.0   # Last day of the molt season
 mating_season_start          = 30.0    # First day of the mating season
 mating_season_end            = 120.0   # Last day of the mating season
 mating_search_radius         = 5       # Mate search radius in cells
-egg_survival_base            = 5.0e-5  # Baseline probability an egg survives
+# --- Mating and spermatheca ---
+# Energy a male spends on a successful mating attempt, deducted from its reserve;
+# a male that cannot pay it does not mate.
+mating_energy_cost            = 8.0
+# Relative mating likelihood of a nearby male, raised to this power of its
+# carapace width. An exponent of 2 makes large males preferred.
+mating_size_weight_exponent   = 2.0
+# Spermatheca stores a successful mating deposits, split into this many usable
+# clutches. A legal-size male stores `sperm_stores_legal`, a smaller one
+# `sperm_stores_sublegal`. Each clutch is extruded as one brood, so this sets how
+# many broods a single mating can support.
+sperm_stores_legal            = 3
+sperm_stores_sublegal         = 2
+# Floor on the extrapolated clutch size. Spermatheca deposition is modelled as a
+# single large mass rather than individual sperm, so a female very near the size
+# of maturity would otherwise carry an implausibly small clutch.
+minimum_clutch_size           = 1000
 brood_duration_base          = 365.0   # Brood duration at the reference temperature
 brood_temperature_reference  = 5.0     # Reference temperature for the duration
 brood_temperature_exponent   = 0.3     # Duration scales as (T_ref / T)^exponent
+# Lower bound on the temperature used in the incubation scaling, so a cell at or
+# below freezing cannot make the brood duration diverge.
+brood_temperature_floor      = 1.0
 brood_duration_sd            = 5.0     # Between-female SD of brood duration
 molt_season_min_stage        = 7       # Youngest stage that can molt
 molt_thermal_onset           = 10.0    # Temperature at which molting is possible
@@ -262,6 +393,11 @@ aggregate_hazard_degree_days    = 0.15  # Death hazard from unmet degree-days
 aggregate_hazard_intermolt      = 0.2   # Death hazard from overrunning intermolt
 aggregate_transition_hazard     = 0.35  # Per-ecdysis death hazard
 aggregate_transition_saturation = 10.0  # Stage-index saturation bound
+# Baseline daily hazard for an aggregate cohort, indexed by stage through
+# `stage_schedule_lookup` (a shorter list holds its last value for higher stages).
+# These cohorts predate individuation, so they carry the pelagic and early-benthic
+# mortality that the individual hazard terms above do not represent.
+aggregate_baseline_hazards      = [0.002, 0.015, 0.010, 0.003, 0.0015]
 # --- Guard ---
 # Every daily hazard is capped, because senescence is unbounded in age and a
 # terminal-molt individual never molts again. A clamped probability is not one
@@ -302,16 +438,6 @@ anim_fps       = 15      # Playback frame rate
 anim_field     = "temperature"  # Quantity the animation colour-maps
 
 # -----------------------------------------------------------------------------
-# [binning] — aggregate distributions for pre-individuation stages
-# -----------------------------------------------------------------------------
-[binning]
-use_bins     = true    # Use aggregate groups for early stages
-n_age_bins   = 50      # Age bins for non-spatial populations
-n_size_bins  = 20      # Size bins
-min_size     = 1.0     # Lower bin edge (mm)
-max_size     = 100.0   # Upper bin edge (mm)
-
-# -----------------------------------------------------------------------------
 # [leslie] — stage-structured projection rates
 # -----------------------------------------------------------------------------
 [leslie]
@@ -319,8 +445,10 @@ survival_stage1        = 0.74  # Stage 1 survival
 gamma_stage1           = 0.78  # Stage 1 recruitment to stage 2
 survival_stage2        = 0.76  # Stage 2 survival
 gamma_stage2           = 0.75  # Stage 2 recruitment to stage 3
+# Sex ratio applied to a cohort as it individuates. The female share is the
+# complement, so there is deliberately no second parameter: two independent
+# shares could be configured to sum to something other than one.
 male_split_fraction    = 0.5   # Fraction of recruits that are male
-female_split_fraction  = 0.5   # Fraction of recruits that are female
 survival_male_legal    = 0.78  # Survival of legal-sized males
 survival_male_sublegal = 0.8   # Survival of sublegal males
 survival_female        = 0.8   # Survival of females
@@ -337,11 +465,13 @@ p_term_female_exponent = 1.4   # Female production stage exponent
 fecundity_base        = 0.85   # Fecundity coefficient
 fecundity_size_exponent = 2.5  # Fecundity size exponent
 fecundity_size_reference = 65.0 # Size at which fecundity_base applies (mm)
-# Column-sum rescaling, used when the projection's total does not reconcile
-# with the observed catch-and-survival data.
-col_sum_cap           = 0.95  # Cap on the total column-sum multiplier
-col_sum_scale_low     = 0.85  # Multiplier when the projection is below observed
-col_sum_scale_high    = 0.15  # Additive slack above the cap
+# --- Fitting controls (fit_generalized_leslie_model) ---
+# Weight on the recursive trajectory term relative to the one-step process error
+# in the objective. Below 1 the one-step term dominates.
+trajectory_error_weight   = 0.5
+# Developmental stage at which the transition-rate decay and the maturation term
+# are both zero, i.e. the first sex-specific stage.
+first_sex_specific_stage  = 6
 
 # -----------------------------------------------------------------------------
 # [criteria] — multi-attribute evaluation criteria
@@ -354,3 +484,23 @@ col_sum_scale_high    = 0.15  # Additive slack above the cap
 [criteria]
 min_population         = 1     # Persistence floor: not-extinct threshold
 max_population_multiple = 3.0  # Explosion ceiling, as a multiple of K
+# --- Fidelity thresholds ---
+# Each bounds one component criterion; a run passes when every one holds.
+max_size_drift          = 0.20  # Largest fractional mean-size shift in the window
+max_maturity_rmse       = 0.35  # Largest RMSE vs the cumulative maturity curve
+max_growth_rmse         = 15.0  # Largest RMSE of stage mean size vs the schedule (mm)
+window_steps            = 10    # Recent time steps used for the size window
+maturity_ogive_min_count = 10   # Minimum individuals in a size bin to count it
+# --- Composite loss weights ---
+# The composite score is a weighted sum so an optimizer has something to descend:
+# each failed criterion contributes its fixed penalty, and each continuous error
+# contributes proportionally.
+extinction_penalty     = 150.0  # Added when the run went extinct
+explosion_penalty      = 150.0  # Added when the run exceeded the ceiling
+size_drift_weight      = 25.0   # Weight on fractional size drift
+maturity_rmse_weight   = 15.0   # Weight on maturity RMSE
+growth_rmse_weight     = 1.0    # Weight on growth RMSE (mm)
+# --- Maturity ogive size bins ---
+ogive_bin_start        = 20.0   # Lower edge (mm)
+ogive_bin_step         = 10.0   # Bin width (mm)
+ogive_bin_stop         = 140.0  # Upper edge (mm)

@@ -107,7 +107,8 @@ function main()
     @printf("   - Random Seed     : %d\n", config[:seed])
     @printf("   - Save Results    : %s (%s)\n", config[:save] ? "Yes" : "No", config[:save_file])
     @printf("   - Output Frequency: %.1f days (%.2f years)\n",
-            Float64(config[:frequency_days]), Float64(config[:frequency_days]) / 365.0)
+            Float64(config[:frequency_days]),
+            Float64(config[:frequency_days]) / Float64(config[:days_per_year]))
     @printf("   - Snapshot Day    : Day %.1f (~1 September)\n", Float64(config[:snapshot_day]))
     @printf("   - Plot Figures    : %s\n", config[:plot] ? "Yes" : "No")
     @printf("   - Animate Video   : %s (%s)\n",
@@ -139,6 +140,7 @@ function main()
     # instants the data rows actually sample.
     snap_days = annual_production_targets(
         Float64(config[:days]);
+        dt_year = Float64(config[:days_per_year]),
         frequency_days = Float64(config[:frequency_days]),
         snapshot_day = Float64(config[:snapshot_day])
     )
@@ -203,6 +205,7 @@ function main()
     ann_df = extract_annual_production(
         agent_df,
         model_df;
+        dt_year = Float64(config[:days_per_year]),
         frequency_days = Float64(config[:frequency_days]),
         snapshot_day = Float64(config[:snapshot_day])
     )

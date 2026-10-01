@@ -47,7 +47,17 @@ const DEFAULT_FECUNDITY_MULTIPAROUS_ERR       = 0.145
 Compute the empirical lower bound of morphometric size (carapace width in mm)
 for a given developmental stage and sex.
 
-Uses the theoretical growth curves defined by the species parameters.
+For a sex-specific stage the bound follows a saturating curve in log size,
+
+    ln S(stage) = ln L + (intercept - ln L) * exp(-decay * (stage - anchor))
+
+which equals `exp(intercept)` at the anchor stage and tends to the asymptotic
+size `L`. The curve therefore cannot produce an animal larger than the species
+gets, which the previous `exp(intercept + slope * (stage - anchor))` form could
+and did: it is unbounded for any positive slope.
+
+Stages below `benthic_anchor_stage` come from a small lookup table, because size
+there is far from the curve.
 """
 function stage_size_lower_bound(behavior::SpeciesBehaviorImpl, stage::Real, sex)
     p = behavior.params
@@ -63,10 +73,26 @@ function stage_size_lower_bound(behavior::SpeciesBehaviorImpl, stage::Real, sex)
         return sizes[end]
     end
 
-    intercept = is_female ? p.size_lb_female_intercept : p.size_lb_male_intercept
-    slope = is_female ? p.size_lb_female_slope : p.size_lb_male_slope
-    anchor = is_female ? p.size_lb_female_anchor_stage : p.size_lb_male_anchor_stage
-    return exp(intercept + slope * (stage - anchor))
+    if is_female
+        intercept = p.size_lb_female_intercept
+        decay = p.size_lb_female_decay
+        anchor = p.size_lb_female_anchor_stage
+        asymptote = p.max_size_female
+    else
+        intercept = p.size_lb_male_intercept
+        decay = p.size_lb_male_decay
+        anchor = p.size_lb_male_anchor_stage
+        asymptote = p.max_size_male
+    end
+    asymptote > 0.0 ||
+        error("asymptotic size must be positive, received: $(asymptote)")
+    ln_l = log(asymptote)
+    ln_s = ln_l + (intercept - ln_l) * exp(-decay * (stage - anchor))
+    # A non-positive decay removes the saturation and restores the unbounded form,
+    # so refuse it rather than silently reintroduce the defect.
+    decay > 0.0 ||
+        error("stage size decay must be positive, received: $(decay)")
+    return exp(ln_s)
 end
 
 """
@@ -477,103 +503,136 @@ calculate_mass(size::Real, sex; kwargs...) =
     calculate_mass(SpeciesBehaviorImpl(), size, sex; kwargs...)
 
 """
-    build_stages(behavior::SpeciesBehaviorImpl; max_male_stage=12, max_female_stage=11)
+    build_stages(behavior::SpeciesBehaviorImpl; max_male_stage=nothing, max_female_stage=nothing)
 
 Construct the discrete stage hierarchy for generalized Leslie stage-transition
 modeling guided by empirical growth-stage relationships.
+
+The stage bounds come from the species parameters, so a species change means
+editing configuration rather than this function. `max_male_stage` and
+`max_female_stage` override the configured terminal stages.
 """
 function build_stages(
     behavior::SpeciesBehaviorImpl;
-    max_male_stage::Int = 12,
-    max_female_stage::Int = 11
+    max_male_stage::Union{Nothing, Int} = nothing,
+    max_female_stage::Union{Nothing, Int} = nothing
 )
+    sp = behavior.params
+    male_limit = max_male_stage === nothing ? sp.leslie_max_male_stage : max_male_stage
+    female_limit = max_female_stage === nothing ? sp.leslie_max_female_stage :
+                   max_female_stage
+    # The four vectors of a stage table are read in parallel, so a mismatch in
+    # length would silently pair a size range with the wrong stage's mean.
+    pooled_lens = length.(
+        (
+            sp.stage_size_range_stage1,
+            sp.stage_size_range_lower_stage1,
+            sp.stage_size_range_upper_stage1,
+            sp.stage_size_range_mean_stage1
+        )
+    )
+    all(==(first(pooled_lens)), pooled_lens) || error(
+        "pooled-sex stage size tables must be the same length; got $(pooled_lens)"
+    )
+    n = first(pooled_lens)
+
     stages = StageDefinition[]
     idx = 1
-    # Stage 1: Stage 4 (pooled sexes)
-    push!(stages, StageDefinition(
-        idx,
-        "Stage 4 (Recruit)",
-        4,
-        undifferentiated,
-        (7.0, 14.5),
-        10.7,
-        calculate_mass(behavior, 10.7, :male; mat = 0),
-        false,
-        false
-    ))
-    idx += 1
+    # Pooled-sex stages: the recruit and juvenile bins, before the sexes diverge.
+    for k in 1:n
+        push!(
+            stages,
+            StageDefinition(
+                idx,
+                "Stage $(Int(sp.stage_size_range_stage1[k])) ($(k == 1 ? "Recruit" : "Juvenile"))",
+                Int(sp.stage_size_range_stage1[k]),
+                undifferentiated,
+                (sp.stage_size_range_lower_stage1[k], sp.stage_size_range_upper_stage1[k]),
+                sp.stage_size_range_mean_stage1[k],
+                calculate_mass(behavior, sp.stage_size_range_mean_stage1[k], :male; mat = 0),
+                false,
+                false
+            )
+        )
+        idx += 1
+    end
 
-    # Stage 2: Stage 5 (pooled sexes)
-    push!(stages, StageDefinition(
-        idx,
-        "Stage 5 (Juvenile)",
-        5,
-        undifferentiated,
-        (14.5, 22.0),
-        18.0,
-        calculate_mass(behavior, 18.0, :male; mat = 0),
-        false,
-        false
-    ))
-    idx += 1
-
-    # Male Stages: Stage 6 to max_male_stage
-    male_bounds = [
-        (6, (22.0, 31.0), 26.5),
-        (7, (31.0, 42.5), 36.5),
-        (8, (42.5, 58.0), 50.0),
-        (9, (58.0, 78.0), 68.0),
-        (10, (78.0, 95.0), 86.5),
-        (11, (95.0, 115.0), 105.0),
-        (12, (115.0, 160.0), 130.0)
-    ]
-    for (stg, rng_b, size_m) in male_bounds
-        if stg <= max_male_stage
-            is_legal = (size_m >= 95.0 || stg >= 11)
-            is_term = (stg == max_male_stage)
+    male_lens = length.(
+        (
+            sp.stage_size_range_stage_male,
+            sp.stage_size_range_lower_male,
+            sp.stage_size_range_upper_male,
+            sp.stage_size_range_mean_male
+        )
+    )
+    all(==(first(male_lens)), male_lens) ||
+        error("male stage size tables must all be the same length; got $(male_lens)")
+    nm = first(male_lens)
+    for k in 1:nm
+        stg = Int(sp.stage_size_range_stage_male[k])
+        if stg <= male_limit
+            size_m = sp.stage_size_range_mean_male[k]
+            is_legal = (size_m >= sp.leslie_legal_size_male ||
+                        stg >= sp.leslie_first_legal_stage_male)
+            is_term = (stg == male_limit)
             lbl = is_term ? "Stage $(stg)+ Male" : "Stage $(stg) Male"
             wt = calculate_mass(behavior, size_m, :male; mat = is_legal ? 1 : 0)
-            push!(stages, StageDefinition(
-                idx,
-                lbl,
-                stg,
-                male,
-                rng_b,
-                size_m,
-                wt,
-                is_legal,
-                false
-            ))
+            push!(
+                stages,
+                StageDefinition(
+                    idx,
+                    lbl,
+                    stg,
+                    male,
+                    (sp.stage_size_range_lower_male[k], sp.stage_size_range_upper_male[k]),
+                    size_m,
+                    wt,
+                    is_legal,
+                    false
+                )
+            )
             idx += 1
         end
     end
 
-    # Female Stages: Stage 6 to max_female_stage
-    female_bounds = [
-        (6, (22.0, 30.5), 26.0),
-        (7, (30.5, 41.5), 35.5),
-        (8, (41.5, 54.5), 47.5),
-        (9, (54.5, 68.0), 61.0),
-        (10, (68.0, 82.0), 75.0),
-        (11, (82.0, 110.0), 90.0)
-    ]
-    for (stg, rng_b, size_m) in female_bounds
-        if stg <= max_female_stage
-            is_repro = (stg >= 9)
-            is_term = (stg == max_female_stage)
+    female_lens = length.(
+        (
+            sp.stage_size_range_stage_female,
+            sp.stage_size_range_lower_female,
+            sp.stage_size_range_upper_female,
+            sp.stage_size_range_mean_female
+        )
+    )
+    all(==(first(female_lens)), female_lens) ||
+        error("female stage size tables must all be the same length; got $(female_lens)")
+    nf = first(female_lens)
+    for k in 1:nf
+        stg = Int(sp.stage_size_range_stage_female[k])
+        if stg <= female_limit
+            is_repro = (stg >= sp.leslie_first_repro_stage_female)
+            is_term = (stg == female_limit)
             lbl = is_term ? "Stage $(stg)+ Female" : "Stage $(stg) Female"
-            wt = calculate_mass(behavior, size_m, :female; mat = is_repro ? 1 : 0)
-            push!(stages, StageDefinition(
-                idx,
-                lbl,
-                stg,
-                female,
-                rng_b,
-                size_m,
-                wt,
-                false,
-                is_repro
-            ))
+            wt = calculate_mass(
+                behavior, sp.stage_size_range_mean_female[k], :female;
+                mat = is_repro ? 1 : 0
+            )
+            push!(
+                stages,
+                StageDefinition(
+                    idx,
+                    lbl,
+                    stg,
+                    female,
+                    (
+                        sp.stage_size_range_lower_female[k],
+                        sp.stage_size_range_upper_female[k]
+                    ),
+                    sp.stage_size_range_mean_female[k],
+                    wt,
+                    false,
+                    is_repro
+                )
+            )
             idx += 1
         end
     end
@@ -599,13 +658,36 @@ function stage_schedule_lookup(schedule::AbstractVector, stage::Integer)
 end
 
 """
+    larval_stage_count(behavior::SpeciesBehavior)
+
+Number of leading developmental stages that follow the pelagic larval schedule
+rather than the benthic schedule.
+
+The larval schedules are declared per pelagic stage, egg then zoea then megalopa,
+so their own length states how far the pelagic block reaches. Everything from that
+stage onward develops on `intermolt_days_schedule` and `degree_days_schedule`.
+
+This is the accessor the simulation uses. It previously read only the benthic
+schedule, so the eggs and larvae were advanced on the benthic numbers — 60 days
+and 150 degree-days for an egg that is meant to hatch on nothing — and the pelagic
+schedules were configurable but inert.
+"""
+larval_stage_count(behavior::SpeciesBehavior) =
+    length(behavior.params.intermolt_days_larval)
+
+"""
     min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
 
-Return the minimum required intermolt duration in days for `stage`, read from
-the `intermolt_days_schedule` species parameter.
+Return the minimum required intermolt duration in days for `stage`.
+
+Leading pelagic stages read `intermolt_days_larval`; the rest read
+`intermolt_days_schedule`.
 """
-min_intermolt_days(behavior::SpeciesBehavior, stage::Int) =
-    stage_schedule_lookup(behavior.params.intermolt_days_schedule, stage)
+function min_intermolt_days(behavior::SpeciesBehavior, stage::Int)
+    stage < larval_stage_count(behavior) &&
+        return stage_schedule_lookup(behavior.params.intermolt_days_larval, stage)
+    return stage_schedule_lookup(behavior.params.intermolt_days_schedule, stage)
+end
 
 min_intermolt_days(stage::Int) = min_intermolt_days(SpeciesBehaviorImpl(), stage)
 
@@ -628,11 +710,16 @@ min_intermolt_days(stage_cat::LifeStage, stage::Int = 0) =
     required_degree_days(behavior::SpeciesBehavior, stage::Int)
 
 Cumulative physiological thermal degree-days (°C·days above 0°C) required to
-complete pre-ecdysial preparation at `stage`, read from the
-`degree_days_schedule` species parameter.
+complete pre-ecdysial preparation at `stage`.
+
+Leading pelagic stages read `degree_days_larval`; the rest read
+`degree_days_schedule`.
 """
-required_degree_days(behavior::SpeciesBehavior, stage::Int) =
-    stage_schedule_lookup(behavior.params.degree_days_schedule, stage)
+function required_degree_days(behavior::SpeciesBehavior, stage::Int)
+    stage < larval_stage_count(behavior) &&
+        return stage_schedule_lookup(behavior.params.degree_days_larval, stage)
+    return stage_schedule_lookup(behavior.params.degree_days_schedule, stage)
+end
 
 required_degree_days(stage::Int) = required_degree_days(SpeciesBehaviorImpl(), stage)
 
@@ -660,27 +747,32 @@ required_degree_days(stage_cat::LifeStage, stage::Int = 0) =
 
 Advance physiological development and ecdysis for an organism agent.
 """
-function perform_development!(::SpeciesBehavior, org::Organism, model)
-    if !model.params.toggles.use_molting || org.is_mature
+function perform_development!(
+    ::SpeciesBehavior,
+    org::Organism,
+    model;
+    temp::Union{Nothing, Real} = nothing
+)
+    params = model.params
+    if !params.toggles.use_molting || org.is_mature
         return nothing
     end
 
-    day_of_year = mod(model.current_time, 365.0)
-    is_molt_season = (model.params.phenology.molt_season_start <= day_of_year <=
-                      model.params.phenology.molt_season_end)
-
-    if is_molt_season
-        days_since_molt = model.current_time - org.last_growth_event_time
-        min_days = min_intermolt_days(org.behavior, org.stage)
-        if days_since_molt >= min_days
-            current_temp = model.temperature_field[org.pos...]
-            p_molt = molt_probability(org, current_temp, model.current_time;
-                                      params = model.params)
-            if rand(abmrng(model)) < p_molt
-                perform_molt!(org, model.current_time, current_temp;
-                              params = model.params, rng = abmrng(model))
-                model.total_molts += 1
-            end
+    days_since_molt = model.current_time - org.last_growth_event_time
+    min_days = min_intermolt_days(org.behavior, org.stage)
+    if days_since_molt >= min_days
+        # The caller normally has the organism's own cell temperature already, since
+        # it reads it for energetics and mortality in the same step and nothing
+        # between here and there moves the organism or changes the field.
+        current_temp = temp === nothing ? model.temperature_field[org.pos...] : temp
+        # The seasonal gate lives in `molt_probability`, which applies it only from
+        # `molt_season_min_stage` upward. Repeating it here for every stage confined
+        # all benthic stages to the season and made that parameter inert.
+        p_molt = molt_probability(org, current_temp, model.current_time; params = params)
+        if rand(abmrng(model)) < p_molt
+            perform_molt!(org, model.current_time, current_temp; params = params,
+                          rng = abmrng(model))
+            model.total_molts += 1
         end
     end
     return nothing
@@ -697,7 +789,7 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
         return nothing
     end
 
-    day_of_year = mod(model.current_time, 365.0)
+    day_of_year = mod(model.current_time, model.params.simulation.days_per_year)
     is_mating_season = (model.params.phenology.mating_season_start <= day_of_year <=
                         model.params.phenology.mating_season_end)
 
@@ -711,12 +803,25 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
             )
             if !isempty(nearby_males)
                 if model.params.toggles.use_spermatheca
-                    male_weights = [m.size^2 for m in nearby_males]
+                    phen = model.params.phenology
+                    size_exponent = phen.mating_size_weight_exponent
+                    male_weights = [m.size^size_exponent for m in nearby_males]
                     selected_male = sample_weighted(nearby_males, male_weights,
                                                     abmrng(model))
-                    org.sperm_clutches = (selected_male.size >= 95.0) ? 3 : 2
-                    selected_male.energy_reserve = max(0.0,
-                        selected_male.energy_reserve - 8.0)
+                    # Whether the male is legal is a fishery question, so it reads the
+                    # same `legal_size_male` the harvest gate uses rather than a copy
+                    # of it. A store that is not spent leaves the female able to
+                    # extrude further broods; the parity test below must not read that
+                    # count, because a female holding three stores is not thereby
+                    # multiparous.
+                    org.sperm_clutches = (selected_male.size >=
+                                          model.params.fishery.legal_size_male) ?
+                                         phen.sperm_stores_legal :
+                                         phen.sperm_stores_sublegal
+                    selected_male.energy_reserve = max(
+                        0.0,
+                        selected_male.energy_reserve - phen.mating_energy_cost
+                    )
                 end
 
                 can_extrude = !model.params.toggles.use_spermatheca ||
@@ -726,10 +831,18 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
                         org.sperm_clutches -= 1
                     end
 
+                    # Parity comes from shell age. It used to read
+                    # `org.sperm_clutches == 0`, which is false for every extruding
+                    # female: a successful mating deposits stores, this call spends one,
+                    # and the count therefore never reached zero. Every female was
+                    # scored multiparous and the primiparous fecundity form was dead.
+                    local_shell_age = shell_age_years(org, model.params)
                     egg_estimate = fecundity(
                         org.behavior,
                         org.size;
-                        is_primiparous = (org.sperm_clutches == 0),
+                        is_primiparous =
+                            (local_shell_age <=
+                             model.params.species.primiparous_shell_age_max),
                         fecundity_quantile = org.trait_fecundity_quantile,
                         rng = abmrng(model)
                     )
@@ -739,11 +852,13 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
                     phen = model.params.phenology
                     tau_incubation = phen.brood_duration_base *
                                      (phen.brood_temperature_reference /
-                                      max(1.0, local_temp))^phen.brood_temperature_exponent
+                                      max(phen.brood_temperature_floor,
+                                          local_temp))^phen.brood_temperature_exponent
                     incubation_noise = rand(abmrng(model),
                                             Normal(0.0, phen.brood_duration_sd))
 
-                    org.egg_count = max(round(Int, egg_estimate), 1000)
+                    org.egg_count = max(round(Int, egg_estimate),
+                                        model.params.phenology.minimum_clutch_size)
                     org.hatch_day = model.current_time + tau_incubation + incubation_noise
                     org.is_mating_ready = false
 

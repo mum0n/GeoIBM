@@ -36,7 +36,7 @@ export Organism, IBMParameters, ProcessToggles
 export SpeciesBehavior, SpeciesBehaviorImpl, SpeciesParams, default_species_behavior
 export PhenologyParams, MortalityParams, EnvironmentParams, LeslieParams
 export CriteriaParams
-export OrganismParams, ProcessToggles, SimulationParams, FisheryParams, OutputParams, BinningParams
+export OrganismParams, ProcessToggles, SimulationParams, FisheryParams, OutputParams
 export AggregateGroup, AggregatePopulations
 export is_adult, is_adult_male, is_adult_female, is_ovigerous
 export is_mature_male, is_mature_female

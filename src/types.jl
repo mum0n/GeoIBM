@@ -363,6 +363,11 @@ struct LeslieMatrixFit
     r2::Float64
     rmse::Float64
     aic::Float64
+    # Number of free coefficients the fit estimated. Carried so a cross-model AIC
+    # comparison can charge the correct penalty: the AIC inside the fit is computed
+    # from this count, and a comparison that hardcodes its own, smaller, number would
+    # rank the model on a different criterion than the one it reports.
+    n_free_parameters::Int
     years::Vector{Int}
 end
 
@@ -471,6 +476,31 @@ Base.@kwdef struct SimulationParams
     # `days_per_year`, so a leap-year calendar is expressed by raising it.
     days_per_year::Float64 = 365.0
     temp_seasonal_phase_day::Float64 = 80.0
+
+    # --- Initial aggregate cohorts (pre-individuation stages) ---
+    # Each stage below `juvenile_max_stage` is seeded with one aggregate group.
+    # The egg stage carries `initial_egg_cohort_abundance`, every later stage
+    # `initial_stage_cohort_abundance`.
+    initial_egg_cohort_abundance::Float64 = 2000.0
+    initial_stage_cohort_abundance::Float64 = 500.0
+    # Age attributed to a freshly seeded cohort at a given stage, in days.
+    initial_cohort_days_per_stage::Float64 = 90.0
+
+    # --- Initial benthic agents ---
+    # Stage-abundance weighting across the seeded benthic range is
+    # `initial_stage_decay^(stage - first_stage)`, so a value below 1 makes the
+    # initial cohort juvenile-skewed while still reaching every stage.
+    initial_stage_decay::Float64 = 0.75
+    # Age attributed to a seeded individual of a given stage, in days, is
+    # `initial_age_days_per_stage * (stage - initial_age_first_stage)` plus a
+    # uniform draw on `[0, initial_age_jitter_days]`.
+    initial_age_days_per_stage::Float64 = 180.0
+    initial_age_first_stage::Float64 = 3.0
+    initial_age_jitter_days::Float64 = 90.0
+    # Pre-ecdysial thermal requirement a seeded individual starts with, drawn
+    # uniformly on `[initial_degree_days_min, initial_degree_days_max]`.
+    initial_degree_days_min::Float64 = 50.0
+    initial_degree_days_max::Float64 = 300.0
 end
 
 Base.@kwdef struct CriteriaParams
@@ -488,6 +518,36 @@ Base.@kwdef struct CriteriaParams
     # it was configured for" is exactly a statement about K. A transient
     # overshoot is normal, hence a multiple rather than K itself.
     max_population_multiple::Float64 = 3.0
+
+    # --- Fidelity thresholds for `evaluate_population_criteria` ---
+    # Each bounds one component criterion; a run passes when every one holds.
+    # Largest allowable fractional shift in mean size across the recent window.
+    max_size_drift::Float64 = 0.20
+    # Largest allowable RMSE against the cumulative maturity curve, on [0, 1].
+    max_maturity_rmse::Float64 = 0.35
+    # Largest allowable RMSE of mean stage size against `growth_schedule()`, in mm.
+    max_growth_rmse::Float64 = 15.0
+    # Recent time steps considered for the size-stability window.
+    window_steps::Int = 10
+    # Minimum individuals in a size bin for its maturity proportion to count.
+    maturity_ogive_min_count::Int = 10
+
+    # --- Composite loss weights ---
+    # The composite score is a weighted sum, not a pass/fail, so that an optimizer
+    # has something to descend. Each failed criterion contributes its fixed
+    # penalty; the continuous errors contribute proportionally.
+    extinction_penalty::Float64 = 150.0
+    explosion_penalty::Float64 = 150.0
+    size_drift_weight::Float64 = 25.0
+    maturity_rmse_weight::Float64 = 15.0
+    growth_rmse_weight::Float64 = 1.0
+
+    # --- Maturity ogive size bins ---
+    # Lower edge, step and upper edge in mm. Bins with fewer than
+    # `maturity_ogive_min_count` individuals are dropped.
+    ogive_bin_start::Float64 = 20.0
+    ogive_bin_step::Float64 = 10.0
+    ogive_bin_stop::Float64 = 140.0
 end
 
 Base.@kwdef struct EnvironmentParams
@@ -497,21 +557,55 @@ Base.@kwdef struct EnvironmentParams
     temp_base_degreedays::Float64 = 0.0
     food_max::Float64 = 10.0
     food_replenishment_rate::Float64 = 0.1
-    benthic_carrying_capacity::Float64 = 300.0
+    # Density-dependent crowding. Total benthic abundance is
+    # `individuated + aggregate`, and the mortality feedback is
+    # `1 + (N / K)^exponent`.
+    #
+    # K must exceed the seeded stock, which at the defaults is 300 individuals
+    # plus the aggregate cohorts: 2000 eggs and 500 per stage over stages 1 to 5,
+    # for 4800. At K = 300 the multiplier at time zero was 257, which drove every
+    # hazard to certainty on the first day: nothing survived long enough to reach
+    # the benthic stages, so individuation never ran and the run reported an
+    # extinction it had not modelled. At K = 12000 the multiplier is 1.16, so
+    # crowding corrects the configured mortality by about two points a year
+    # instead of replacing it.
+    #
+    # `initialize_model` warns when the seeded stock already exceeds K, because
+    # that is a silent failure rather than a slow one.
+    benthic_carrying_capacity::Float64 = 12_000.0
     half_saturation_food::Float64 = 2.0
     assimilation_efficiency::Float64 = 0.75
     habitat_quality_mean::Float64 = 1.0
     habitat_quality_sd::Float64 = 0.1
-    # Exponent of the density-dependent mortality feedback. Total benthic
-    # abundance is `individuated + aggregate`, and the feedback is
-    # `1 + (N / K)^exponent`, so a value above 1 makes the response accelerate
-    # past carrying capacity instead of remaining linear.
+    # --- Habitat taxis ---
+    # `organism_disperse!` scores each candidate cell by how well it matches the
+    # organism's preferred temperature and its food density relative to the grid
+    # mean, then samples a heading from a softmax over those scores.
+    # `habitat_temperature_optimum` is the centre of the thermal preference and
+    # `habitat_temperature_sigma` its width in degrees Celsius; they are separate
+    # from `metabolic_optimal_temperature`, which sets the energetic cost curve
+    # rather than the direction of travel.
+    habitat_temperature_optimum::Float64 = 2.5
+    habitat_temperature_sigma::Float64 = 1.5
+    # Weight of food density in the combined suitability score, relative to the
+    # thermal term. Zero makes dispersal purely thermal.
+    habitat_food_weight::Float64 = 0.5
+    # Softmax temperature of the heading distribution. Larger values spread
+    # movement over more directions; smaller values concentrate it on the best.
+    movement_softmax_temperature::Float64 = 0.5
+    # --- Settlement ---
+    # Radius, in grid cells, within which a newly individuated recruit settles
+    # around its cohort.
+    settlement_dispersal_radius::Int = 2
+    # Standard deviation of the lognormal from which an individuated recruit's
+    # size is drawn around its cohort's mean log size.
+    settlement_size_log_sd::Float64 = 0.04
+    # Exponent of the density-dependent mortality feedback. A value above 1 makes
+    # the response accelerate past carrying capacity instead of remaining linear.
     benthic_carrying_capacity_exponent::Float64 = 2.0
 end
 
 Base.@kwdef struct OrganismParams
-    max_size_male::Float64 = 160.0
-    max_size_female::Float64 = 95.0
     max_stage_male::Int = 16
     max_stage_female::Int = 14
     metabolic_rate_base::Float64 = 0.01
@@ -581,7 +675,25 @@ Base.@kwdef struct PhenologyParams
     mating_season_start::Float64 = 30.0
     mating_season_end::Float64 = 120.0
     mating_search_radius::Int = 5
-    egg_survival_base::Float64 = 5.0e-5
+    # Energy a male spends on a successful mating attempt, deducted from its
+    # reserve. A male that cannot pay this does not mate.
+    mating_energy_cost::Float64 = 8.0
+    # Relative mating likelihood of a nearby male, raised to this power of its
+    # carapace width. An exponent of 2 makes large males preferred.
+    mating_size_weight_exponent::Float64 = 2.0
+    # Spermatheca stores a successful mating deposits, split into this many usable
+    # clutches. A legal-size male stores `sperm_stores_legal`, a smaller one
+    # `sperm_stores_sublegal`; each clutch is extruded as one brood, so this sets
+    # how many broods a single mating can support.
+    sperm_stores_legal::Int = 3
+    sperm_stores_sublegal::Int = 2
+    # Floor on the extrapolated clutch size. Spermatheca deposition is modelled as
+    # a single large mass rather than individual sperm, so a female very near the
+    # size of maturity would otherwise carry an implausibly small clutch.
+    minimum_clutch_size::Int = 1000
+    # Lower bound on the temperature used for the incubation scaling, so a cell at
+    # or below freezing cannot make the brood duration diverge.
+    brood_temperature_floor::Float64 = 1.0
 
     # Incubation length is `brood_duration_base * (reference / T)^exponent`, so
     # warmer water shortens the brood.
@@ -651,6 +763,14 @@ Base.@kwdef struct MortalityParams
     aggregate_hazard_intermolt::Float64 = 0.20
     aggregate_transition_hazard::Float64 = 0.35
     aggregate_transition_saturation::Float64 = 10.0
+    # Baseline daily hazard for an aggregate cohort, indexed by stage through
+    # `stage_schedule_lookup` so a shorter list holds its last value for the
+    # higher stages. These cohorts predate individuation, so they carry the
+    # pelagic and early-benthic mortality that the individual hazard terms above
+    # do not represent.
+    aggregate_baseline_hazards::Vector{Float64} = [
+        0.002, 0.015, 0.010, 0.003, 0.0015,
+    ]
 end
 
 Base.@kwdef struct FisheryParams
@@ -673,14 +793,6 @@ Base.@kwdef struct OutputParams
     anim_dt::Int = 2
     anim_fps::Int = 15
     anim_field::String = "temperature"
-end
-
-Base.@kwdef struct BinningParams
-    use_bins::Bool = true
-    n_age_bins::Int = 50
-    n_size_bins::Int = 20
-    min_size::Float64 = 1.0
-    max_size::Float64 = 100.0
 end
 
 """
@@ -720,6 +832,16 @@ Base.@kwdef struct SpeciesParams
     fecundity_senescence_threshold::Float64 = 3.0
     fecundity_senescence_floor::Float64 = 0.60
     fecundity_senescence_rate::Float64 = 0.08
+    # Shell age (years) at or below which a female is treated as primiparous, i.e.
+    # extruding her first brood. Parity is a property of the female's reproductive
+    # history, not of how much sperm she happens to be holding.
+    primiparous_shell_age_max::Float64 = 2.0
+    # Carapace width (mm) that separates the primiparous and multiparous fecundity
+    # forms. This is the split used only when shell age is unavailable: the two
+    # forms are distinguished by the female's reproductive history, and size is the
+    # best proxy available in a survey that did not record it. Females at or below
+    # this size are scored primiparous.
+    fecundity_parity_size_split::Float64 = 65.0
 
     # Growth (Bivariate Normal: Intercept & Slope)
     growth_int_female::Float64 = 0.1931
@@ -750,16 +872,31 @@ Base.@kwdef struct SpeciesParams
     growth_min_expansion_mature::Float64 = 0.06
 
     # --- Stage size bounds ---
-    # The empirical lower bound of carapace width per stage follows
-    # `exp(intercept + slope * (stage - anchor))` for each sex, with a pre-benthic
-    # table for stages below the benthic anchor.
+    # `max_size_*` is the asymptotic carapace width for each sex. It lives here
+    # rather than on the organism because it is the saturating limit of the stage
+    # size curve below, and a limit the curve cannot see is a limit it cannot obey.
+    max_size_male::Float64 = 160.0
+    max_size_female::Float64 = 95.0
+    # The empirical lower bound of carapace width per stage saturates at the
+    # asymptotic size:
+    #
+    #     ln S(stage) = ln L + (intercept - ln L) * exp(-decay * (stage - anchor))
+    #
+    # so it equals `exp(intercept)` at the anchor stage and tends to `L`. The
+    # earlier form, `exp(intercept + slope * (stage - anchor))`, is unbounded for
+    # every positive slope: it put a stage-12 female at 112 mm against a 95 mm
+    # ceiling and a stage-14 female at 210 mm. `intercept` and `decay` are least
+    # squares fitted to the lower edge of each tabulated stage.
+    #
+    # A pre-benthic table covers the stages below the benthic anchor, where size is
+    # small enough that the curve does not apply.
     size_lb_immature_sizes::Vector{Float64} = [0.95, 1.45, 2.50]
     size_lb_immature_breakpoints::Vector{Float64} = [1.5, 2.5]
-    size_lb_male_intercept::Float64 = 1.917564
-    size_lb_male_slope::Float64 = 0.298914
+    size_lb_male_intercept::Float64 = 1.102422
+    size_lb_male_decay::Float64 = 0.235833
     size_lb_male_anchor_stage::Float64 = 3.0
-    size_lb_female_intercept::Float64 = 2.198848
-    size_lb_female_slope::Float64 = 0.315026
+    size_lb_female_intercept::Float64 = 1.930054
+    size_lb_female_decay::Float64 = 0.308476
     size_lb_female_anchor_stage::Float64 = 4.0
     benthic_anchor_stage::Float64 = 4.0
 
@@ -790,7 +927,13 @@ Base.@kwdef struct SpeciesParams
     degree_days_schedule::Vector{Float64} = [
         150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0,
     ]
-    # Pre-individuation overrides ordered as [egg, zoea, megalopa].
+    # Pelagic schedules, ordered as [egg, zoea, megalopa]. Their length is what
+    # defines how far the pelagic block reaches: stages below it are developed on
+    # these numbers, and every stage from `length(intermolt_days_larval)` upward
+    # uses the benthic schedules above. A run reads them through
+    # `min_intermolt_days` and `required_degree_days`, so an egg needing no elapsed
+    # time and no degree-days hatches on a hazard rather than after the 60 days and
+    # 150 degree-days a benthic stage 0 would imply.
     intermolt_days_larval::Vector{Float64} = [0.0, 5.0, 10.0]
     degree_days_larval::Vector{Float64} = [0.0, 20.0, 40.0]
 
@@ -800,6 +943,34 @@ Base.@kwdef struct SpeciesParams
     maturity_l50_temp_slope::Float64 = -2.0
     # Reference temperature for the maturity temperature response (°C).
     maturity_temp_reference::Float64 = 4.0
+
+    # --- Stage table used by the Leslie projection and the maturity analysis ---
+    # Per stage: size range lower edge (mm), size range upper edge, and the
+    # representative size used for the stage. Indexed in parallel; a stage
+    # definition is emitted only while it does not exceed the corresponding
+    # `leslie_max_male_stage` / `leslie_max_female_stage`.
+    stage_size_range_stage1::Vector{Float64} = [4.0, 5.0]
+    stage_size_range_lower_stage1::Vector{Float64} = [7.0, 14.5]
+    stage_size_range_upper_stage1::Vector{Float64} = [14.5, 22.0]
+    stage_size_range_mean_stage1::Vector{Float64} = [10.7, 18.0]
+    stage_size_range_stage_male::Vector{Float64} = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+    stage_size_range_lower_male::Vector{Float64} = [22.0, 31.0, 42.5, 58.0, 78.0, 95.0, 115.0]
+    stage_size_range_upper_male::Vector{Float64} = [31.0, 42.5, 58.0, 78.0, 95.0, 115.0, 160.0]
+    stage_size_range_mean_male::Vector{Float64} = [26.5, 36.5, 50.0, 68.0, 86.5, 105.0, 130.0]
+    stage_size_range_stage_female::Vector{Float64} = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+    stage_size_range_lower_female::Vector{Float64} = [22.0, 30.5, 41.5, 54.5, 68.0, 82.0]
+    stage_size_range_upper_female::Vector{Float64} = [30.5, 41.5, 54.5, 68.0, 82.0, 110.0]
+    stage_size_range_mean_female::Vector{Float64} = [26.0, 35.5, 47.5, 61.0, 75.0, 90.0]
+    # Terminal stages of the table above, in developmental stage numbers.
+    leslie_max_male_stage::Int = 12
+    leslie_max_female_stage::Int = 11
+    # Size (mm) at or above which a male stage counts as legal in the projection.
+    # The stage criterion below is the backstop for the largest stages, whose
+    # representative size is above it already.
+    leslie_legal_size_male::Float64 = 95.0
+    leslie_first_legal_stage_male::Int = 11
+    # First female stage counted as reproductive in the projection.
+    leslie_first_repro_stage_female::Int = 9
 end
 
 """
@@ -815,8 +986,10 @@ Base.@kwdef struct LeslieParams
     # Stage 2 (Juvenile, stage 5)
     survival_stage2::Float64 = 0.76
     gamma_stage2::Float64 = 0.75
+    # Sex ratio applied to a cohort as it individuates. The female share is the
+    # complement, so there is deliberately no second parameter: two independent
+    # shares could be configured to sum to something other than one.
     male_split_fraction::Float64 = 0.50
-    female_split_fraction::Float64 = 0.50
 
     # Male stages (3-9)
     survival_male_legal::Float64 = 0.78
@@ -838,10 +1011,15 @@ Base.@kwdef struct LeslieParams
     fecundity_size_exponent::Float64 = 2.5
     fecundity_size_reference::Float64 = 65.0
 
-    # Trajectory refinement
-    col_sum_cap::Float64 = 0.95
-    col_sum_scale_low::Float64 = 0.85
-    col_sum_scale_high::Float64 = 0.15
+    # --- Fitting controls for `fit_generalized_leslie_model` ---
+    # Weight on the recursive trajectory term relative to the one-step process
+    # error in the objective.
+    trajectory_error_weight::Float64 = 0.5
+    # Developmental stage at which the transition-rate decay and the maturation
+    # term are both zero, i.e. the first sex-specific stage. Stating it here keeps
+    # the decay anchored to the stage the male and female series actually start at,
+    # rather than to a literal that has to be changed with the stage table.
+    first_sex_specific_stage::Int = 6
 end
 
 struct IBMParameters
@@ -853,7 +1031,6 @@ struct IBMParameters
     mortality::MortalityParams
     fishery::FisheryParams
     output::OutputParams
-    binning::BinningParams
     species::SpeciesParams
     leslie::LeslieParams
     criteria::CriteriaParams
@@ -868,7 +1045,6 @@ function IBMParameters(; kwargs...)
     mortality_kwargs = Dict{Symbol, Any}()
     fishery_kwargs = Dict{Symbol, Any}()
     output_kwargs = Dict{Symbol, Any}()
-    binning_kwargs = Dict{Symbol, Any}()
     species_kwargs = Dict{Symbol, Any}()
     leslie_kwargs = Dict{Symbol, Any}()
     criteria_kwargs = Dict{Symbol, Any}()
@@ -891,9 +1067,7 @@ function IBMParameters(; kwargs...)
             fishery_kwargs[sym] = v
         elseif sym in fieldnames(OutputParams)
             output_kwargs[sym] = v
-        elseif sym in fieldnames(BinningParams)
-            binning_kwargs[sym] = v
-        elseif sym in fieldnames(SpeciesParams)
+                elseif sym in fieldnames(SpeciesParams)
             species_kwargs[sym] = v
         elseif sym in fieldnames(LeslieParams)
             leslie_kwargs[sym] = v
@@ -910,14 +1084,13 @@ function IBMParameters(; kwargs...)
     mortality = get(kwargs, :mortality, MortalityParams(; mortality_kwargs...))
     fishery = get(kwargs, :fishery, FisheryParams(; fishery_kwargs...))
     output = get(kwargs, :output, OutputParams(; output_kwargs...))
-    binning = get(kwargs, :binning, BinningParams(; binning_kwargs...))
     species = get(kwargs, :species, SpeciesParams(; species_kwargs...))
     leslie = get(kwargs, :leslie, LeslieParams(; leslie_kwargs...))
     criteria = get(kwargs, :criteria, CriteriaParams(; criteria_kwargs...))
 
     return IBMParameters(
         toggles, simulation, environment, organism,
-        phenology, mortality, fishery, output, binning, species, leslie, criteria
+        phenology, mortality, fishery, output, species, leslie, criteria
     )
 end
 
@@ -941,33 +1114,35 @@ function IBMParameters(dict::AbstractDict)
     return IBMParameters(; flat_kwargs...)
 end
 
-function Base.getproperty(p::IBMParameters, sym::Symbol)
-    if sym in fieldnames(IBMParameters)
-        return getfield(p, sym)
-    elseif hasfield(ProcessToggles, sym)
-        return getfield(getfield(p, :toggles), sym)
-    elseif hasfield(FisheryParams, sym)
-        return getfield(getfield(p, :fishery), sym)
-    elseif hasfield(SimulationParams, sym)
-        return getfield(getfield(p, :simulation), sym)
-    elseif hasfield(EnvironmentParams, sym)
-        return getfield(getfield(p, :environment), sym)
-    elseif hasfield(OrganismParams, sym)
-        return getfield(getfield(p, :organism), sym)
+"""
+    IBM_FIELD_OWNER
 
-    elseif hasfield(PhenologyParams, sym)
-        return getfield(getfield(p, :phenology), sym)
-    elseif hasfield(MortalityParams, sym)
-        return getfield(getfield(p, :mortality), sym)
-    elseif hasfield(OutputParams, sym)
-        return getfield(getfield(p, :output), sym)
-    elseif hasfield(BinningParams, sym)
-        return getfield(getfield(p, :binning), sym)
-    elseif hasfield(SpeciesParams, sym)
-        return getfield(getfield(p, :species), sym)
-    elseif hasfield(LeslieParams, sym)
-        return getfield(getfield(p, :leslie), sym)
-    else
-        return getfield(p, sym)
+Maps every declared parameter name to the `IBMParameters` section that holds it,
+built once from the section structs.
+
+`Base.getproperty(p::IBMParameters, sym)` resolves a nested access such as
+`p.fishery.legal_size_male` to a `getfield`. It used to do that with
+`fieldnames(IBMParameters)` followed by a chain of `hasfield` checks, and both
+allocate: `fieldnames` returns a fresh `Vector{Symbol}` on every call. In a loop
+the compiler hoists that when it can prove the parameters are invariant, but it
+cannot across a loop body containing opaque calls, so the per-organism loops
+allocated this vector once per parameter read per agent per day. One dictionary
+lookup replaces the lot.
+"""
+const IBM_FIELD_OWNER = let owner = Dict{Symbol, Symbol}()
+    for section in fieldnames(IBMParameters)
+        T = fieldtype(IBMParameters, section)
+        for f in fieldnames(T)
+            # Field names are unique across the sections, which the test suite
+            # asserts. `haskey` keeps first-seen order should that ever change.
+            haskey(owner, f) || (owner[f] = section)
+        end
     end
+    owner
+end
+
+function Base.getproperty(p::IBMParameters, sym::Symbol)
+    owner = get(IBM_FIELD_OWNER, sym, nothing)
+    owner === nothing && return getfield(p, sym)
+    return getfield(getfield(p, owner), sym)
 end

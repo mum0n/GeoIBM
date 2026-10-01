@@ -79,8 +79,14 @@ function get_stage_size(
     rng::AbstractRNG = Random.default_rng(),
     params::IBMParameters = IBMParameters()
 )
-    lb = stage_size_lower_bound(behavior, stage, sex)
-    ub = stage_size_lower_bound(behavior, stage + 1.0, sex)
+    # The stage size curve saturates at the asymptotic size, so it already
+    # respects the ceiling. Clamping keeps the invariant true even if the curve
+    # is re-fitted by hand against a different asymptote, which is the one way a
+    # caller could otherwise reintroduce an impossible animal.
+    is_female = (sex == 1 || sex == :female || Symbol(sex) == :female)
+    size_cap = is_female ? params.species.max_size_female : params.species.max_size_male
+    lb = min(stage_size_lower_bound(behavior, stage, sex), size_cap)
+    ub = min(stage_size_lower_bound(behavior, stage + 1.0, sex), size_cap)
     if type === :lb
         return lb
     elseif type === :ub
@@ -267,7 +273,12 @@ function fecundity(
     if org.sex !== female || !org.is_mature
         return 0
     end
-    is_p = (org.sperm_clutches <= 1)
+    # Parity is inferred from shell age, not from `sperm_clutches`. The latter is a
+    # count of stored sperm, which a female gains at every mating and spends one
+    # clutch per brood, so it is not a record of how many broods she has carried:
+    # a first-time brooder holding two stores would otherwise be scored as
+    # multiparous.
+    is_p = shell_age_years(org, params) <= params.species.primiparous_shell_age_max
     shell_age = shell_age_years(org, params)
     raw_eggs = fecundity(
         org.behavior,
@@ -552,6 +563,48 @@ function benthic_density_feedback(model)
 end
 
 """
+    density_feedback(model)
+
+The density multiplier to use for this step, computed once in `model_step!` and
+cached on the model.
+
+`benthic_density_feedback` depends only on the population, not on the individual,
+so evaluating it inside `agent_step!` recomputed the same value once per organism
+per day, walking the aggregate cohorts each time. Profiling put a quarter of the
+run's time there. The value is refreshed once per step instead, which is exactly
+as current: the cohorts and the agent count do not change between `model_step!`
+and the agent phase of the same step.
+
+The cached value does go stale as soon as the agent phase removes organisms, so
+read `benthic_density_feedback` directly outside a step — the GUI, the reporting
+and the criteria evaluation do — rather than reading the cached value.
+"""
+function density_feedback(model)
+    props = abmproperties(model)
+    cached = get(props, :density_feedback, nothing)
+    return cached === nothing ? benthic_density_feedback(model) : cached
+end
+
+"""
+    current_day_of_year(model)
+
+Day of the model's calendar at `model.current_time`.
+
+`model_step!` computes it for the seasonal cycle and publishes it, so the agent
+phase reads it rather than repeating the modulo for every organism. When there is
+no step in progress — a GUI tick driving `agent_step!` directly, or a test — it is
+computed here.
+"""
+function current_day_of_year(model)
+    props = abmproperties(model)
+    cached = get(props, :day_of_year, nothing)
+    if cached === nothing
+        return mod(model.current_time, model.params.simulation.days_per_year)
+    end
+    return cached
+end
+
+"""
     molt_probability(org, current_temp, current_time=0.0; params=IBMParameters())
 
 Calculate the daily probability of undergoing ecdysis for an individual organism.
@@ -583,7 +636,7 @@ function molt_probability(
     # within the season; earlier stages molt as soon as their physiological
     # requirements are met.
     if org.stage >= params.phenology.molt_season_min_stage
-        day_of_year = mod(current_time, 365.0)
+        day_of_year = mod(current_time, params.simulation.days_per_year)
         in_molt_season = (params.phenology.molt_season_start <= day_of_year <=
                           params.phenology.molt_season_end)
         if !in_molt_season
@@ -701,7 +754,7 @@ function perform_molt!(
         1.0
     end
 
-    org.size = predict_postgrowth_size(
+    next_size = predict_postgrowth_size(
         org.behavior,
         org.size;
         sex = sex_code,
@@ -711,13 +764,23 @@ function perform_molt!(
         rng = rng,
         growth_quantile = org.trait_growth_quantile
     )
+    # The ceiling is the species' asymptotic size, the same limit the stage size
+    # curve saturates at, so the curve and the cap cannot disagree.
+    size_cap = (org.sex === female) ? params.species.max_size_female :
+               params.species.max_size_male
+    org.size = min(next_size, size_cap)
     org.stage += 1
 
     # Stage ceilings: 16 for males, 14 for females
     max_stage = (org.sex === female) ? params.organism.max_stage_female : params.organism.max_stage_male
     if org.stage >= max_stage
         org.stage = max_stage
+        # A female that reaches her terminal stage by molting rather than by
+        # maturing was never `is_mating_ready`, and readiness is what the
+        # reproductive step tests, so she could never carry a brood. Maturity
+        # makes her ready for the same reason it makes a molting male ready.
         org.is_mature = true
+        org.is_mating_ready = true
     end
 
     org.mass = calculate_mass(org; stochastic = true, rng = rng)
@@ -983,18 +1046,11 @@ function step_aggregate_groups!(
         dd_inc = max(0.0, temp - model.params.environment.temp_base_degreedays) * dt
         grp.degree_days += dd_inc
 
-        # 1. Stochastic aggregate mortality
-        base_m = if grp.stage == 0
-            0.002
-        elseif grp.stage <= 2
-            0.015
-        elseif grp.stage == 3
-            0.010
-        elseif grp.stage == 4
-            0.003
-        else
-            0.0015
-        end
+        # 1. Stochastic aggregate mortality. Indexed by stage so a shorter
+        # schedule holds its last value for the higher stages.
+        base_m = stage_schedule_lookup(
+            params.mortality.aggregate_baseline_hazards, grp.stage
+        )
 
         # Density feedback uses the whole benthic population, so carrying
         # capacity constrains the juveniles as well as the individuals.
@@ -1048,8 +1104,17 @@ function step_aggregate_groups!(
 
         if n_trans > 0
             next_stage = grp.stage + 1
-            if next_stage <= 5
-                next_sz = (next_stage < 4) ? stage_size_lower_bound(behavior, Float64(next_stage), :male) : stage_size(behavior, next_stage, :male; type = :random, rng = abmrng(model))
+            benthic_anchor = Int(params.species.benthic_anchor_stage)
+            if next_stage < individuation_stage(params)
+                # The boundary comes from `juvenile_max_stage`. This was the literal
+                # `5`, which agreed with the default `juvenile_max_stage = 6` only by
+                # coincidence: configuring `juvenile_max_stage` to anything else put a
+                # cohort into the aggregate branch at the stage the individuation
+                # branch should have claimed, and it never became an agent.
+                next_sz = (next_stage < benthic_anchor) ?
+                          stage_size_lower_bound(behavior, Float64(next_stage), :male) :
+                          stage_size(behavior, next_stage, :male;
+                                     type = :random, rng = abmrng(model), params = params)
                 next_wt = calculate_mass(behavior, next_sz, :male; mat = 0, stochastic = true, rng = abmrng(model))
                 new_grp = AggregateGroup(
                     id = model.aggregate_populations.next_group_id,
@@ -1064,8 +1129,7 @@ function step_aggregate_groups!(
                 )
                 model.aggregate_populations.next_group_id += 1
                 push!(surviving_groups, new_grp)
-                if next_stage == 1 ||
-                   next_stage == Int(params.species.benthic_anchor_stage)
+                if next_stage == benthic_anchor
                     model.total_recruits_settled += n_trans
                 end
             elseif next_stage == individuation_stage(params)
@@ -1077,18 +1141,25 @@ function step_aggregate_groups!(
                 # received no recruits at all, silently.
                 ind_stage = next_stage
                 for _ in 1:n_trans
-                    rec_sex = (rand(abmrng(model)) < 0.5) ? male : female
+                    rec_sex = (rand(abmrng(model)) < params.leslie.male_split_fraction) ? male :
+                          female
                     mean_log_sz = log(
                         stage_size(
                             behavior, ind_stage, rec_sex;
-                            type = :random, rng = abmrng(model)
+                            type = :random, rng = abmrng(model), params = params
                         )
                     )
-                    rec_size = exp(rand(abmrng(model), Normal(mean_log_sz, 0.04)))
+                    rec_size = exp(
+                        rand(
+                            abmrng(model),
+                            Normal(mean_log_sz, params.environment.settlement_size_log_sd)
+                        )
+                    )
                     rec_mass = calculate_mass(behavior, rec_size, rec_sex; mat = 0, stochastic = true, rng = abmrng(model))
 
-                    dx = rand(abmrng(model), -2:2)
-                    dy = rand(abmrng(model), -2:2)
+                    radius = params.environment.settlement_dispersal_radius
+                    dx = rand(abmrng(model), -radius:radius)
+                    dy = rand(abmrng(model), -radius:radius)
                     rx = min(max(grp.pos[1] + dx, 1), nx)
                     ry = min(max(grp.pos[2] + dy, 1), ny)
 
@@ -1116,6 +1187,72 @@ function step_aggregate_groups!(
         end
     end
 
-    model.aggregate_populations.groups = surviving_groups
+    model.aggregate_populations.groups = merge_cohort_groups(surviving_groups)
     return nothing
+end
+
+"""
+    merge_cohort_groups(groups)
+
+Combine aggregate cohorts that share a stage and a cell.
+
+A cohort that both survives and transitions leaves its survivor group in place and
+emits a *new* group for the transitions, at the same cell and the same stage it will
+occupy tomorrow. Those children fragment in turn, so the number of groups grew
+geometrically with the run: a 500-day run reached 1135 groups for six stages, and
+the per-step cost is linear in the group count.
+
+Pelagic cohorts carry no individual identity, so two groups at the same stage and
+cell are interchangeable. Merging them is exact in expectation: the per-individual
+hazard and transition probability are both monotone in `degree_days` and in time
+in stage, so a binomial draw on the merged count at the abundance-weighted mean
+rate has the same expected number of survivors and transitions as separate draws
+on the parts. Abundances sum; size, mass, age, degree-days and last-growth time
+become abundance-weighted means.
+
+Keyed by `(stage, cell)`, so cohorts in different cells stay separate.
+"""
+function merge_cohort_groups(groups::AbstractVector{AggregateGroup})
+    length(groups) <= 1 && return collect(groups)
+
+    order = Tuple{Int, Int, Int}[]
+    index = Dict{Tuple{Int, Int, Int}, AggregateGroup}()
+    merged = AggregateGroup[]
+
+    for grp in groups
+        grp.abundance <= 0.0 && continue
+        key = (grp.stage, Int(grp.pos[1]), Int(grp.pos[2]))
+        existing = get(index, key, nothing)
+        if existing === nothing
+            # Copy, so the caller's array and the previous cohort objects are not
+            # aliased into the new state.
+            push!(merged, AggregateGroup(
+                id = grp.id,
+                stage = grp.stage,
+                abundance = grp.abundance,
+                size = grp.size,
+                mass = grp.mass,
+                age_days = grp.age_days,
+                degree_days = grp.degree_days,
+                last_growth_time = grp.last_growth_time,
+                pos = grp.pos
+            ))
+            push!(order, key)
+            index[key] = merged[end]
+            continue
+        end
+
+        total = existing.abundance + grp.abundance
+        w_existing = existing.abundance
+        w_new = grp.abundance
+        existing.size = (w_existing * existing.size + w_new * grp.size) / total
+        existing.mass = (w_existing * existing.mass + w_new * grp.mass) / total
+        existing.age_days = (w_existing * existing.age_days + w_new * grp.age_days) / total
+        existing.degree_days =
+            (w_existing * existing.degree_days + w_new * grp.degree_days) / total
+        existing.last_growth_time =
+            (w_existing * existing.last_growth_time + w_new * grp.last_growth_time) / total
+        existing.abundance = total
+    end
+    return merged
 end

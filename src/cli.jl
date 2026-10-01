@@ -304,7 +304,7 @@ Common parameters (see configs/default.toml for the full list):
   --temp_base=<Float>                      Mean bottom water temperature (default: 5.0)
   --temp_amplitude=<Float>                 Annual temperature amplitude (default: 4.0)
   --benthic_carrying_capacity=<Float>      Total benthic capacity for the whole model,
-                                           not per cell (default: 300.0)
+                                           not per cell (default: 12000.0)
   --frequency_days=<Float>                 Output sampling interval (default: 365.0)
   --snapshot_day=<Float>                   Annual survey snapshot day of year (default: 274.0)
   --save=<Bool>                            Write annual indicators to CSV (default: true)
@@ -369,7 +369,12 @@ function print_simulation_report(
 
     if hasproperty(summary, :count_by_stage_male)
         println(io, "   - Demographic Stage & Sex Structure:")
-        println(io, "       Stage | Total Count |   Males | Females | Mean M (mm) | Mean F (mm) | Total Mass (kg)")
+        # `mass_by_stage` is the mean individual mass at that stage, in grams:
+        # `summarize_population` divides the stage's summed mass by its summed
+        # count. The column previously read "Total Mass (kg)", which was wrong
+        # twice over, so a 95 mm female was reported as 290.70 kg when her mass
+        # was 0.29 kg. The biomass totals above are the kilogram quantities.
+        println(io, "       Stage | Total Count |   Males | Females | Mean M (mm) | Mean F (mm) | Mean Mass (g)")
         println(io, "       ------+-------------+---------+---------+-------------+-------------+----------------")
         for stg in sort(collect(keys(summary.size_by_stage)))
             count_stg = summary.count_by_stage[stg]

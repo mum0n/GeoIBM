@@ -464,7 +464,8 @@ If individual clutch recruitment records exist in
 - `mother_mass`: Maternal body mass in grams.
 - `recruits`: Settled Stage 4 benthic recruits from the clutch.
 - `recruits_per_spawner`: Ratio of recruits produced per unit spawner.
-- `density_feedback`: Benthic adult compensatory density feedback factor (1 + N/K).
+- `density_feedback`: Density-dependent mortality multiplier at the time of
+  settlement, `1 + (N/K)^exponent`.
 """
 function extract_stock_recruitment(model)
     props = abmproperties(model)
@@ -501,7 +502,7 @@ function extract_stock_recruitment(model)
 end
 
 """
-    extract_stock_recruitment(agent_df::DataFrame, model_df::DataFrame; lag_days=365.0, window_days=365.0)
+    extract_stock_recruitment(agent_df::DataFrame, model_df::DataFrame; lag_days=nothing, window_days=nothing, days_per_year=365.0)
 
 Derive population-level annual stock-recruitment timeseries from simulation dataframes.
 
@@ -512,8 +513,11 @@ is paired with the resulting benthic recruitment settling in the subsequent lagg
 # Arguments
 - `agent_df::DataFrame`: Time-stepped agent data collected during simulation.
 - `model_df::DataFrame`: Time-stepped model-level data (`:total_eggs_spawned`, `:total_recruits_settled`).
-- `lag_days::Real`: Egg incubation plus larval development lag (default: 365.0 days).
-- `window_days::Real`: Annual aggregation window (default: 365.0 days).
+- `lag_days::Real`: Egg incubation plus larval development lag. Defaults to
+  `days_per_year`, so the cohort windows stay aligned with the model's calendar
+  under a leap-year configuration.
+- `window_days::Real`: Annual aggregation window (default: `days_per_year`).
+- `days_per_year::Real`: Calendar length to use when either window is not given.
 
 # Returns
 `DataFrame` with columns:
@@ -527,9 +531,15 @@ is paired with the resulting benthic recruitment settling in the subsequent lagg
 function extract_stock_recruitment(
     agent_df::DataFrame,
     model_df::DataFrame;
-    lag_days::Real = 365.0,
-    window_days::Real = 365.0
+    lag_days::Union{Nothing, Real} = nothing,
+    window_days::Union{Nothing, Real} = nothing,
+    days_per_year::Real = 365.0
 )
+    # The cohort windows are calendar-year windows, so they have to be the
+    # model's calendar. Both defaults used to be the literal 365.0, which silently
+    # misaligned every cohort under a leap-year configuration.
+    lag = lag_days === nothing ? Float64(days_per_year) : Float64(lag_days)
+    window = window_days === nothing ? Float64(days_per_year) : Float64(window_days)
     if nrow(model_df) < 2
         return DataFrame(
             year = Int[],
@@ -542,7 +552,7 @@ function extract_stock_recruitment(
     end
 
     t_max = maximum(model_df.time)
-    n_cohorts = floor(Int, (t_max - lag_days) / window_days)
+    n_cohorts = floor(Int, (t_max - lag) / window)
 
     res_year = Int[]
     res_t_spawn = Float64[]
@@ -552,10 +562,10 @@ function extract_stock_recruitment(
     res_rps = Float64[]
 
     for y in 1:n_cohorts
-        t_spawn_start = (y - 1) * window_days
-        t_spawn_end = y * window_days
-        t_rec_start = t_spawn_start + lag_days
-        t_rec_end = t_spawn_end + lag_days
+        t_spawn_start = (y - 1) * window
+        t_spawn_end = y * window
+        t_rec_start = t_spawn_start + lag
+        t_rec_end = t_spawn_end + lag
 
         sub_spawn = filter(r -> t_spawn_start <= r.time <= t_spawn_end, model_df)
         sub_rec = filter(r -> t_rec_start <= r.time <= t_rec_end, model_df)
@@ -2428,6 +2438,9 @@ function fit_generalized_leslie_model(
     m6_idx = isempty(male_indices) ? 3 : first(male_indices)
     f6_idx = isempty(female_indices) ? 10 : first(female_indices)
 
+    lp = LeslieParams()
+    base_stage = Float64(lp.first_sex_specific_stage)
+
     """
         build_leslie_matrix(p) -> Matrix
 
@@ -2456,9 +2469,10 @@ function fit_generalized_leslie_model(
             st = stages[idx]
             is_term = (idx == last(male_indices))
             s_m = st.is_legal_male ? s_ml : s_ms
-            gamma_m = is_term ? 0.0 : clamp(gmb - gmd * (st.stage - 6.0), 0.0, 1.0)
-            p_term = (st.stage <= 6) ? 0.0 :
-                clamp(ptmb * (st.stage - 6.0)^ptme, 0.0, 0.99)
+            gamma_m = is_term ? 0.0 :
+                clamp(gmb - gmd * (st.stage - base_stage), 0.0, 1.0)
+            p_term = (st.stage <= base_stage) ? 0.0 :
+                clamp(ptmb * (st.stage - base_stage)^ptme, 0.0, 0.99)
             if is_term
                 M[idx, idx] = s_m
             else
@@ -2472,9 +2486,10 @@ function fit_generalized_leslie_model(
         for idx in female_indices
             st = stages[idx]
             is_term = (idx == last(female_indices))
-            gamma_f = is_term ? 0.0 : clamp(gfb - gfd * (st.stage - 6.0), 0.0, 1.0)
-            p_term = (st.stage <= 6) ? 0.0 :
-                clamp(ptfb * (st.stage - 6.0)^ptfe, 0.0, 0.99)
+            gamma_f = is_term ? 0.0 :
+                clamp(gfb - gfd * (st.stage - base_stage), 0.0, 1.0)
+            p_term = (st.stage <= base_stage) ? 0.0 :
+                clamp(ptfb * (st.stage - base_stage)^ptfe, 0.0, 0.99)
             if is_term
                 M[idx, idx] = sf
             else
@@ -2531,14 +2546,14 @@ function fit_generalized_leslie_model(
 
     # The process error dominates; the trajectory term regularizes toward
     # multi-year consistency without letting recursive noise drive the fit.
-    objective(p) = process_error(p) + 0.5 * trajectory_error(p)
+    objective(p) = process_error(p) +
+                   lp.trajectory_error_weight * trajectory_error(p)
 
     # ------------------------------------------------------------------
     # Estimation
     # ------------------------------------------------------------------
     # Starting values come from the configured Leslie parameters so the fit
     # inherits documented, species-specific priors instead of arbitrary numbers.
-    lp = LeslieParams()
     p0 = [
         lp.survival_stage1, lp.gamma_stage1,
         lp.survival_stage2, lp.gamma_stage2, lp.male_split_fraction,
@@ -2684,6 +2699,7 @@ function fit_generalized_leslie_model(
         r2,
         rmse,
         aic,
+        k_params,
         collect(Int, years)
     )
 end
@@ -2860,7 +2876,11 @@ function compare_macro_models(
     ss_res_les = sum((b_obs .- b_leslie).^2)
     r2_les = (ss_tot > 0.0) ? max(0.0, 1.0 - ss_res_les / ss_tot) : 0.0
     rmse_les = sqrt(ss_res_les / T)
-    aic_les = (ss_res_les > 0.0) ? (T * log(ss_res_les / T) + 2.0 * 4) : 0.0
+    # The Leslie penalty must be the number of coefficients the fit estimated. It
+    # used to be the literal 4, which understated it by 15 parameters and made the
+    # most flexible of the three models look favoured by AIC for having fitted less.
+    aic_les = (ss_res_les > 0.0) ?
+              (T * log(ss_res_les / T) + 2.0 * leslie_fit.n_free_parameters) : 0.0
 
     aics = Dict(:schaefer => aic_sch, :delay_difference => aic_dd, :generalized_leslie => aic_les)
     preferred = argmin(aics)
@@ -3044,19 +3064,19 @@ function evaluate_population_criteria(
     agent_df::DataFrame;
     min_population::Union{Nothing, Int} = nothing,
     max_population::Union{Nothing, Int} = nothing,
-    max_size_drift::Float64 = 0.20,
-    max_maturity_rmse::Float64 = 0.35,
-    max_growth_rmse::Float64 = 15.0,
-    window_steps::Int = 10,
-    maturity_ogive_min_count::Int = 10
+    max_size_drift::Union{Nothing, Float64} = nothing,
+    max_maturity_rmse::Union{Nothing, Float64} = nothing,
+    max_growth_rmse::Union{Nothing, Float64} = nothing,
+    window_steps::Union{Nothing, Int} = nothing,
+    maturity_ogive_min_count::Union{Nothing, Int} = nothing
 )
     # `params` lives in the model's abm properties, not as a struct field, so
     # neither `hasfield` nor `hasproperty` finds it. And `IBMParameters` forwards
     # unknown field reads to its nested structs via `getproperty` without
     # extending `propertynames`, so `hasproperty` is also false for
     # `benthic_carrying_capacity`. Both facts previously sent this code down its
-    # fallback branch, which silently substituted a hardcoded 300.0 carrying
-    # capacity for the configured one.
+    # fallback branch, which silently substituted a hardcoded carrying capacity
+    # for the configured one.
     props = try
         abmproperties(model)
     catch
@@ -3073,6 +3093,18 @@ function evaluate_population_criteria(
     else
         CriteriaParams()
     end
+
+    # Thresholds, windows and weights all come from [criteria] unless the caller
+    # overrides them. They were literals, so tuning the composite loss required
+    # editing the source.
+    drift_limit = max_size_drift === nothing ? crit_cfg.max_size_drift : max_size_drift
+    maturity_limit = max_maturity_rmse === nothing ? crit_cfg.max_maturity_rmse :
+                     max_maturity_rmse
+    growth_limit = max_growth_rmse === nothing ? crit_cfg.max_growth_rmse :
+                   max_growth_rmse
+    size_window = window_steps === nothing ? crit_cfg.window_steps : window_steps
+    ogive_min_count = maturity_ogive_min_count === nothing ?
+                      crit_cfg.maturity_ogive_min_count : maturity_ogive_min_count
 
     # Floor is an absolute count, independent of K: the criterion asks whether the
     # run went extinct. Ceiling is a multiple of K, because "did not explode past
@@ -3114,8 +3146,17 @@ function evaluate_population_criteria(
             n_max = n_max,
             size_drift = 1.0,
             maturity_rmse = 1.0,
-            growth_rmse = 100.0,
-            composite_score = 1000.0,
+            # Reported as a value, not as a verdict: a run with no survivors has
+            # no growth error to measure, and this must stay strictly above
+            # `crit_cfg.max_growth_rmse` so the growth criterion reads false.
+            growth_rmse = growth_limit,
+            # The extinction penalty dominates the empty-population loss, with the
+            # size-drift and maturity terms at their saturated values and nothing for
+            # growth. Every term here is a term the populated path can also
+            # contribute, so the two scores are on the same scale.
+            composite_score = crit_cfg.extinction_penalty +
+                              crit_cfg.size_drift_weight +
+                              crit_cfg.maturity_rmse_weight,
             # Same field name as the populated path below; this one used to report
             # `mean_cw` while the other reported `mean_size`, so the two returns
             # did not have the same shape.
@@ -3135,14 +3176,14 @@ function evaluate_population_criteria(
 
     size_drift = 0.0
     if size_col !== nothing && nrow(agent_df) >= 2
-        w = min(window_steps, nrow(agent_df))
+        w = min(size_window, nrow(agent_df))
         recent_sizes = agent_df[(end - w + 1):end, size_col]
         mean_recent = mean(recent_sizes)
         if mean_recent > 0.0
             size_drift = abs(recent_sizes[end] - recent_sizes[1]) / mean_recent
         end
     end
-    is_size_steady = size_drift <= max_size_drift
+    is_size_steady = size_drift <= drift_limit
 
     # 3. Maturity ogive fidelity.
     #    The empirical curve is cross-sectional (has ever matured) and `maturity`
@@ -3150,16 +3191,16 @@ function evaluate_population_criteria(
     #    curve over the stages an individual of that size has already passed, not
     #    against the raw per-ecdysis probability. Bins with a handful of
     #    individuals are excluded because their proportions are noise.
-    size_bins = 20.0:10.0:140.0
-    om = compute_empirical_ogive(model, male, size_bins; min_count = maturity_ogive_min_count)
-    of = compute_empirical_ogive(model, female, size_bins; min_count = maturity_ogive_min_count)
+    size_bins = crit_cfg.ogive_bin_start:crit_cfg.ogive_bin_step:crit_cfg.ogive_bin_stop
+    om = compute_empirical_ogive(model, male, size_bins; min_count = ogive_min_count)
+    of = compute_empirical_ogive(model, female, size_bins; min_count = ogive_min_count)
 
     maturity_sq_errors = Float64[]
     append!(maturity_sq_errors, maturity_ogive_residuals(om, male))
     append!(maturity_sq_errors, maturity_ogive_residuals(of, female))
 
     maturity_rmse = isempty(maturity_sq_errors) ? 0.0 : sqrt(mean(maturity_sq_errors))
-    is_maturity_realistic = maturity_rmse <= max_maturity_rmse
+    is_maturity_realistic = maturity_rmse <= maturity_limit
 
     # 4. Growth schedule fidelity
     ref_schedule = growth_schedule()
@@ -3198,17 +3239,17 @@ function evaluate_population_criteria(
     end
 
     growth_rmse = isempty(growth_sq_errors) ? 0.0 : sqrt(mean(growth_sq_errors))
-    is_growth_realistic = growth_rmse <= max_growth_rmse
+    is_growth_realistic = growth_rmse <= growth_limit
 
     # 5. Composite criteria status and loss
     passed_all = is_persistent && is_bounded && is_size_steady &&
                  is_maturity_realistic && is_growth_realistic
 
-    composite_score = (is_persistent ? 0.0 : 150.0) +
-                      (is_bounded ? 0.0 : 150.0) +
-                      25.0 * size_drift +
-                      15.0 * maturity_rmse +
-                      1.0 * growth_rmse
+    composite_score = (is_persistent ? 0.0 : crit_cfg.extinction_penalty) +
+                      (is_bounded ? 0.0 : crit_cfg.explosion_penalty) +
+                      crit_cfg.size_drift_weight * size_drift +
+                      crit_cfg.maturity_rmse_weight * maturity_rmse +
+                      crit_cfg.growth_rmse_weight * growth_rmse
 
     mean_size_all = mean([org.size for org in living_organisms])
 
@@ -3311,7 +3352,8 @@ from continuous size observations using empirical growth-stage intervals.
 function derive_stage_proportions_kde(
     sizes::AbstractVector{<:Real},
     sexes = nothing;
-    stages::Vector{StageDefinition} = build_stages()
+    stages::Vector{StageDefinition} = build_stages(),
+    rng::AbstractRNG = Random.default_rng()
 )
     n_orgs = length(sizes)
     n_stages = length(stages)
@@ -3319,31 +3361,48 @@ function derive_stage_proportions_kde(
     if n_orgs == 0
         return (counts, zeros(Float64, n_stages))
     end
+    # The pooled-sex blocks come first, so the sizes below which sexes cannot be
+    # distinguished are the upper edge of the last pooled block and the lower edge
+    # of the first sex-specific one. They used to be the literals 22.0 and 14.5,
+    # which is the same pair of numbers but stated twice: editing the stage table
+    # moved the threshold without moving this code.
+    pooled = filter(st -> st.sex === undifferentiated, stages)
+    sexed = filter(st -> st.sex !== undifferentiated, stages)
+    pooled_upper = isempty(pooled) ? 0.0 : last(last(pooled).size_range)
+    sexed_lower = isempty(sexed) ? Inf : first(first(sexed).size_range)
+    # Largest stage in the table, used as the upper catch-all for sizes beyond it.
+    terminal_stage = isempty(stages) ? 0 : maximum(st.stage for st in stages)
+    unknown_sex_fraction = 0.50
+
     has_sex = (sexes !== nothing && length(sexes) == n_orgs)
     for i in 1:n_orgs
         sz = Float64(sizes[i])
         if sz <= 0.0
             continue
         end
-        if sz < 22.0
-            if sz < 14.5
-                counts[1] += 1.0
-            else
-                counts[2] += 1.0
+        if sz < sexed_lower
+            # Too small to sex: assign to a pooled block by range, falling back to
+            # the nearest pooled mean when the size sits outside every block.
+            if !isempty(pooled)
+                block = findfirst(st -> first(st.size_range) <= sz < last(st.size_range), pooled)
+                if block === nothing
+                    block = argmin([abs(sz - st.size_mean) for st in pooled])
+                end
+                counts[pooled[block].index] += 1.0
             end
         else
             is_fem = if has_sex
                 sx = sexes[i]
                 (sx == 1 || sx == :female || Symbol(sx) == :female)
             else
-                rand() < 0.50
+                rand(rng) < unknown_sex_fraction
             end
             target_sex = is_fem ? female : male
             matched = false
             for st in stages
                 if st.sex === target_sex
                     b_min, b_max = st.size_range
-                    if b_min <= sz < b_max || (sz >= b_min && st.stage == 12)
+                    if b_min <= sz < b_max || (sz >= b_min && st.stage == terminal_stage)
                         counts[st.index] += 1.0
                         matched = true
                         break
@@ -3396,35 +3455,51 @@ maturity ogive estimation with thermal sensitivity.
 function _fit_irls_logistic(
     cw_vec::Vector{Float64},
     temp_vec::Vector{Float64},
-    y_vec::Vector{Float64}
+    y_vec::Vector{Float64};
+    temp_reference::Float64 = 4.0
 )
     n = length(y_vec)
-    has_temp_var = std(temp_vec) > 0.1
+    # Below this the temperature term is not identified and dropping it is more
+    # stable than fitting a coefficient on noise.
+    temp_variability_threshold::Float64 = 0.1
+    has_temp_var = std(temp_vec) > temp_variability_threshold
+    # Temperature enters centred on its reference, so the intercept means
+    # maturity at that reference rather than at zero degrees. The reference is a
+    # species parameter (`maturity_temp_reference`); it was the literal 4.0 here,
+    # stated a second time.
     X = has_temp_var ?
-        hcat(ones(n), log.(cw_vec), temp_vec .- 4.0) :
+        hcat(ones(n), log.(cw_vec), temp_vec .- temp_reference) :
         hcat(ones(n), log.(cw_vec))
     p_dim = size(X, 2)
     theta = zeros(p_dim)
+    # Starting values: a size far above the smallest observed, with a moderate
+    # slope, so the first iteration lands near a low, flat probability.
     theta[1] = -20.0
     theta[2] = 5.0
     if p_dim == 3
         theta[3] = -0.05
     end
-    for _ in 1:30
+    max_iterations = 30
+    weight_floor = 1e-6
+    ridge = 1e-4
+    tolerance = 1e-5
+    damping = 0.5
+    min_slope = 0.5
+    for _ in 1:max_iterations
         eta = X * theta
         mu = _logistic_safe.(eta)
-        w = max.(mu .* (1.0 .- mu), 1e-6)
+        w = max.(mu .* (1.0 .- mu), weight_floor)
         z = eta .+ (y_vec .- mu) ./ w
-        H = (X' .* w') * X + 1e-4 * I
+        H = (X' .* w') * X + ridge * I
         g = (X' .* w') * z
         theta_next = H \ g
-        if norm(theta_next - theta) < 1e-5
+        if norm(theta_next - theta) < tolerance
             theta = theta_next
             break
         end
-        theta = 0.5 .* theta .+ 0.5 .* theta_next
+        theta = damping .* theta .+ damping .* theta_next
     end
-    slope = max(0.5, theta[2])
+    slope = max(min_slope, theta[2])
     l50 = exp(-theta[1] / slope)
     temp_coef = (p_dim == 3) ? theta[3] : -0.05
     mean_y = mean(y_vec)
@@ -3506,12 +3581,19 @@ function generate_mock_survey_data(;
 end
 
 """
-    fit_empirical_biology_model(data::DataFrame)
+    fit_empirical_biology_model(data::DataFrame; params::SpeciesParams=SpeciesParams())
 
 Calibrate an `EmpiricalBiologicalModel` from empirical observational or research
 survey data.
+
+Every fallback used when a stratum is too sparse to fit is read from `params`,
+so a species change carries through the calibration instead of leaving the
+declared constants behind as a second, silent set of species values.
 """
-function fit_empirical_biology_model(data::DataFrame)
+function fit_empirical_biology_model(
+    data::DataFrame;
+    params::SpeciesParams = SpeciesParams()
+)
     required_cols = [:size, :sex, :maturity, :mass, :temp_c, :fecundity]
     for col in required_cols
         if !(col in propertynames(data))
@@ -3528,18 +3610,63 @@ function fit_empirical_biology_model(data::DataFrame)
     stage_modals = Dict{Int, Tuple{Float64, Float64}}()
     r2_scores = Dict{Symbol, Float64}()
 
+    # Minimum records in a stratum before its regression is trusted, and the R²
+    # reported when it is not fitted at all. These are diagnostics, not estimates,
+    # so they are stated once here rather than at each use.
+    min_stratum_records = 5
+    min_maturity_records = 10
+    min_stage_records = 3
+    mass_fallback_r2 = 0.95
+    maturity_fallback_r2 = 0.85
+    fecundity_fallback_r2 = 0.80
+
+    # The stage table and the size lower bounds are read through a behaviour built
+    # from `params`, so a stage missing from the data is filled in from the same
+    # configuration the simulation itself uses rather than from the defaults.
+    behavior = SpeciesBehaviorImpl(params)
+    stages_for_modals = build_stages(behavior)
+    llbm_of(stg) = stage_size_lower_bound(behavior, Float64(stg), :male)
+
     # 1. Allometric Mass Parameters
     strata_definitions = [
-        (:male_imm, (data.sex .== 0) .&& (data.maturity .== 0), (0.0002665, 3.098, 0.08)),
-        (:male_mat, (data.sex .== 0) .&& (data.maturity .== 1), (0.0001830, 3.160, 0.08)),
-        (:female_imm, (data.sex .== 1) .&& (data.maturity .== 0), (0.0003440, 2.980, 0.08)),
-        (:female_mat, (data.sex .== 1) .&& (data.maturity .== 1), (0.0004500, 2.920, 0.08))
+        (
+            :male_imm,
+            (data.sex .== 0) .&& (data.maturity .== 0),
+            (
+                params.mass_alpha_male_immature,
+                params.mass_beta_male_immature,
+                params.mass_sigma
+            )
+        ),
+        (
+            :male_mat,
+            (data.sex .== 0) .&& (data.maturity .== 1),
+            (params.mass_alpha_male_mature, params.mass_beta_male_mature, params.mass_sigma)
+        ),
+        (
+            :female_imm,
+            (data.sex .== 1) .&& (data.maturity .== 0),
+            (
+                params.mass_alpha_female_immature,
+                params.mass_beta_female_immature,
+                params.mass_sigma
+            )
+        ),
+        (
+            :female_mat,
+            (data.sex .== 1) .&& (data.maturity .== 1),
+            (
+                params.mass_alpha_female_mature,
+                params.mass_beta_female_mature,
+                params.mass_sigma
+            )
+        )
     ]
     for (strat_sym, mask, fallback) in strata_definitions
         sub_sz = data.size[mask]
         sub_wt = data.mass[mask]
         valid = (sub_sz .> 0.0) .&& (sub_wt .> 0.0)
-        if count(valid) >= 5
+        if count(valid) >= min_stratum_records
             x = log.(Float64.(sub_sz[valid]))
             y = log.(Float64.(sub_wt[valid]))
             intercept, slope, sigma, r2 = _fit_ols(x, y)
@@ -3547,56 +3674,87 @@ function fit_empirical_biology_model(data::DataFrame)
             r2_scores[strat_sym] = r2
         else
             mass_params[strat_sym] = fallback
-            r2_scores[strat_sym] = 0.95
+            r2_scores[strat_sym] = mass_fallback_r2
         end
     end
 
     # 2. Logistic Maturity Parameters
     for (sex_sym, s_code, fallback) in [
-        (:male, 0, (91.8, 6.9957, -0.05)),
-        (:female, 1, (51.6, 12.9812, -0.08))
+        (
+            :male,
+            0,
+            (
+                params.maturity_l50_male,
+                params.maturity_slope_male,
+                params.maturity_l50_temp_slope
+            )
+        ),
+        (
+            :female,
+            1,
+            (
+                params.maturity_l50_female,
+                params.maturity_slope_female,
+                params.maturity_l50_temp_slope
+            )
+        )
     ]
-        mask = (data.sex .== s_code) .&& (data.size .>= 35.0)
+        mask = (data.sex .== s_code) .&& (data.size .>= params.maturity_size_gate)
         sub_sz = data.size[mask]
         sub_temp = data.temp_c[mask]
         sub_mat = Float64.(data.maturity[mask])
-        if count(mask) >= 10 && length(unique(sub_mat)) > 1
+        if count(mask) >= min_maturity_records && length(unique(sub_mat)) > 1
             l50, slope, temp_coef, pseudo_r2 = _fit_irls_logistic(
                 Float64.(sub_sz),
                 Float64.(sub_temp),
-                sub_mat
+                sub_mat;
+                temp_reference = params.maturity_temp_reference
             )
             maturity_params[sex_sym] = (l50, slope, temp_coef)
             r2_scores[Symbol("maturity_", sex_sym)] = pseudo_r2
         else
             maturity_params[sex_sym] = fallback
-            r2_scores[Symbol("maturity_", sex_sym)] = 0.85
+            r2_scores[Symbol("maturity_", sex_sym)] = maturity_fallback_r2
         end
     end
 
     # 3. Fecundity Parameters
+    # Parity is taken from shell age where the data carry it. Where they do not,
+    # the split is made on size at the reference that separates the two forms,
+    # which is a weaker criterion and is used only because nothing better exists
+    # in the columns available.
     has_shell_age = :shell_age in propertynames(data)
+    primiparous_shell_age = params.primiparous_shell_age_max
+    parity_split_size = params.fecundity_parity_size_split
     fem_mat_mask = (data.sex .== 1) .&& (data.maturity .== 1) .&& (data.fecundity .> 0.0)
     for (par_sym, par_mask, fallback) in [
         (
             :primiparous,
             has_shell_age ?
-                (fem_mat_mask .&& (data.shell_age .<= 2.0)) :
-                (fem_mat_mask .&& (data.size .< 65.0)),
-            (-0.7229, 2.94, 0.090)
+                (fem_mat_mask .&& (data.shell_age .<= primiparous_shell_age)) :
+                (fem_mat_mask .&& (data.size .< parity_split_size)),
+            (
+                params.fecundity_primiparous_intercept,
+                params.fecundity_primiparous_slope,
+                params.fecundity_primiparous_err
+            )
         ),
         (
             :multiparous,
             has_shell_age ?
-                (fem_mat_mask .&& (data.shell_age .> 2.0)) :
-                (fem_mat_mask .&& (data.size .>= 65.0)),
-            (0.0158, 2.5811, 0.145)
+                (fem_mat_mask .&& (data.shell_age .> primiparous_shell_age)) :
+                (fem_mat_mask .&& (data.size .>= parity_split_size)),
+            (
+                params.fecundity_multiparous_intercept,
+                params.fecundity_multiparous_slope,
+                params.fecundity_multiparous_err
+            )
         )
     ]
         sub_sz = data.size[par_mask]
         sub_fec = data.fecundity[par_mask]
         valid = (sub_sz .> 0.0) .&& (sub_fec .> 0.0)
-        if count(valid) >= 5
+        if count(valid) >= min_stratum_records
             x = log10.(Float64.(sub_sz[valid]))
             y = log10.(Float64.(sub_fec[valid]))
             intercept, slope, sigma, r2 = _fit_ols(x, y)
@@ -3604,19 +3762,35 @@ function fit_empirical_biology_model(data::DataFrame)
             r2_scores[par_sym] = r2
         else
             fecundity_params[par_sym] = fallback
-            r2_scores[par_sym] = 0.80
+            r2_scores[par_sym] = fecundity_fallback_r2
         end
     end
 
     # 4. Stage Modal Dimensions
     stage_col = (:stage in propertynames(data)) ? data.stage : nothing
-    for stg in 4:12
-        if stage_col !== nothing && count(stage_col .== stg) >= 3
+    # Stages the survey is expected to cover. The span comes from the stage table
+    # so it follows a species change; the endpoints used to be the literals 4 and
+    # 12, which are the pooled recruit bin and the largest male stage for the
+    # default table and nothing else.
+    stage_span = isempty(stages_for_modals) ? (0:-1) :
+                 (minimum(st.stage for st in stages_for_modals):
+                  maximum(st.stage for st in stages_for_modals))
+    for stg in stage_span
+        if stage_col !== nothing && count(stage_col .== stg) >= min_stage_records
             szs_stg = Float64.(data.size[stage_col .== stg])
+            # A single observation has no spread; floor the SD so downstream draws
+            # from this stage are not degenerate.
             stage_modals[stg] = (mean(szs_stg), max(0.5, std(szs_stg)))
         else
-            mid_sz = 0.5 * (llbm(stg) + llbm(stg + 1))
-            sd_sz = max(0.8, 0.5 * (llbm(stg + 1) - llbm(stg)) / 3.0)
+            # From the lower bounds of the stage and the one after it, so an
+            # unobserved stage is represented by the middle of its own interval.
+            lo = llbm_of(stg)
+            hi = llbm_of(stg + 1)
+            mid_sz = 0.5 * (lo + hi)
+            # Floor the SD on an interval no narrower than this, so a species
+            # whose stages are close together still produces a usable spread.
+            min_modal_sd = 0.8
+            sd_sz = max(min_modal_sd, 0.5 * (hi - lo) / 3.0)
             stage_modals[stg] = (mid_sz, sd_sz)
         end
     end
@@ -3629,7 +3803,10 @@ function fit_empirical_biology_model(data::DataFrame)
     trait_matrix[:, 3] = Float64.(data.maturity)
     trait_matrix[:, 4] = Float64.(data.fecundity)
     raw_cov = cov(trait_matrix)
-    sym_cov = Matrix(Hermitian(raw_cov + 1e-4 * I))
+    # The ridge keeps the covariance positive definite when a trait is constant in
+    # the sample, which would otherwise make a multivariate draw fail.
+    trait_covariance_ridge = 1e-4
+    sym_cov = Matrix(Hermitian(raw_cov + trait_covariance_ridge * I))
 
     return EmpiricalBiologicalModel(
         mass_params,
@@ -3644,9 +3821,13 @@ function fit_empirical_biology_model(data::DataFrame)
 end
 
 """
-    estimate_demographics(model::EmpiricalBiologicalModel; size, sex, temp=4.0, shell_age=1.0, rng=Random.default_rng())
+    estimate_demographics(model::EmpiricalBiologicalModel; size, sex, temp=4.0, shell_age=1.0, params=SpeciesParams(), rng=Random.default_rng())
 
 Predict demographic traits for an individual from an empirical model.
+
+The maturity size gate, its temperature response, and the fecundity senescence
+schedule come from `params` rather than from literals, so a calibrated model and
+the species configuration describe the same animal.
 """
 function estimate_demographics(
     model::EmpiricalBiologicalModel;
@@ -3654,6 +3835,7 @@ function estimate_demographics(
     sex,
     temp::Real = 4.0,
     shell_age::Real = 1.0,
+    params::SpeciesParams = SpeciesParams(),
     rng::AbstractRNG = Random.default_rng()
 )
     if size <= 0.0
@@ -3667,12 +3849,20 @@ function estimate_demographics(
     end
     is_fem = (sex == 1 || sex == :female || Symbol(sex) == :female)
     sex_sym = is_fem ? :female : :male
-    p_mat = if size < 35.0
+    size_gate = params.maturity_size_gate
+    temp_ref = params.maturity_temp_reference
+    p_mat = if size < size_gate
         0.0
     else
         l50, slope, t_coef = model.maturity_params[sex_sym]
-        eff_l50 = max(35.0, l50 - 2.0 * (temp - 4.0))
-        lin_pred = slope * (log(size) - log(eff_l50)) + t_coef * (temp - 4.0)
+        # The size-at-50 shifts by the configured slope; the fitted coefficient
+        # enters the logit directly. Both terms are zero at the reference
+        # temperature, so the curve is centred where the species says it is.
+        eff_l50 = max(
+            size_gate,
+            l50 + params.maturity_l50_temp_slope * (temp - temp_ref)
+        )
+        lin_pred = slope * (log(size) - log(eff_l50)) + t_coef * (temp - temp_ref)
         _logistic_safe(lin_pred)
     end
     mat_val = (rand(rng) < p_mat) ? 1 : 0
@@ -3687,11 +3877,17 @@ function estimate_demographics(
 
     fecundity_val = 0.0
     if is_fem && mat_val == 1
-        par_sym = (shell_age <= 2.0) ? :primiparous : :multiparous
+        par_sym = (shell_age <= params.primiparous_shell_age_max) ? :primiparous :
+                  :multiparous
         a, b, sig = model.fecundity_params[par_sym]
         log10_fec = a + b * log10(size) + rand(rng, Normal(0.0, sig))
-        senescence = (par_sym === :multiparous && shell_age > 3.0) ?
-            max(0.60, 1.0 - 0.08 * (shell_age - 3.0)) : 1.0
+        senescence = (par_sym === :multiparous &&
+                      shell_age > params.fecundity_senescence_threshold) ?
+                      max(
+                          params.fecundity_senescence_floor,
+                          1.0 - params.fecundity_senescence_rate *
+                          (shell_age - params.fecundity_senescence_threshold)
+                      ) : 1.0
         fecundity_val = max(0.0, round(10.0^log10_fec * senescence))
     end
 
@@ -3720,6 +3916,7 @@ function sample_organism_traits(
     sex,
     temp::Real = 4.0,
     shell_age::Real = 1.0,
+    params::SpeciesParams = SpeciesParams(),
     rng::AbstractRNG = Random.default_rng()
 )
     return estimate_demographics(
@@ -3728,6 +3925,7 @@ function sample_organism_traits(
         sex = sex,
         temp = temp,
         shell_age = shell_age,
+        params = params,
         rng = rng
     )
 end

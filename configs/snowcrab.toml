@@ -5,16 +5,41 @@
 # at its struct default. The loader applies the baseline first and this file
 # second, so anything here wins.
 #
-# The struct defaults already hold the snow crab reference values, so this file
-# currently restates them. That is deliberate: it is the one place to edit when
-# moving the model to a different crab species, and the values are the ones the
-# model is calibrated against.
-#
-# Nothing outside [species] is overridden here, so the baseline's execution,
-# environment and mortality settings apply unchanged.
+# The struct defaults already hold the snow crab reference values, so most of this
+# file restates them. That is deliberate: it is the one place to edit when moving
+# the model to a different crab species, and the values are the ones the model is
+# calibrated against. What follows `[species]` is the operating scale rather than
+# species biology.
 #
 # A key that is not a declared parameter is reported as a warning and ignored,
 # so a typo here fails loudly rather than silently doing nothing.
+
+# =============================================================================
+# Operating scale
+# =============================================================================
+# A 1000 x 1000 grid at one cell per metre is a 1 km x 1 km footprint, which is
+# the scale of a single snow crab survey stratum. It costs more per step than the
+# baseline grid, mostly through the two environmental fields that touch every cell
+# each day; see the performance notes in `docs/model_agent.md` for what that costs
+# and what has been done about it.
+[simulation]
+grid_nx = 1000
+grid_ny = 1000
+# Seeded stock against the carrying capacity below. The aggregate cohorts seed
+# 2000 eggs plus 500 per stage over stages 1 to 5, so the stock is `n_agents +
+# 4500`. Carrying capacity must exceed it or the density feedback is not a
+# correction to the mortality schedule but a replacement for it, and `initialize_model`
+# warns when it does not.
+n_agents = 2000
+days = 730
+
+[environment]
+# Total benthic capacity for the whole 1 km2 domain, which is about 10000
+# organisms per square kilometre. The seeded stock is 6500, so the density
+# multiplier starts at 1.42 and rises as the population grows; at the baseline
+# value of 12000 for a 1 km2 domain the multiplier would be 1.29 and the ceiling
+# would sit closer to the stock than to the recruitment it is meant to regulate.
+benthic_carrying_capacity = 10000.0
 
 [species]
 # --- Maturity ogive (logistic in log-size) ---
@@ -70,14 +95,22 @@ growth_residual_sd             = 0.04
 growth_min_expansion_immature  = 0.12
 growth_min_expansion_mature    = 0.06
 
-# --- Stage lower bounds ---
+# --- Stage size bounds ---
+# Asymptotic carapace width of each sex (mm), the saturating limit of the stage
+# size curve below and the hard ceiling on any modelled or drawn size.
+max_size_male                = 160.0
+max_size_female              = 95.0
+# Pre-benthic table, split at the breakpoints.
 size_lb_immature_sizes       = [0.95, 1.45, 2.5]
 size_lb_immature_breakpoints = [1.5, 2.5]
-size_lb_male_intercept       = 1.917564
-size_lb_male_slope           = 0.298914
+# ln S(stage) = ln L + (intercept - ln L) * exp(-decay * (stage - anchor)), fitted
+# to the lower edge of each tabulated stage. The previous form,
+# exp(intercept + slope * (stage - anchor)), was unbounded for any positive slope.
+size_lb_male_intercept       = 1.102422
+size_lb_male_decay           = 0.235833
 size_lb_male_anchor_stage    = 3.0
-size_lb_female_intercept     = 2.198848
-size_lb_female_slope         = 0.315026
+size_lb_female_intercept     = 1.930054
+size_lb_female_decay         = 0.308476
 size_lb_female_anchor_stage  = 4.0
 benthic_anchor_stage         = 4.0
 
@@ -98,8 +131,14 @@ mass_alpha_female_mature   = 0.00045
 mass_beta_female_mature    = 2.92
 mass_sigma                 = 0.08
 
-# --- Ecdysis schedules, indexed by benthic stage ---
+# --- Ecdysis schedules ---
+# Benthic schedules, indexed by developmental stage.
 intermolt_days_schedule = [60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0]
 degree_days_schedule   = [150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0]
+# Pelagic schedules, ordered [egg, zoea, megalopa]. Their length defines how far
+# the pelagic block reaches: stages below it develop on these numbers, every stage
+# from 3 upward develops on the benthic schedules above. An egg needs no elapsed
+# time and no degree-days, so it hatches on a hazard rather than after the 60 days
+# and 150 degree-days a benthic stage 0 would imply.
 intermolt_days_larval  = [0.0, 5.0, 10.0]
 degree_days_larval     = [0.0, 20.0, 40.0]
