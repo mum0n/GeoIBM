@@ -25,10 +25,12 @@ use_senescence        = true    # Mortality rising with shell age
 use_spermatheca       = true    # Females store sperm across broods
 use_movement          = true    # Dispersal and habitat-directed movement
 use_directed_movement = true    # Movement biased toward cold, food-rich cells
-use_fishery           = true    # Commercial harvest
 use_degree_days       = true    # Degree-day ecdysis gates
 use_molting           = true    # Growth by ecdysis (immature individuals only)
 use_reproduction      = true    # Mating, brooding and egg extrusion
+# There is no `use_fishery` toggle. Harvest is switched by
+# `fishery.fishing_probability_daily` in the [fishery] section: zero means no
+# fishery. See `fishery_active`.
 
 # -----------------------------------------------------------------------------
 # [simulation] — execution, time stepping, and grid
@@ -92,8 +94,24 @@ benthic_carrying_capacity       = 12000.0 # Total benthic capacity for the WHOLE
 benthic_carrying_capacity_exponent = 2.0  # Exponent in 1 + (N / K)^exponent
 half_saturation_food            = 2.0     # Half-saturation constant for intake
 assimilation_efficiency         = 0.75    # Food to energy conversion efficiency
-habitat_quality_mean            = 1.0     # Mean habitat quality on [0, 1]
+habitat_quality_mean            = 0.5     # Mean habitat quality on [0, 1]
 habitat_quality_sd              = 0.1     # Spatial habitat quality stochasticity
+# --- Spatial structure in the habitat suitability index ---
+# The HSI field is a Gaussian noise floor about `habitat_quality_mean` carrying
+# `habitat_peaks` additive Gaussian bumps at random positions. The noise alone
+# has no spatial correlation, so it leaves nowhere better to live than anywhere
+# else and renders as static on a large grid; the peaks give the taxis coherent
+# habitat to aggregate in.
+# The width is a fraction of the domain, not a cell count, so the structure looks
+# the same at 10x10 and at 1000x1000. Set `habitat_peaks = 0` for pure noise.
+#
+# `habitat_quality_mean` is 0.5 rather than 1.0 on purpose. The field is clipped to
+# [0, 1] and HSI enters dispersal as a relative weight in a softmax, so a mean of
+# 1.0 saturated the index and clipped every peak away: neighbour correlation 0.14
+# instead of 0.54. The default leaves headroom in both directions.
+habitat_peaks                   = 3       # Number of Gaussian habitat peaks
+habitat_peak_height             = 0.3     # Added HSI at a peak centre, before clipping to [0, 1]
+habitat_peak_width_fraction     = 0.15    # Peak sigma as a fraction of the grid width
 # --- Habitat-directed movement ---
 # Dispersal scores each candidate cell by thermal suitability and food density,
 # then samples a heading from a softmax of those scores. The thermal optimum and
@@ -412,6 +430,13 @@ hazard_cap = 1.0
 # required: the regulation is size-based. Harvest opportunity begins at
 # `fishing_season_start` on or after this size is reached.
 legal_size_male           = 95.0
+# THE fishery switch. Zero means no harvest, whatever else is configured; there is
+# no separate toggle. Any positive value turns harvesting on, at that daily
+# probability per legal male inside the season window below.
+#
+# It is left at zero because a harvest rate is a management scenario rather than a
+# species trait, and picking one would silently change every stock-recruitment
+# result the model produces. Set it to the rate your scenario implies.
 fishing_probability_daily = 0.0    # Daily probability a legal male is caught
 fishing_season_start      = 90.0   # First day of the fishing season
 fishing_season_end        = 150.0  # Last day of the fishing season

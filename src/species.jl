@@ -692,19 +692,32 @@ end
 min_intermolt_days(stage::Int) = min_intermolt_days(SpeciesBehaviorImpl(), stage)
 
 function min_intermolt_days(behavior::SpeciesBehavior, stage_cat::LifeStage, stage::Int = 0)
-    larval = behavior.params.intermolt_days_larval
-    if stage_cat === egg
-        return stage_schedule_lookup(larval, 0)
-    elseif stage_cat === zoea
-        return stage_schedule_lookup(larval, 1)
-    elseif stage_cat === megalopa
-        return stage_schedule_lookup(larval, 2)
-    end
-    return min_intermolt_days(behavior, stage)
+    # Route through the stage-indexed form so the pelagic mapping is written once.
+    # This overload and the `Int` overload used to each restate that egg, zoea and
+    # megalopa are stages 0, 1 and 2, and the stage-indexed form already reads the
+    # larval schedules for exactly those stages.
+    idx = life_stage_index(stage_cat)
+    return min_intermolt_days(behavior, idx === nothing ? stage : idx)
 end
 
 min_intermolt_days(stage_cat::LifeStage, stage::Int = 0) =
     min_intermolt_days(SpeciesBehaviorImpl(), stage_cat, stage)
+
+"""
+    life_stage_index(stage_cat::LifeStage)
+
+Developmental stage number a pelagic life stage occupies, which is the index into
+`intermolt_days_larval` and `degree_days_larval`.
+
+`nothing` for a stage that is not pelagic. `LifeStage` also names `juvenile` and
+`adult`, and those have no fixed developmental stage number of their own: the
+caller's own `stage` argument is the answer for them. Collapsing them into the
+megalopa index, which is what a three-branch `?:` does, silently answered a
+juvenile's question with the megalopa's numbers.
+"""
+life_stage_index(stage_cat::LifeStage) = stage_cat === egg ? 0 :
+                                        stage_cat === zoea ? 1 :
+                                        stage_cat === megalopa ? 2 : nothing
 
 """
     required_degree_days(behavior::SpeciesBehavior, stage::Int)
@@ -724,15 +737,8 @@ end
 required_degree_days(stage::Int) = required_degree_days(SpeciesBehaviorImpl(), stage)
 
 function required_degree_days(behavior::SpeciesBehavior, stage_cat::LifeStage, stage::Int = 0)
-    larval = behavior.params.degree_days_larval
-    if stage_cat === egg
-        return stage_schedule_lookup(larval, 0)
-    elseif stage_cat === zoea
-        return stage_schedule_lookup(larval, 1)
-    elseif stage_cat === megalopa
-        return stage_schedule_lookup(larval, 2)
-    end
-    return required_degree_days(behavior, stage)
+    idx = life_stage_index(stage_cat)
+    return required_degree_days(behavior, idx === nothing ? stage : idx)
 end
 
 required_degree_days(stage_cat::LifeStage, stage::Int = 0) =

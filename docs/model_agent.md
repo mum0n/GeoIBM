@@ -66,6 +66,28 @@ Allometry   Development         Phenology         Reproduction
 
 ---
 
+
+> **Species dispatch is not defaulted.** `SpeciesBehavior` is the extension
+> point for a second species, and three methods in the generic layer used to defeat
+> it: `stage_size_lower_bound`, `growth_increment` and `build_stages` each built a
+> `SpeciesBehaviorImpl()` and called *that*, discarding the behaviour they were
+> handed. With one species the mistake is invisible, because every behaviour *is* a
+> `SpeciesBehaviorImpl` and dispatch already selects the right method, and because
+> an altered `SpeciesParams` does change the answer — which is what makes it easy to
+> miss. The cost appears only when a second species is written: it would be measured
+> against snow crab growth coefficients and the snow crab stage-size curve, and
+> produce plausible, wrong animals. All three now fail at the call site with the
+> offending type named.
+>
+> **Two reporting invariants are not visible in the data.** `catch_total` and
+> `catch_legal` are the same series, because the fishery gate removes an animal only
+> when `is_legal_male` passes; a test asserts the identity so that admitting sublegal
+> harvest forces the two columns apart. And the fishery has exactly one switch:
+> `fishery.fishing_probability_daily` is `0.0` by default, and that alone means no
+> harvest. There is no `toggles.use_fishery` beside it — the two used to express one
+> thing, so the model could report the fishery as enabled while nothing was
+> catchable. `fishery_active(params)` is the predicate.
+
 ## 2. Package Organization
 
 The source repository is organized into focused, modular components:
@@ -235,10 +257,10 @@ column.
   to the lower edge of each tabulated stage. The previous form,
   `exp(intercept + slope·(stage - anchor))`, is unbounded for every positive
   slope, and put a stage-12 female at 112 mm against a 95 mm ceiling.
-* **The fishery is off by default.** `toggles.use_fishery` is true but
+* **The fishery is off by default, and the probability is the switch.**
   `fishery.fishing_probability_daily` is `0.0`, so no animal is ever harvested and
-  the stock grows until the density term regulates it. Setting that probability
-  non-zero is what turns harvesting on; the toggle alone does nothing.
+  the stock grows until the density term regulates it. `fishery_active(params)` is
+  the predicate; there is no separate toggle to also set.
 
 ---
 
@@ -278,9 +300,9 @@ rather than being guessed at. Any declared parameter is settable, for example
 `--maturity_l50_male=88.0`, `--rate_predation=0.1`, `--use_energetics=false`, or
 a whole schedule as `--intermolt_days_schedule=60,75,90`.
 
-Note that the fishery ships switched off: `toggles.use_fishery` is true but
-`fishery.fishing_probability_daily` is `0.0`, so no animal is harvested. Setting
-that probability non-zero is what turns harvesting on.
+The fishery ships switched off: `fishery.fishing_probability_daily` is `0.0`, and
+that is the only switch -- there is no `use_fishery` toggle -- so no animal is
+harvested until you set that probability.
 
 ### Parameter Variation & Calibration
 

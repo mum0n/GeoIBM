@@ -458,10 +458,16 @@ Base.@kwdef struct ProcessToggles
     use_spermatheca::Bool = true
     use_movement::Bool = true
     use_directed_movement::Bool = true
-    use_fishery::Bool = true
     use_degree_days::Bool = true
     use_molting::Bool = true
     use_reproduction::Bool = true
+    # There is no `use_fishery`. Harvest is switched by
+    # `fishery.fishing_probability_daily`, and a probability of zero means no
+    # fishery. It used to also be gated on a toggle, which made two settings
+    # express one thing: with the toggle on and the probability at zero, the model
+    # reported the fishery as enabled while no animal could ever be caught, and a
+    # user who raised the probability expecting harvesting had to know which of the
+    # two was the real switch. See `fishery_active`.
 end
 
 Base.@kwdef struct SimulationParams
@@ -575,8 +581,34 @@ Base.@kwdef struct EnvironmentParams
     benthic_carrying_capacity::Float64 = 12_000.0
     half_saturation_food::Float64 = 2.0
     assimilation_efficiency::Float64 = 0.75
-    habitat_quality_mean::Float64 = 1.0
+    habitat_quality_mean::Float64 = 0.5
     habitat_quality_sd::Float64 = 0.1
+    # --- Spatial structure in the habitat suitability index ---
+    #
+    # The HSI field was pure i.i.d. Gaussian noise about `habitat_quality_mean`:
+    # independent per cell, with no correlation between neighbours. That has two
+    # consequences. It is not a habitat at all — there is nowhere good to live, so
+    # the taxis in `organism_disperse!` and the food field it is layered onto have
+    # nothing to track — and on a 1000x1000 grid it renders as visual static that
+    # reads as a broken heatmap rather than a landscape.
+    #
+    # These add `habitat_peaks` Gaussian bumps of `habitat_peak_height` on top of
+    # the noise, at uniformly random positions, so the field has coherent good
+    # habitat that animals can aggregate in and disperse between.
+    #
+    # The width is a *fraction of the domain*, not a cell count, because the grid
+    # runs from 10x10 in the tests to 1000x1000 in operation: a fixed cell width
+    # would be a continent on one and invisible on the other.
+    #
+    # `habitat_quality_mean` defaults to 0.5, not 1.0. The field is clipped to
+    # [0, 1] and HSI enters `organism_disperse!` as a relative weight in a softmax,
+    # so a mean of 1.0 saturated the index: roughly half the cells pinned at 1.0,
+    # every peak clipped away above the ceiling, and neighbour correlation of 0.14
+    # instead of 0.54. The default therefore leaves headroom in both directions,
+    # without which `habitat_peaks` is inert.
+    habitat_peaks::Int = 3
+    habitat_peak_height::Float64 = 0.3
+    habitat_peak_width_fraction::Float64 = 0.15
     # --- Habitat taxis ---
     # `organism_disperse!` scores each candidate cell by how well it matches the
     # organism's preferred temperature and its food density relative to the grid
@@ -779,6 +811,23 @@ Base.@kwdef struct FisheryParams
     fishing_season_start::Float64 = 90.0
     fishing_season_end::Float64 = 150.0
 end
+
+"""
+    fishery_active(params)
+
+Whether the model harvests. Accepts an `IBMParameters` or a `FisheryParams`.
+
+`fishing_probability_daily` is the switch: a probability of zero means no fishery,
+whatever else is configured. There was once a second condition for this,
+`toggles.use_fishery`, so the model could report the fishery as enabled while no
+animal could ever be caught — and a user raising the probability expecting harvest
+had to know which of the two settings was the real one. That toggle is gone.
+
+The season window is deliberately not part of this test: a fishery can be
+configured and still be closed on any given day.
+"""
+fishery_active(params) = fishery_active(params.fishery)
+fishery_active(params::FisheryParams) = params.fishing_probability_daily > 0.0
 
 Base.@kwdef struct OutputParams
     save::Bool = true

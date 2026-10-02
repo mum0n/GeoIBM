@@ -556,6 +556,59 @@ function initialize_model(config::AbstractDict; kwargs...)
 end
 
 """
+    build_habitat_quality_field(params, grid, rng)
+
+Generate the initial habitat suitability index (HSI) field on `grid`.
+
+The field is a clipped Gaussian noise floor about `habitat_quality_mean` carrying
+`habitat_peaks` additive Gaussian bumps at uniformly random positions. The noise
+alone has no spatial correlation, so it describes a landscape with nowhere better
+than anywhere else; the peaks supply coherent high-quality habitat for the taxis
+in `organism_disperse!` to aggregate in and disperse between.
+
+Peak widths are `habitat_peak_width_fraction` of the domain rather than a cell
+count, so the structure looks the same on a 10x10 test grid and a 1000x1000
+operating grid. Peak centres come from `rng`, so the layout is reproducible under
+a fixed seed.
+
+`habitat_peaks = 0` reproduces the previous pure-noise field exactly.
+"""
+function build_habitat_quality_field(params::EnvironmentParams,
+    grid::Tuple{Int, Int}, rng::AbstractRNG)
+    μ = params.habitat_quality_mean
+    σ = params.habitat_quality_sd
+    field = clamp.(randn(rng, grid) .* σ .+ μ, 0.0, 1.0)
+
+    n_peaks = params.habitat_peaks
+    n_peaks > 0 || return field
+    width_frac = params.habitat_peak_width_fraction
+    width_frac > 0.0 || error(
+        "habitat_peak_width_fraction must be positive, got $(width_frac)")
+    height = params.habitat_peak_height
+
+    nx, ny = grid
+    # Fractional width to a per-axis Gaussian sigma, in cell units. `max(..., eps)`
+    # keeps a degenerate width from dividing by zero and blanking the field.
+    sigma_x = max(width_frac * nx, 1e-6)
+    sigma_y = max(width_frac * ny, 1e-6)
+
+    # Coordinate vectors, so each peak is a rank-1 outer product instead of a
+    # fresh allocation over the whole grid.
+    xs = collect(1:nx)
+    ys = collect(1:ny)
+
+    for _ in 1:n_peaks
+        cx = rand(rng, 1:nx)
+        cy = rand(rng, 1:ny)
+        gx = exp.(-0.5 .* ((xs .- cx) ./ sigma_x) .^ 2)
+        gy = exp.(-0.5 .* ((ys .- cy) ./ sigma_y) .^ 2)
+        field .+= Float64(height) .* (gx * transpose(gy))
+    end
+
+    return clamp.(field, 0.0, 1.0)
+end
+
+"""
     initialize_model(; n_agents=100, grid=(50, 50), ...)
 
 Construct and populate an `Agents.StandardABM` representing the organism ecosystem.
@@ -621,9 +674,7 @@ function initialize_model(;
     end
 
     initial_habitat = if habitat_map === nothing
-        μ = params.environment.habitat_quality_mean
-        σ = params.environment.habitat_quality_sd
-        clamp.(randn(rng, grid) .* σ .+ μ, 0.0, 1.0)
+        build_habitat_quality_field(params.environment, grid, rng)
     else
         copy(habitat_map)
     end
@@ -1014,11 +1065,11 @@ function agent_step!(org::Organism, model)
     use_energetics = toggles.use_energetics
     use_degree_days = toggles.use_degree_days
     use_cannibalism = toggles.use_cannibalism
-    use_fishery = toggles.use_fishery
     # Whether the fishery is open, and the maturity threshold for a legal animal,
-    # are properties of the day, not of the organism.
-    in_fishing_season = use_fishery &&
-                        params.fishery.fishing_probability_daily > 0.0 &&
+    # are properties of the day, not of the organism. Whether there is a fishery at
+    # all is `fishery.fishing_probability_daily`: a probability of zero means no
+    # harvest, so that single number is the switch.
+    in_fishing_season = fishery_active(params) &&
                         params.fishery.fishing_season_start <= day_of_year <=
                         params.fishery.fishing_season_end
     # The organism does not move until step 6 and the environment does not change

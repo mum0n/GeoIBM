@@ -8,6 +8,7 @@ using Statistics
 using DataFrames
 using Agents
 using LinearAlgebra
+using TOML
 
 # Activate package
 using DrWatson
@@ -970,6 +971,79 @@ using model_agent
               merged[:n_agents]
     end
 
+    @testset "The fishery has one switch" begin
+        # `fishing_probability_daily` is the switch, and there is no toggle beside
+        # it. The two used to express one thing: `toggles.use_fishery` was true while
+        # the probability was zero, so the model reported the fishery as enabled and
+        # caught nothing.
+        @test !any(==(:use_fishery), fieldnames(ProcessToggles))
+        @test !any(startswith(String(f), "use_fishery")
+        for f in keys(config_field_types()))
+
+        @test fishery_active(IBMParameters()) == false
+        @test fishery_active(FisheryParams()) == false
+        @test fishery_active(FisheryParams(fishing_probability_daily = 0.005)) == true
+        @test fishery_active(IBMParameters(fishery = FisheryParams(
+            fishing_probability_daily = 0.005))) == true
+
+        # Zero really does mean nothing is harvested, and a positive probability
+        # really does harvest: otherwise the switch is decorative.
+        off = IBMParameters()
+        on = IBMParameters(fishery = FisheryParams(fishing_probability_daily = 0.4))
+        caught(p) = begin
+            m = initialize_model(; n_agents = 300, grid = (40, 40), seed = 21,
+                params = p)
+            run_simulation(m, 200; when = 200)
+            m.total_catch_numbers
+        end
+        @test caught(off) == 0
+        @test caught(on) > 0
+    end
+
+    @testset "Species behaviour is dispatched, never defaulted" begin
+        # The generic layer used to hold fallbacks that built a
+        # `SpeciesBehaviorImpl()` and called it, discarding the behaviour they were
+        # handed. With one species that is invisible, because every behaviour *is* a
+        # `SpeciesBehaviorImpl` and dispatch already picks the right method. The cost
+        # appears only when a second species is written: it would be measured against
+        # snow crab coefficients and produce plausible, wrong animals. So a behaviour
+        # that does not implement a species rule must now fail at the call site.
+        struct DanglingBehavior <: SpeciesBehavior end
+
+        # Each fallback takes a different arity, so call each the way production
+        # code does rather than uniformly.
+        @test_throws ErrorException stage_size_lower_bound(DanglingBehavior(), 6, :male)
+        @test_throws ErrorException growth_increment(DanglingBehavior(), log(20.0))
+        @test_throws ErrorException build_stages(DanglingBehavior())
+
+        # And the concrete species still answers, with its own parameters, rather
+        # than a fixed answer.
+        b = SpeciesBehaviorImpl(SpeciesParams())
+        @test stage_size_lower_bound(b, 8.0, :male) > 0.0
+        altered = SpeciesBehaviorImpl(SpeciesParams(size_lb_male_intercept = -1.0))
+        @test !isapprox(stage_size_lower_bound(b, 8.0, :male),
+            stage_size_lower_bound(altered, 8.0, :male); rtol = 1e-6)
+
+        # The pelagic life-stage overloads and the stage-indexed ones must agree;
+        # both used to restate the egg/zoea/megalopa mapping independently.
+        @test min_intermolt_days(b, egg) == min_intermolt_days(b, 0)
+        @test min_intermolt_days(b, zoea) == min_intermolt_days(b, 1)
+        @test min_intermolt_days(b, megalopa) == min_intermolt_days(b, 2)
+        @test required_degree_days(b, egg) == required_degree_days(b, 0)
+        @test required_degree_days(b, zoea) == required_degree_days(b, 1)
+        @test required_degree_days(b, megalopa) == required_degree_days(b, 2)
+        # `LifeStage` also names `juvenile` and `adult`, which have no fixed stage
+        # number of their own: the caller's `stage` is the answer for those, and
+        # collapsing them onto the megalopa index would answer a juvenile's question
+        # with the megalopa's numbers.
+        @test min_intermolt_days(b, juvenile, 4) == min_intermolt_days(b, 4)
+        @test min_intermolt_days(b, adult, 9) == min_intermolt_days(b, 9)
+        @test required_degree_days(b, juvenile, 4) == required_degree_days(b, 4)
+        @test required_degree_days(b, adult, 9) == required_degree_days(b, 9)
+        @test model_agent.life_stage_index(juvenile) === nothing
+        @test model_agent.life_stage_index(egg) == 0
+    end
+
     @testset "Every Declared Parameter Is Read" begin
         # A parameter that nothing reads is a silent no-op: it appears in the
         # TOML, invites tuning, and does nothing. This scans the sources for a
@@ -1212,6 +1286,17 @@ using model_agent
         ann_100 = extract_annual_production(agent_df, model_df; snapshot_day = 100.0)
         @test nrow(ann_100) == 1
         @test ann_100.time[1] == 100.0
+
+        # `catch_legal` and `catch_total` are the same series, and that is a property
+        # of the fishery gate rather than a shortcut: `agent_step!` removes an animal
+        # only when `is_legal_male` passes, so no sublegal animal can ever be
+        # harvested. Asserted so that a configuration which admits sublegal harvest
+        # has to make the two columns separately.
+        @test :catch_total in propertynames(ann)
+        @test :catch_legal in propertynames(ann)
+        @test ann.catch_total == ann.catch_legal
+        @test all(iszero, ann.catch_total)   # fishing_probability_daily defaults to 0
+        @test :surplus_production_legal in propertynames(ann)
 
         # Saving simulation results with custom snapshot_day
         tmp_csv = tempname() * ".csv"
@@ -1868,6 +1953,562 @@ using model_agent
         @test length(state.t_history) >= 2
         @test state.t_history[end] == 10.0
         @test length(state.obs_agent_x[]) > 0
+    end
+
+    @testset "Dashboard count axes are log10" begin
+        # `log10(0)` is `-Inf` and an axis cannot place it. Zero is a real value
+        # here — no eggs brooded yet, a cohort that has already individuated — so
+        # the floor is what keeps the figure finite.
+        @test COUNT_PLOT_FLOOR == 1.0
+        @test log10_count(0) == 0.0
+        @test log10_count(0.4) == 0.0            # sub-unit counts floor
+        @test log10_count(1) == 0.0
+        @test log10_count(10) ≈ 1.0
+        @test log10_count(1_000_000) ≈ 6.0
+        @test all(isfinite, (log10_count(v) for v in (0, 0.5, 1, 3, 1e7, -4)))
+        @test issorted([log10_count(v) for v in [0, 1, 5, 50, 500, 5000]])
+
+        fig, state = launch_organism_gui(
+            n_agents = 30,
+            grid = (12, 12),
+            dt = 1.0,
+            seed = 7,
+            display_window = false
+        )
+        step_gui_simulation!(state, 400.0)
+
+        # Every count series is the log of the raw buffer it was built from, and
+        # the buffers still hold raw counts so a linear re-plot stays possible.
+        @test state.obs_ts_total[][end][2] ≈ log10_count(state.n_total_history[end])
+        @test state.obs_ts_legal[][end][2] ≈ log10_count(state.n_legal_history[end])
+        @test state.n_total_history[end] == round(Int, state.n_total_history[end])
+        @test state.n_total_history[end] == length(state.obs_agent_x[])
+
+        for series in (state.obs_ts_total[], state.obs_ts_females[], state.obs_ts_males[],
+            state.obs_ts_legal[], state.obs_ts_egg[],
+            state.obs_ts_early_agents[], state.obs_ts_early_agents_f[],
+            state.obs_ts_early_agents_u[],
+            (o[] for o in state.obs_ts_early_stage)...)
+            @test !isempty(series)
+            @test all(p -> isfinite(p[2]), series)   # no -Inf, no NaN
+            @test issorted([p[1] for p in series])  # time-ordered
+        end
+        # Biomass and catch are kilograms, not counts, and stay linear. The
+        # plotted points are Float32, so compare with a tolerance.
+        @test state.obs_ts_biomass[][end][2] ≈ state.biomass_legal_history[end]
+        @test state.obs_ts_catch[][end][2] ≈ state.catch_history[end]
+
+        # Stock-recruit has two count axes; both transformed.
+        @test all(p -> isfinite(p[1]) && isfinite(p[2]), state.obs_sr_pts[])
+        @test all(p -> p[1] ≈ log10_count(10.0^p[1]), state.obs_sr_pts[])
+    end
+
+    @testset "Stage abundance runs eggs then aggregate cohorts against time" begin
+        @test GUI_EARLY_STAGES == 0:3
+        @test length(GUI_EARLY_LABELS) == length(GUI_EARLY_STAGES) + 1
+        @test length(GUI_EARLY_COLOURS) == length(GUI_EARLY_LABELS)
+        @test length(GUI_EARLY_DASHES) == length(GUI_EARLY_LABELS)
+
+        fig, state = launch_organism_gui(
+            n_agents = 40,
+            grid = (14, 14),
+            dt = 1.0,
+            seed = 11,
+            display_window = false
+        )
+        step_gui_simulation!(state, 500.0)
+
+        # One time series per `GUI_EARLY_STAGES`, plus eggs, all sharing one x grid.
+        @test length(state.obs_ts_early_stage) == length(GUI_EARLY_STAGES)
+        @test all(o -> length(o[]) == length(state.t_history), state.obs_ts_early_stage)
+        @test length(state.obs_ts_egg[]) == length(state.t_history)
+        @test all(s -> length(s) == length(state.t_history), state.n_early_stage_history)
+        @test length(state.n_early_agents_history) == length(state.t_history)
+
+        # Each plotted value must be the log of the raw buffer beside it, so the
+        # panel cannot drift from the numbers it reports.
+        for k in eachindex(state.obs_ts_early_stage)
+            pts = state.obs_ts_early_stage[k][]
+            raw = state.n_early_stage_history[k]
+            @test all(i -> isapprox(pts[i][2], log10_count(raw[i]); atol = 1e-4),
+                eachindex(raw))
+        end
+        @test all(i -> isapprox(state.obs_ts_egg[][i][2], log10_count(state.n_egg_history[i]);
+            atol = 1e-4), eachindex(state.n_egg_history))
+
+        # Eggs and stage 0 are disjoint pools: a clutch only becomes a stage-0
+        # cohort at `hatch_day`. If eggs were being counted as stage 0 this would
+        # double-count the same animals.
+        @test all(>=(0.0), state.n_egg_history)
+        @test all(series -> all(>=(0.0), series), state.n_early_stage_history)
+        @test all(h -> all(>=(0.0), h), state.n_early_agents_history)
+
+        # The aggregate cohorts the model actually seeds must be visible on the
+        # figure, otherwise the early stages are a flat line at the floor.
+        @test any(>(1.0), state.n_early_stage_history[1])
+        @test any(>(1.0), state.n_early_stage_history[2])
+
+        # Sex is not discriminated below individuation: `AggregateGroup` has no
+        # `sex` field, so those series are single grey lines, and the sexed series
+        # come only from `Organism` agents.
+        @test !hasfield(AggregateGroup, :sex)
+        m, f, u = state.n_early_agents_history[end]
+        @test m + f + u == state.n_total_history[end]
+        @test u == 0
+        @test any(h -> h[1] > 0.0, state.n_early_agents_history)
+
+        # Reset must clear the new buffers, or the figure redraws a stale run
+        # stitched onto the fresh one.
+        n_before = length(state.t_history)
+        empty!(state.t_history)
+        empty!(state.n_egg_history)
+        for series in state.n_early_stage_history
+            empty!(series)
+        end
+        empty!(state.n_early_agents_history)
+        step_gui_simulation!(state, 5.0)
+        @test length(state.t_history) == 1
+        @test all(series -> length(series) == 1, state.n_early_stage_history)
+        @test length(state.n_egg_history) == 1
+        @test length(state.n_early_agents_history) == 1
+        @test length(state.obs_ts_early_stage) == length(GUI_EARLY_STAGES)
+        @test n_before > 0
+    end
+
+    @testset "Config rescan applies only what changed in the file" begin
+        # `configs/snowcrab.toml` declares every parameter, so re-parsing it and
+        # rebuilding the parameter tree would re-apply all 260 values annually and
+        # discard anything changed in the parameter-steering panel since the last
+        # scan. The diff is what makes the scan safe, not merely cheap.
+        @testset "flatten / diff" begin
+            flat = flatten_toml(Dict("environment" => Dict("temp_base" => 5.0),
+                "simulation" => Dict("grid_nx" => 20)))
+            @test flat["environment.temp_base"] == 5.0
+            @test flat["simulation.grid_nx"] == 20
+
+            @test isempty(config_diff(flat, flat))
+
+            # Nested tables are accepted: `config_diff` flattens both sides, so a
+            # nested `current` is not reported as one wholly-changed key. Every
+            # other key is repeated so that only the one under test moves --
+            # omitting one would count as a deletion and be reported separately.
+            d = config_diff(flat, Dict("environment" => Dict("temp_base" => 7.5),
+                "simulation" => Dict("grid_nx" => 20)))
+            @test length(d) == 1
+            @test d[1][1] == "environment.temp_base"
+            @test d[1][2] == (5.0, 7.5)
+
+            # A deleted key is reported rather than silently dropped.
+            d2 = config_diff(flat, Dict())
+            @test length(d2) == 2
+            @test all(p -> last(p[2]) === nothing, d2)
+            @test Set(first(p) for p in d2) ==
+                Set(["environment.temp_base", "simulation.grid_nx"])
+        end
+
+        @testset "leaf parameter names are unambiguous" begin
+            # `reconstruct_params(p; leaf = v)` hands the keyword to every parameter
+            # struct and keeps it where it is a declared field. That is only safe
+            # while a leaf name identifies exactly one parameter.
+            owners = Dict{String, Vector{Symbol}}()
+            for (field, T, _) in parameter_structs()
+                for fn in fieldnames(T)
+                    push!(get!(() -> Symbol[], owners, String(fn)), field)
+                end
+            end
+            @test isempty([k for (k, v) in owners if length(v) > 1])
+            @test length(owners) == 260
+        end
+
+        @testset "live GUI rescan" begin
+            path = joinpath(mktempdir(), "scenario.toml")
+            write(path, """
+                   [environment]
+                   temp_base = 5.0
+                   temp_amplitude = 4.0
+                   [simulation]
+                   grid_nx = 20
+                   """)
+            fig, state = launch_organism_gui(n_agents = 20, grid = (20, 20), dt = 1.0,
+                seed = 3, display_window = false, config_path = path)
+            @test state.config_path == path
+            # Seeded from the file, so the first scan reports only later edits rather
+            # than treating every declared parameter as a change.
+            @test state.config_snapshot["environment.temp_base"] == 5.0
+            @test state.config_snapshot["simulation.grid_nx"] == 20
+
+            # No file change: no-op.
+            @test isempty(rescan_config!(state))
+
+            # A GUI-side edit must survive a scan that touches something else.
+            p0 = abmproperties(state.model)[:params]
+            abmproperties(state.model)[:params] = reconstruct_params(p0; temp_amplitude = 2.5)
+
+            write(path, """
+                   [environment]
+                   temp_base = 7.5
+                   temp_amplitude = 4.0
+                   [simulation]
+                   grid_nx = 20
+                   """)
+            msg = rescan_config!(state)
+            p1 = abmproperties(state.model)[:params]
+            @test occursin("1 applied", msg)
+            @test p1.environment.temp_base == 7.5        # the file edit landed
+            @test p1.environment.temp_amplitude == 2.5   # the panel edit survived
+
+            # Structural keys are reported, never applied: they are baked into the ABM.
+            write(path, """
+                   [environment]
+                   temp_base = 7.5
+                   temp_amplitude = 4.0
+                   [simulation]
+                   grid_nx = 999
+                   """)
+            msg = rescan_config!(state)
+            p2 = abmproperties(state.model)[:params]
+            @test occursin("restart-only", msg)
+            @test occursin("grid_nx", msg)
+            @test p2.simulation.grid_nx == 20
+            @test all(f -> f in RESCAN_IMMUTABLE,
+                (:grid_nx, :grid_ny, :grid_size, :n_agents, :dt, :seed))
+
+            # A half-written file must not take the run down or half-apply.
+            write(path, "[environment\ntemp_base = ")
+            @test_throws Exception rescan_config!(state)
+            @test abmproperties(state.model)[:params].environment.temp_base == 7.5
+
+            # No path at all is a silent no-op, not an error.
+            state.config_path = ""
+            @test isempty(rescan_config!(state))
+            @test isempty(rescan_config!(state))   # idempotent
+        end
+    end
+
+    @testset "History buffers stay aligned with the time axis" begin
+        # The observable point vectors are rebuilt with `eachindex(t_history)` and
+        # index every buffer positionally, so a buffer that is one longer or shorter
+        # misaligns the series against the x axis rather than raising.
+        fig, state = launch_organism_gui(n_agents = 20, grid = (12, 12), dt = 1.0,
+            seed = 4, display_window = false)
+
+        buffers = s -> [
+            length(s.t_history), length(s.n_total_history), length(s.n_females_history),
+            length(s.n_males_history), length(s.n_legal_history),
+            length(s.biomass_legal_history), length(s.catch_history),
+            length(s.mean_weight_legal_history), length(s.mean_weight_male_history),
+            length(s.mean_weight_female_history), length(s.mean_weight_total_history),
+            length(s.n_egg_history), length(s.n_early_agents_history),
+            (length(b) for b in s.n_early_stage_history)...,
+        ]
+
+        # `launch_organism_gui` ends with a 0-day initial paint; that must not append
+        # a second point at t = 0.
+        @test length(state.t_history) == 1
+        step_gui_simulation!(state, 0.0)
+        @test length(state.t_history) == 1        # repaint only
+        @test all(==(1), buffers(state))
+        step_gui_simulation!(state, 10.0)
+        @test state.t_history == [0.0, 10.0]      # no duplicated origin
+        @test all(==(2), buffers(state))
+        for _ in 1:8
+            step_gui_simulation!(state, 5.0)
+        end
+        @test all(==(length(state.t_history)), buffers(state))
+
+        # And the plotted series match the axis.
+        n = length(state.t_history)
+        @test all(o -> length(o[]) == n,
+            [state.obs_ts_total, state.obs_ts_females, state.obs_ts_males,
+                state.obs_ts_legal, state.obs_ts_egg, state.obs_ts_early_agents,
+                state.obs_ts_early_agents_f, state.obs_ts_early_agents_u])
+        @test all(o -> length(o[]) == n, state.obs_ts_early_stage)
+    end
+
+    @testset "snowcrab.toml is complete and self-contained" begin
+        # Flatten a parsed TOML table to dotted leaf keys, so a config file can be
+        # compared against the declared parameter surface key by key.
+        function collect_leaves!(out, cfg, prefix = "")
+            for (k, v) in cfg
+                key = isempty(prefix) ? String(k) : string(prefix, ".", k)
+                if v isa AbstractDict
+                    collect_leaves!(out, v, key)
+                else
+                    push!(out, key)
+                end
+            end
+            return out
+        end
+        function collect_leaves_flat!(out, cfg, prefix = "")
+            for (k, v) in cfg
+                key = isempty(prefix) ? String(k) : string(prefix, ".", k)
+                if v isa AbstractDict
+                    collect_leaves_flat!(out, v, key)
+                else
+                    out[key] = v
+                end
+            end
+            return out
+        end
+
+        # It used to be a sparse overlay of 75 keys. It must now carry every
+        # declared input, so it can be read and edited as the single description
+        # of a snow crab run without cross-referencing the baseline.
+        declared_keys = String[]
+        for (field, T, _) in parameter_structs()
+            base = T()
+            for fn in fieldnames(T)
+                push!(declared_keys, string(field, ".", fn))
+            end
+        end
+
+        snow_raw = read(joinpath(@__DIR__, "..", "configs", "snowcrab.toml"), String)
+        snow = TOML.parse(snow_raw)
+        snow_keys = String[]
+        collect_leaves!(snow_keys, snow)
+
+        @test Set(snow_keys) == Set(declared_keys)
+        @test length(snow_keys) == length(declared_keys)
+
+        # Only the operating scale is meant to differ from the baseline. If snow
+        # crab biology ever diverges from the struct defaults, this test names it.
+        base_cfg = TOML.parsefile(joinpath(@__DIR__, "..", "configs", "default.toml"))
+        base_keys = String[]
+        collect_leaves!(base_keys, base_cfg)
+        base_flat = Dict{String, Any}()
+        collect_leaves_flat!(base_flat, base_cfg)
+        snow_flat = Dict{String, Any}()
+        collect_leaves_flat!(snow_flat, snow)
+
+        differing = sort([k for k in base_keys if !isequal(base_flat[k], snow_flat[k])])
+        @test differing == ["environment.benthic_carrying_capacity",
+            "simulation.grid_nx", "simulation.grid_ny", "simulation.n_agents"]
+
+        # And the operating scale is what it claims to be.
+        cfg = parse_cli_args(["--config=$(joinpath(@__DIR__, "..", "configs", "snowcrab.toml"))"])
+        p = IBMParameters(cfg)
+        @test p.simulation.grid_nx == 1000
+        @test p.simulation.grid_ny == 1000
+        @test p.simulation.n_agents == 2000
+        @test p.simulation.days == 730
+        @test p.environment.benthic_carrying_capacity == 10_000.0
+        # Seeded stock must stay below K or the density feedback replaces the
+        # mortality schedule instead of correcting it.
+        seeded = p.simulation.n_agents +
+                 Int(p.simulation.initial_egg_cohort_abundance +
+                     5 * p.simulation.initial_stage_cohort_abundance)
+        @test seeded < p.environment.benthic_carrying_capacity
+    end
+
+    @testset "Habitat field has spatial structure" begin
+        # The HSI field was i.i.d. noise: no correlation between neighbours, so
+        # nowhere better to live than anywhere else, and visual static on a large
+        # grid. `habitat_peaks` Gaussian bumps give it coherent structure.
+        @test IBMParameters().environment.habitat_peaks == 3
+
+        # Zero peaks reproduces the previous pure-noise field exactly.
+        p0 = EnvironmentParams(habitat_peaks = 0)
+        expected = clamp.(randn(Xoshiro(4), (20, 20)) .* p0.habitat_quality_sd .+
+                          p0.habitat_quality_mean, 0.0, 1.0)
+        @test build_habitat_quality_field(p0, (20, 20), Xoshiro(4)) == expected
+
+        # Peaks are reproducible under a seed and differ across seeds.
+        p3 = EnvironmentParams(habitat_peaks = 3)
+        a = build_habitat_quality_field(p3, (40, 40), Xoshiro(9))
+        @test a == build_habitat_quality_field(p3, (40, 40), Xoshiro(9))
+        @test a != build_habitat_quality_field(p3, (40, 40), Xoshiro(10))
+
+        # Neighbour correlation is the statistic that separates structured from
+        # uncorrelated. Mean neighbour gap does not: adding a smooth bump on top
+        # of an unchanged noise floor leaves the noise-driven differences intact,
+        # so that statistic measured clipping, not structure.
+        function neighbour_correlation(f)
+            return cor(vec(f[1:(end-1), :]), vec(f[2:end, :]))
+        end
+
+        # The default index must have headroom: `habitat_quality_mean = 1.0` on a
+        # clipped [0, 1] field pinned half the cells at the ceiling and clipped
+        # every peak away, leaving the field uncorrelated.
+        @test IBMParameters().environment.habitat_quality_mean == 0.5
+        @test IBMParameters().environment.habitat_peaks == 3
+
+        pure = build_habitat_quality_field(
+            EnvironmentParams(habitat_peaks = 0), (60, 60), Xoshiro(4))
+        structured = build_habitat_quality_field(
+            EnvironmentParams(habitat_peaks = 3), (60, 60), Xoshiro(4))
+        @test abs(neighbour_correlation(pure)) < 0.15
+        @test neighbour_correlation(structured) > 0.3
+        @test maximum(structured) > maximum(pure)     # peaks reach higher
+        @test all(0.0 .<= structured .<= 1.0)         # still clipped to the index
+
+        # More peaks means more of the field is smooth, so correlation rises.
+        cors = [neighbour_correlation(build_habitat_quality_field(
+            EnvironmentParams(habitat_peaks = n), (60, 60), Xoshiro(4)))
+            for n in (0, 1, 3, 6, 12)]
+        @test issorted(cors)
+        @test cors[1] < 0.15
+        @test cors[end] > 0.6
+
+        # The default field stays correlated across seeds and across grid sizes,
+        # because the peak width is a fraction of the domain rather than a cell
+        # count. A fixed cell width would vanish on a large grid.
+        for n in (20, 60, 200, 600)
+            f = build_habitat_quality_field(EnvironmentParams(habitat_peaks = 3),
+                (n, n), Xoshiro(3))
+            @test neighbour_correlation(f) > 0.3
+        end
+        seeds = [neighbour_correlation(build_habitat_quality_field(
+            EnvironmentParams(habitat_peaks = 3), (60, 60), Xoshiro(s))) for s in 1:8]
+        @test all(>(0.3), seeds)
+
+        # The peaks are localised, not a global offset. Measured as the share of
+        # cells above the midpoint between the field's mean and its maximum, which
+        # scales with the peak rather than with an absolute tolerance: a fixed
+        # `max - 0.05` band is a different fraction of the peak at every
+        # resolution, so it measures discretisation rather than coverage.
+        f = build_habitat_quality_field(EnvironmentParams(habitat_peaks = 3),
+            (60, 60), Xoshiro(3))
+        cutoff = (mean(f) + maximum(f)) / 2
+        @test 0.0 < count(>(cutoff), f) / length(f) < 0.5
+
+        # A non-positive width is a configuration error, not a blank field.
+        @test_throws ErrorException build_habitat_quality_field(
+            EnvironmentParams(habitat_peaks = 3, habitat_peak_width_fraction = 0.0),
+            (10, 10), Xoshiro(1))
+    end
+
+    @testset "Calendar readout: year, month, julian day, duration" begin
+        # `floor((day % 365) / 30.416) + 1` put the last day of every month into
+        # the next one. The month now comes from real calendar month lengths.
+        @test calendar_month(1, 365.0) == 1
+        @test calendar_month(31, 365.0) == 1
+        @test calendar_month(32, 365.0) == 2
+        @test calendar_month(59, 365.0) == 2
+        @test calendar_month(60, 365.0) == 3
+        @test calendar_month(273, 365.0) == 9
+        @test calendar_month(334, 365.0) == 11   # 334 is the last day of November
+        @test calendar_month(335, 365.0) == 12   # 335 is the first of December
+        @test calendar_month(365, 365.0) == 12
+        # Every day of the year lands in exactly one month, in order.
+        months = [calendar_month(d, 365.0) for d in 1:365]
+        @test issorted(months)
+        @test all(1 .<= months .<= 12)
+        @test calendar_month(366, 365.0) == 12
+        # In a leap year February gets its extra day, so later boundaries hold.
+        @test calendar_month(60, 366.0) == 2
+        @test calendar_month(61, 366.0) == 3
+
+        fig, state = launch_organism_gui(
+            n_agents = 20, grid = (10, 10), dt = 1.0, seed = 3, display_window = false
+        )
+        for _ in 1:90
+            step_gui_simulation!(state, 5.0)
+        end
+        dpy = abmproperties(state.model)[:params].simulation.days_per_year
+        # Year is an integer count, Day is 1-based within the year and wraps,
+        # Duration is the elapsed model time under its own name.
+        m = match(r"^Year: (\d+)\s+Month: (\d+)\s+Day: (\d+)\s+Duration: (\d+) d$",
+            state.status_text[])
+        @test m !== nothing
+        if m !== nothing
+            year_n = parse(Int, m.captures[1])
+            month_n = parse(Int, m.captures[2])
+            day_n = parse(Int, m.captures[3])
+            dur = parse(Int, m.captures[4])
+            t = state.t_history[end]
+            @test year_n == floor(Int, t / dpy)
+            @test 1 <= day_n <= round(Int, dpy)
+            @test month_n == calendar_month(day_n, dpy)
+            @test dur == round(Int, t)
+            @test day_n != dur || t < dpy   # "Day" is not the elapsed total
+        end
+    end
+
+    @testset "Stock-recruit panel carries a Ricker fit" begin
+        # Fitted in linear space (the panel draws log10), from the untransformed
+        # pairs, which therefore have to be kept alongside the plotted points.
+        s = [1.0e5, 2.0e5, 4.0e5, 8.0e5, 1.6e6]
+        r = [2.0e4, 3.5e4, 5.0e4, 5.5e4, 4.0e4]
+        fit = fit_stock_recruitment(s, r)
+        @test fit.is_fitted
+        @test fit.n_obs == 5
+        @test fit.ricker.alpha > 0
+        # Predictor is the Ricker form, and peaks near S = 1/beta.
+        @test fit.ricker.predict(1.0e5) > 0
+        @test isfinite(fit.ricker.predict(1.0e5))
+        argmax_s = reduce((a, b) -> fit.ricker.predict(a) >= fit.ricker.predict(b) ? a : b,
+            range(1.0e4, 1.0e7; length = 2000))
+        @test isapprox(argmax_s, fit.ricker.S_max; rtol = 0.05)
+
+        # Below three usable points the fitter reports `is_fitted = false` and
+        # returns a through-origin fallback; drawing that would put a confident
+        # curve through two numbers.
+        @test !fit_stock_recruitment([1.0e5], [2.0e4]).is_fitted
+        @test !fit_stock_recruitment([1.0e5, 2.0e5], [2.0e4, 3.0e4]).is_fitted
+        # A point with zero recruits is not usable and must not count.
+        @test fit_stock_recruitment([1.0e5, 2.0e5, 0.0], [2.0e4, 3.0e4, 4.0e4]).n_obs == 2
+
+        fig, state = launch_organism_gui(
+            n_agents = 150, grid = (24, 24), dt = 1.0, seed = 5, display_window = false
+        )
+        for _ in 1:240
+            step_gui_simulation!(state, 5.0)
+        end
+        # The raw pairs are retained untransformed even though the panel logs them.
+        @test length(state.sr_raw) == length(state.obs_sr_pts[])
+        @test all(t -> t[1] >= 0 && t[2] >= 0, state.sr_raw)
+        @test all(i -> state.obs_sr_pts[][i][1] ≈ Float32(log10_count(state.sr_raw[i][1])),
+            eachindex(state.sr_raw))
+        if length(state.sr_raw) >= 3
+            @test !isempty(state.obs_sr_fit_curve[])
+            @test all(p -> isfinite(p[1]) && isfinite(p[2]), state.obs_sr_fit_curve[])
+            # Parameters are in the corner as text, rounded.
+            @test occursin("Ricker", state.obs_sr_fit_text[])
+            @test occursin("R²", state.obs_sr_fit_text[])
+        else
+            @test isempty(state.obs_sr_fit_curve[])
+            @test isempty(state.obs_sr_fit_text[])
+        end
+    end
+
+    @testset "Size frequency: four curves, log10 density" begin
+        # Density integrates to one per series, so males and females are
+        # comparable however many of each are alive.
+        c, d = size_frequency([10.0, 20.0, 30.0, 40.0])
+        @test isapprox(sum(d) * GUI_SIZE_BIN_WIDTH_MM, 1.0; atol = 1e-9)
+        @test length(c) == length(d)
+        @test all(isfinite, log10_density.(d))
+        # Bins are half-open, so no size is counted twice at a boundary.
+        @test sum(d) * GUI_SIZE_BIN_WIDTH_MM ≈ 1.0
+        @test size_frequency(Float32[]) == (Float64[], Float64[])
+        # Non-finite sizes are dropped rather than poisoning a bin.
+        @test size_frequency([10.0, NaN, Inf, 20.0]) |> x -> isapprox(
+            sum(x[2]) * GUI_SIZE_BIN_WIDTH_MM, 1.0; atol = 1e-9)
+        @test_throws ErrorException size_frequency([1.0, 2.0], 0.0)
+        @test_throws ErrorException size_frequency([1.0, 2.0], -1.0)
+
+        # The floor is far below any real density, and log10(0) never appears.
+        @test DENSITY_PLOT_FLOOR == 1e-12
+        @test log10_density(0.0) == log10(DENSITY_PLOT_FLOOR)
+        @test isfinite(log10_density(0.0))
+        @test log10_density(0.01) ≈ -2.0
+
+        fig, state = launch_organism_gui(
+            n_agents = 40, grid = (14, 14), dt = 1.0, seed = 7, display_window = false
+        )
+        step_gui_simulation!(state, 200.0)
+        living = collect(allagents(state.model))
+        # Mature series are the subset each sex flags mature, not an independent
+        # size threshold, so they can never exceed their own sex.
+        @test length(state.obs_cw_mature_male[]) <= length(state.obs_cw_male[])
+        @test length(state.obs_cw_mature_female[]) <= length(state.obs_cw_female[])
+        for (all_obs, mat_obs, sx) in (
+            (state.obs_cw_male, state.obs_cw_mature_male, male),
+            (state.obs_cw_female, state.obs_cw_mature_female, female))
+            expected = Float32[Float32(a.size) for a in living if a.sex == sx && a.is_mature]
+            isempty(expected) && continue
+            @test mat_obs[] == expected
+        end
     end
 
     @testset "GUI annual frame matches the production schema" begin

@@ -16,6 +16,35 @@ julia --project=. scripts/organism_ibm.jl --config=configs/default.toml --days=3
 julia --project=. scripts/organism_ibm.jl --config=configs/snowcrab.toml --save
 ```
 
+## Species dispatch, and two reporting invariants
+
+`SpeciesBehavior` is the extension point for a second species, and the generic
+layer holds three methods that used to defeat it. `stage_size_lower_bound`,
+`growth_increment` and `build_stages` each built a `SpeciesBehaviorImpl()` and
+called *that*, discarding the behaviour they were handed. With one species the
+mistake is invisible, because every behaviour **is** a `SpeciesBehaviorImpl` and
+dispatch already selects the right method — and an altered `SpeciesParams` does
+give a different answer, which is what makes it easy to miss. The cost appears
+only when someone writes a second species: it would be measured against snow crab
+growth coefficients and the stage-size curve, and produce plausible, wrong animals.
+All three now fail at the call site with the offending type named.
+
+Two reporting invariants are worth stating because the data does not show them:
+
+- **`catch_total` and `catch_legal` are the same series.** Not a shortcut: the
+  fishery gate removes an animal only when `is_legal_male` passes, so no sublegal
+  animal can be harvested. They are reported separately because stock-assessment
+  convention separates them, and a caller assuming they were independent would
+  double-count the removals. A test asserts the identity, so a configuration that
+  admits sublegal harvest has to compute the two columns separately.
+- **The fishery is off by default, and one number says so.**
+  `fishery.fishing_probability_daily` is `0.0`, and that is the entire switch —
+  `fishery_active(params)` is the predicate, and there is deliberately no
+  `toggles.use_fishery` alongside it. The two used to express one thing, so the
+  model could report the fishery as enabled while no animal could ever be caught.
+  Set the probability to the rate your scenario implies.
+
+
 ## Architecture
 
 Two pillars:
@@ -83,7 +112,7 @@ model_agent/
 ```
 
 Feature toggles live on `IBMParameters.toggles`: `use_energetics`,
-`use_molting`, `use_mortality`, `use_fishery`, `use_reproduction`,
+`use_molting`, `use_mortality`, `use_reproduction`,
 `use_spermatheca`, `use_degree_days`, `use_thermal_stress`,
 `use_food_dynamics`, `use_habitat_taxis`, `use_senescence`, `use_cannibalism`,
 `use_movement`, `use_directed_movement`, `use_immigration`.
@@ -217,6 +246,8 @@ and the conventional `snowcrab.toml` sibling is overlaid on it.
 | `--seed=<Int>` | `1234` | RNG seed |
 | `--temp_base=<Float>` | `5.0` | Mean bottom-water temperature (°C) |
 | `--benthic_carrying_capacity=<Float>` | `12000.0` | Total benthic capacity, whole model |
+| `--fishing_probability_daily=<Float>` | `0.0` | **The fishery switch.** Zero means no harvest |
+| `--fishing_probability_daily=<Float>` | `0.0` | **The fishery switch.** Zero means no harvest |
 | `--frequency_days=<Float>` | `365.0` | Output sampling interval |
 | `--snapshot_day=<Float>` | `274.0` | Annual survey snapshot day of year |
 | `--output_dir=<Path>` | `outputs` | Results directory |
@@ -235,7 +266,7 @@ or a whole schedule as `--intermolt_days_schedule=60,75,90`.
 using model_agent
 
 params = IBMParameters(
-    toggles = ProcessToggles(use_fishery = false),
+    fishery = FisheryParams(fishing_probability_daily = 0.005),
     environment = EnvironmentParams(temp_base = 4.5),
 )
 

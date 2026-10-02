@@ -1027,6 +1027,8 @@ genuine day of year for each sample. The choice of regime depends only on
 - `annual_egg_production::Float64`: Egg production during the interval.
 - `catch_total::Float64`: Harvest removal during interval in numbers (C_t).
 - `catch_legal::Float64`: Commercial catch of legal males during interval.
+  Identical to `catch_total` in this model, because the fishery removes an animal
+  only when it passes the legal-size test.
 - `surplus_production_total::Float64`: Realized production (N_{t+1} - N_t + C_t).
 - `surplus_production_legal::Float64`: Realized legal production.
 
@@ -1269,6 +1271,14 @@ function extract_annual_production(
         total_egg_production = egg_prod_cum_vec,
         annual_egg_production = egg_prod_ann_vec,
         catch_total = catch_vec,
+        # The same series as `catch_total`, and that is not a shortcut. `agent_step!`
+        # removes an animal through the fishery only when `is_legal_male` passes, so
+        # every animal this model harvests is a legal male and the two catch series
+        # cannot differ. They are reported separately because stock assessment
+        # convention separates them, and a caller that assumes they are independent
+        # would double-count the removals. If a configuration ever admits sublegal
+        # harvest, this stops being true and the two columns must be computed
+        # separately.
         catch_legal = catch_vec,
         surplus_production_total = sp_total,
         surplus_production_legal = sp_legal

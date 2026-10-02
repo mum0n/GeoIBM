@@ -40,7 +40,7 @@ export OrganismParams, ProcessToggles, SimulationParams, FisheryParams, OutputPa
 export AggregateGroup, AggregatePopulations
 export is_adult, is_adult_male, is_adult_female, is_ovigerous
 export is_mature_male, is_mature_female
-export is_legal_male, is_legal
+export is_legal_male, is_legal, fishery_active
 export mass_if_mature_female, mass_if_mature_male, mass_if_legal_male
 export named_predicate, NamedPredicate
 export StageDefinition
@@ -70,6 +70,7 @@ export step_aggregate_groups!, perform_development!, perform_reproduction!
 
 # Export simulation engine
 export initialize_model, agent_step!, model_step!, run_simulation
+export build_habitat_quality_field
 export default_agent_observations
 export organism_disperse!, nagents, allagents, abmrng, safe_mean, safe_sum
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
@@ -110,6 +111,11 @@ export plot_abm_summary, animate_organism_simulation
 export plot_functional_relationships
 export launch_organism_gui, IBMGuiState, step_gui_simulation!
 export create_empty_annual_data
+export COUNT_PLOT_FLOOR, log10_count, GUI_EARLY_STAGES
+export GUI_EARLY_LABELS, GUI_EARLY_COLOURS, GUI_EARLY_DASHES
+export DENSITY_PLOT_FLOOR, log10_density, GUI_SIZE_BIN_WIDTH_MM, size_frequency
+export rescan_config!, flatten_toml, config_diff, RESCAN_IMMUTABLE
+export calendar_month, CALENDAR_MONTH_END
 export parse_cli_args, run_ibm_cli, julia_main
 export print_simulation_report, print_save_step_outputs, generate_summary_plots
 export display_cli_help

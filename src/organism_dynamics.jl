@@ -39,10 +39,20 @@ end
 
 Compute the empirical lower bound of morphometric size for a given species, stage,
 and sex.
+
+The stage-size curve is a property of the species, so it lives on the behaviour.
+A behaviour that does not provide it is an error — it used to build a
+`SpeciesBehaviorImpl()` and call that, discarding the argument, so a second species
+would silently be measured against snow crab stage bounds.
 """
 function stage_size_lower_bound(behavior::SpeciesBehavior, stage::Real, sex)
-    # Fallback - concrete implementation in species.jl
-    return stage_size_lower_bound(SpeciesBehaviorImpl(), stage, sex)
+    return error(
+        """
+        $(typeof(behavior)) does not implement stage_size_lower_bound.
+        The stage-size curve must be defined for the behaviour, not defaulted to one \
+        species' curve here.
+        """,
+    )
 end
 
 stage_size_lower_bound(behavior::SpeciesBehavior, stage::AbstractArray, sex) =
@@ -107,14 +117,29 @@ const stage_size = get_stage_size
     growth_increment(behavior::SpeciesBehavior, log_size::Real; kwargs...)
 
 Predict the natural logarithm of post-molt size given pre-molt natural logarithm.
+
+The implementation is a property of the species, so it lives on the behaviour
+rather than here. A behaviour that does not provide it is an error.
+
+It used to build a `SpeciesBehaviorImpl()` and call that, discarding the argument.
+With one species that is invisible, because every behaviour *is* a
+`SpeciesBehaviorImpl` and dispatch already picks the right method. The cost only
+appears when a second species is written: it would be evaluated against snow crab
+growth coefficients and produce plausible, wrong animals. Failing at the call site
+is the only safe behaviour.
 """
 function growth_increment(
     behavior::SpeciesBehavior,
     log_size::Real;
     kwargs...
 )
-    # Dispatch to concrete implementation
-    return growth_increment(SpeciesBehaviorImpl(), log_size; kwargs...)
+    return error(
+        """
+        $(typeof(behavior)) does not implement growth_increment.
+        Species-dependent life-history rules must be defined for the behaviour, not \
+        defaulted to one species' rules here.
+        """,
+    )
 end
 
 """
@@ -414,13 +439,22 @@ end
     build_stages(behavior::SpeciesBehavior; kwargs...)
 
 Construct discrete stage hierarchy for stage-transition modeling.
+
+The stage table is species-specific, so it is defined on the behaviour. A behaviour
+that does not provide it is an error rather than a silent substitution of the snow
+crab table.
 """
 function build_stages(
     behavior::SpeciesBehavior;
     kwargs...
 )
-    # Dispatch to concrete implementation
-    return build_stages(SpeciesBehaviorImpl(); kwargs...)
+    return error(
+        """
+        $(typeof(behavior)) does not implement build_stages.
+        The Leslie stage table must be defined for the behaviour, not defaulted to \
+        one species' table here.
+        """,
+    )
 end
 
 
