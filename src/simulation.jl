@@ -430,6 +430,15 @@ function coerce_to_declared(declared::Type, value, field::Symbol)
             return string(value)
         elseif declared <: AbstractVector
             values = value isa AbstractVector ? value : [value]
+            # A vector parameter may be declared with a non-numeric element type.
+            # `stage_labels` is a list of plot names, and coercing its entries with
+            # `to_number` failed on the first one, so every configuration load that
+            # carried a name list raised rather than reading it.
+            if eltype(declared) <: AbstractString
+                # Broadcast over the *element* type. `declared.(x)` would call
+                # `Vector{String}(x)`, which is not a constructor.
+                return eltype(declared).(string.(values))
+            end
             parsed = [to_number(v, field) for v in values]
             return declared <: AbstractVector{<:Integer} ?
                    declared.(Int.(round.(Int, parsed))) : declared(Float64.(parsed))
@@ -497,6 +506,38 @@ function try_coerce_to_declared(declared::Type, value, field::Symbol)
 end
 
 """
+    fishery_open(params::IBMParameters, day_of_year) -> Bool
+
+Whether the fishery is open to harvest on a given day of the year.
+
+The window is `fishery.fishing_season_start` to `fishing_season_end`, given as
+**day of year** (1 to `days_per_year`), and it may wrap the year end: a start
+greater than the end is a season running from the start through 31 December and
+into January. A plain `start <= day <= end` test reduces that to *never open*, and
+the failure is invisible, because an always-closed season looks exactly like the
+fishery having been switched off.
+
+The model carries day-of-year 0-based internally (`mod(time, days_per_year)`), so
+the shift is made once here rather than at every call site.
+"""
+function fishery_open(params::IBMParameters, day_of_year::Real)
+    fishery_active(params) || return false
+    f = params.fishery
+    dpy = params.simulation.days_per_year
+    lo, hi = f.fishing_season_start, f.fishing_season_end
+    d = mod(day_of_year, dpy) + 1.0
+    for (name, v) in (("fishing_season_start", lo), ("fishing_season_end", hi))
+        if !(0.0 <= v <= dpy)
+            @warn "Fishing season bound lies outside the calendar; the fishery " *
+                  "will never open." parameter = name value = v days_per_year = dpy
+            return false
+        end
+    end
+    lo <= hi && return lo <= d <= hi
+    return d >= lo || d <= hi
+end
+
+"""
     initialize_model(config::AbstractDict; kwargs...)
 
 Initialize an individual-based model from a configuration dictionary,
@@ -512,7 +553,6 @@ function initialize_model(config::AbstractDict; kwargs...)
     end
     sync_grid_dimensions!(merged; explicit = override_keys)
 
-    n_ag = get(merged, :n_agents, 100)
     grid_dim = get(merged, :grid, (50, 50))
     if isa(grid_dim, AbstractVector)
         grid_dim = (Int(grid_dim[1]), Int(grid_dim[2]))
@@ -531,27 +571,48 @@ function initialize_model(config::AbstractDict; kwargs...)
     org_params = struct_from_config(OrganismParams, merged)
     phen = struct_from_config(PhenologyParams, merged)
     fish = struct_from_config(FisheryParams, merged)
+    mort = struct_from_config(MortalityParams, merged)
+    spec = struct_from_config(SpeciesParams, merged)
+    leslie_params = struct_from_config(LeslieParams, merged)
+    crit = struct_from_config(CriteriaParams, merged)
+    outp = struct_from_config(OutputParams, merged)
 
     params = IBMParameters(
         toggles = toggles,
-        simulation = SimulationParams(
-            dt = dt, seed = seed, n_agents = n_ag,
-            # Keep the recorded grid consistent with the space that is actually
-            # built, so anything reading `params.grid_nx` sees the real extent.
-            grid_nx = Int(grid_dim[1]), grid_ny = Int(grid_dim[2])
-        ),
+        # Built from the configuration, not field by field. It used to be assembled
+        # from `dt`, `seed` and the grid alone, so everything else the file declares
+        # — including the three initial-abundance vectors — was silently dropped on
+        # this path, and a run configured through a file seeded nothing at all.
+        # `dt`, `seed` and the grid are already in `merged`: `sync_grid_dimensions!`
+        # wrote the pair from `:grid`, so they are read here rather than restated.
+        simulation = struct_from_config(SimulationParams, merged),
         environment = env,
         organism = org_params,
         phenology = phen,
-        fishery = fish
+        # These four were never built from `merged` and so were silently dropped on
+        # the configuration path: `[mortality]`, `[species]`, `[leslie]` and
+        # `[criteria]` had no effect on a run started from a file, and every value in
+        # them fell back to the struct default. `[mortality]` was the expensive one —
+        # it made every "which mortality term is doing this" experiment return the
+        # same answer, because the rates under test were never the ones being used.
+        mortality = mort,
+        fishery = fish,
+        output = outp,
+        species = spec,
+        leslie = leslie_params,
+        criteria = crit
     )
 
     return initialize_model(
-        n_agents = n_ag,
         grid = grid_dim,
         dt = dt,
         params = params,
-        seed = seed
+        seed = seed,
+        # `n_agents` is the total the seeding vectors sum to, not a parameter of
+        # its own, so it is a keyword here rather than a key in the file. It is
+        # forwarded explicitly: merging it into `merged` alone left it unread, and
+        # every configuration-path caller asking for a population got none.
+        n_agents = get(merged, :n_agents, nothing)
     )
 end
 
@@ -609,7 +670,7 @@ function build_habitat_quality_field(params::EnvironmentParams,
 end
 
 """
-    initialize_model(; n_agents=100, grid=(50, 50), ...)
+    initialize_model(; grid=(50, 50), ...)
 
 Construct and populate an `Agents.StandardABM` representing the organism ecosystem.
 
@@ -636,7 +697,7 @@ Construct and populate an `Agents.StandardABM` representing the organism ecosyst
 Configured and populated `StandardABM` instance ready for simulation.
 """
 function initialize_model(;
-    n_agents::Int = 100,
+    n_agents::Union{Int, Nothing} = nothing,
     grid::Tuple{Int, Int} = (50, 50),
     temp_map::Union{Nothing, Matrix{Float64}} = nothing,
     food_map::Union{Nothing, Matrix{Float64}} = nothing,
@@ -752,19 +813,27 @@ function initialize_model(;
     sim_params = params.simulation
     org_params = params.organism
     juvenile_max = org_params.juvenile_max_stage
-    if n_agents > 0 && juvenile_max > 0
-        for stg in 0:(juvenile_max - 1)
-            sz = (stg == 0) ? org_params.egg_size_mm :
+    if juvenile_max > FIRST_COHORT_STAGE
+        # Cohorts occupy stages `FIRST_COHORT_STAGE : juvenile_max - 1`; stage 0
+        # is the brooded egg and is not a cohort.
+        #
+        # Abundance comes from `initial_aggregate_cohort`, element `i` being stage
+        # `i - 1`. A zero entry seeds no cohort at all rather than an empty one.
+        cohort_abundance = sim_params.initial_aggregate_cohort
+        for stg in FIRST_COHORT_STAGE:(juvenile_max - 1)
+            abundance = stg + 1 <= length(cohort_abundance) ? cohort_abundance[stg+1] : 0.0
+            abundance > 0.0 || continue
+            is_first = stg == FIRST_COHORT_STAGE
+            sz = (is_first) ? org_params.egg_size_mm :
                  ((stg < Int(params.species.benthic_anchor_stage)) ?
                   stage_size_lower_bound(behavior, Float64(stg), :male) :
                   stage_size(behavior, stg, :male; type = :random, rng = rng, params = params))
-            wt = (stg == 0) ? org_params.egg_mass_g :
+            wt = (is_first) ? org_params.egg_mass_g :
                  calculate_mass(behavior, sz, :male; mat = 0, stochastic = true, rng = rng)
             grp = AggregateGroup(
                 id = pop.next_group_id,
                 stage = stg,
-                abundance = (stg == 0) ? sim_params.initial_egg_cohort_abundance :
-                           sim_params.initial_stage_cohort_abundance,
+                abundance = abundance,
                 size = sz,
                 mass = wt,
                 age_days = stg * sim_params.initial_cohort_days_per_stage,
@@ -807,11 +876,19 @@ function initialize_model(;
     max_stage_of(sex) = (sex === female) ? params.organism.max_stage_female :
                         params.organism.max_stage_male
 
-    # Stage-abundance weighting: geometrically decreasing with stage, so the initial
-    # cohort is juvenile-skewed as a real population is, while every benthic stage is
-    # still represented. The decay is a calibration choice; that a stage must be
-    # reachable at all is not.
-    stage_decay = sim_params.initial_stage_decay
+    # Stage-abundance distribution, read from `initial_female_cohort` and
+    # `initial_male_cohort`, element `i` being stage `i - 1`.
+    #
+    # This replaces a geometric stage decay that existed only to spread a *total*
+    # over the stage range. The total is gone too: the vectors state the numbers,
+    # so there is no separate count to keep consistent with them.
+    function abundance_at(vec, stg::Int)
+        return (stg + 1 <= length(vec)) ? vec[stg+1] : 0.0
+    end
+
+    # What the configuration asks for, and what the caller overrides it with.
+    # `n_agents` is the sum of the two sex vectors unless given.
+    seed_sum = sum(sim_params.initial_female_cohort) + sum(sim_params.initial_male_cohort)
 
     function seed_one(stg::Int, sex, position)
         sz = stage_size(behavior, stg, sex; type = :random, rng = rng, params = params)
@@ -853,38 +930,41 @@ function initialize_model(;
         return new_org
     end
 
-    if n_agents > 0
-        # Every (sex, stage) cell, ordered by sex then stage, as the coverage pool.
-        cells = Tuple{Int, Any}[]
-        weights = Float64[]
-        for sex in (male, female)
-            for stg in first_benthic:max_stage_of(sex)
-                push!(cells, (stg, sex))
-                # Juvenile-skewed, as a real population is, so the remainder lands
-                # mostly on the young stages while every cell is still represented.
-                push!(weights, stage_decay^(stg - first_benthic))
-            end
-        end
-
-        # `n_agents` is honoured exactly. When the budget covers every cell, seed
-        # them all and distribute the remainder by weight. When it does not, spread
-        # the budget across the ordered cells so the stage range is still spanned
-        # end to end, rather than filling only the youngest stages.
-        if n_agents <= length(cells)
-            # `range(1, k, length = 1)` is invalid — a one-element range cannot span
-            # differing endpoints — so the single-agent case is handled directly.
-            picks = (n_agents == 1) ? [1] :
-                    unique(round.(Int, range(1, length(cells), length = n_agents)))
-            for i in picks
-                stg, sex = cells[i]
-                seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
+    # Seed individuals from the two sex vectors.
+    #
+    # `n_agents` is the sum of the vectors when the caller does not state it, and
+    # an override when they do. Two cases, because they are different requests:
+    #
+    #  * The vectors state a distribution. That is the point of them, so their
+    #    *shape* is honoured; an override only rescales it, so the caller can ask
+    #    for a different total without restating the shape.
+    #  * The vectors are empty and `n_agents` is given. There is no distribution to
+    #    honour, so the count is spread evenly across the stage range of each sex.
+    #    Uniform rather than juvenile-skewed: a skew is a shape choice and shapes
+    #    now live in the vectors, so inventing one here would reintroduce exactly
+    #    the hidden constant the vectors were added to remove.
+    seed_target = something(n_agents, seed_sum)
+    if seed_target > 0
+        # The (stage, sex) cells, so the two cases below share one enumeration.
+        cells = [(stg, sex) for sex in (female, male)
+                 for stg in first_benthic:max_stage_of(sex)]
+        if seed_sum > 0
+            # The vectors state a distribution; honour the shape and let `n_agents`
+            # only rescale it.
+            for (k, (stg, sex)) in enumerate(cells)
+                vec = (sex === female) ? sim_params.initial_female_cohort :
+                      sim_params.initial_male_cohort
+                n_here = round(Int, abundance_at(vec, stg) * (seed_target / seed_sum))
+                for _ in 1:n_here
+                    seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
+                end
             end
         else
-            for (stg, sex) in cells
-                seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
-            end
-            for _ in 1:(n_agents - length(cells))
-                stg, sex = sample_weighted(cells, weights, rng)
+            # No distribution stated: cycle the total evenly over the cells. Counting
+            # how often a floor expression steps gives the number of *cells*, not the
+            # number requested — asking for 60 with 22 cells produced 22.
+            for k in 1:seed_target
+                stg, sex = cells[mod1(k, length(cells))]
                 seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
             end
         end
@@ -927,9 +1007,9 @@ function initialize_model(;
             round(seeded_stock; digits = 1) capacity = k_cap ratio = round(
             seeded_stock / k_cap;
             digits = 2,
-        ) mortality_multiplier = round(multiplier; digits = 1) initial_egg_cohort_abundance =
-            sim_params.initial_egg_cohort_abundance initial_stage_cohort_abundance =
-            sim_params.initial_stage_cohort_abundance n_agents = n_agents
+        ) mortality_multiplier = round(multiplier; digits = 1) aggregate_cohorts =
+            round(sum(sim_params.initial_aggregate_cohort); digits = 1) seeded_individuals =
+            round(seed_sum; digits = 1)
     end
     properties[:n_legal_males] = leg_m
 
@@ -940,12 +1020,19 @@ end
     sample_individual_traits!(org::Organism, model, rng)
 
 Sample intrinsic empirical life-history traits for an individual `Organism`.
+
+Each trait is an individual's position on its own distribution — a quantile, not a
+value — and the four quantiles share one range, `OrganismParams.trait_quantile_min`
+and `trait_quantile_max`. They were four separate `Uniform(0.01, 0.99)` draws, so
+the range was written down four times and changing it meant finding all four.
 """
 function sample_individual_traits!(org::Organism, model, rng)
-    org.trait_growth_quantile = rand(rng, Uniform(0.01, 0.99))
-    org.trait_maturity_quantile = rand(rng, Uniform(0.01, 0.99))
-    org.trait_fecundity_quantile = rand(rng, Uniform(0.01, 0.99))
-    org.trait_mortality_quantile = rand(rng, Uniform(0.01, 0.99))
+    op = model.params.organism
+    q = Uniform(op.trait_quantile_min, op.trait_quantile_max)
+    org.trait_growth_quantile = rand(rng, q)
+    org.trait_maturity_quantile = rand(rng, q)
+    org.trait_fecundity_quantile = rand(rng, q)
+    org.trait_mortality_quantile = rand(rng, q)
     return nothing
 end
 
@@ -1069,9 +1156,7 @@ function agent_step!(org::Organism, model)
     # are properties of the day, not of the organism. Whether there is a fishery at
     # all is `fishery.fishing_probability_daily`: a probability of zero means no
     # harvest, so that single number is the switch.
-    in_fishing_season = fishery_active(params) &&
-                        params.fishery.fishing_season_start <= day_of_year <=
-                        params.fishery.fishing_season_end
+    in_fishing_season = fishery_open(params, day_of_year)
     # The organism does not move until step 6 and the environment does not change
     # within a step, so its own cell's temperature is fixed for steps 1 to 5. It was
     # read four times: energetics, degree-day accrual, the molt decision inside
@@ -1093,6 +1178,38 @@ function agent_step!(org::Organism, model)
 
     # 3. Development & Molting
     perform_development!(org.behavior, org, model; temp = temp)
+
+    # 3b. Maturity, evaluated every step rather than only at ecdysis.
+    #
+    # It used to be drawn inside `perform_molt!`, which ecdysis only reaches inside
+    # the molt-season window, so an animal that failed its draw in one spring waited
+    # a full year: maturation was an annual step function and legal-male biomass
+    # pulsed several-fold year to year.
+    #
+    # The ogive probability is a probability of being mature *at this size*, so on a
+    # daily trial it has to be a daily **hazard**. Divided by `days_per_year` the
+    # cumulative probability over a year comes back to the ogive value — the same
+    # conversion [mortality] applies to its rates, and the reason it is resolution
+    # independent. Drawing the raw probability daily instead compounds it: 0.027 a
+    # day is effectively certain within a year, which matured every male above the
+    # 35 mm size gate and emptied the fishery.
+    if !org.is_mature && params.toggles.use_molting
+        prob_mat = maturity(
+            org.behavior,
+            (org.sex === female) ? 1 : 0,
+            log(org.size);
+            temp = temp,
+            maturity_quantile = org.trait_maturity_quantile,
+            rng = abmrng(model)
+        )
+        if prob_mat > 0.0
+            daily_hazard = prob_mat / params.simulation.days_per_year
+            if rand(abmrng(model)) < 1 - exp(-daily_hazard * dt)
+                org.is_mature = true
+                org.is_mating_ready = true
+            end
+        end
+    end
 
     # 4. Mortality
     # `temp` is still the organism's own cell: nothing before this step moves it.
@@ -1142,8 +1259,28 @@ function agent_step!(org::Organism, model)
             if rand(abmrng(model)) < fishing_probability_daily
                 model.total_catch_numbers += 1
                 model.total_catch_biomass_kg += (org.mass / 1000.0)
-                model.deaths_fishery += 1
-                remove_agent!(org, model)
+
+                # Handling a caught and returned crab kills some of them. Charged on
+                # capture, only to an individual's *first* capture — the damage
+                # happens at the event, so a crab already handled before is not
+                # charged again — and only inside the configured window, after
+                # which the term is zero.
+                #
+                # Which individuals have been handled is per-run state rather than a
+                # trait, so it lives on the model instead of on `Organism`: adding a
+                # field there would mean touching its four positional constructors
+                # and every call site.
+                if model.current_time <= params.mortality.handling_mortality_days
+                    handled = get!(Set{Int}, abmproperties(model), :handled_ids)
+                    if !(org.id in handled)
+                        push!(handled, org.id)
+                        if rand(abmrng(model)) < params.mortality.rate_handling
+                            model.deaths_fishery += 1
+                            remove_agent!(org, model)
+                            return nothing
+                        end
+                    end
+                end
                 return nothing
             end
         end

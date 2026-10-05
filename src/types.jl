@@ -473,7 +473,7 @@ end
 Base.@kwdef struct SimulationParams
     dt::Float64 = 1.0
     seed::Int = 1234
-    n_agents::Int = 300
+
     days::Int = 730
     grid_nx::Int = 100
     grid_ny::Int = 100
@@ -483,20 +483,40 @@ Base.@kwdef struct SimulationParams
     days_per_year::Float64 = 365.0
     temp_seasonal_phase_day::Float64 = 80.0
 
-    # --- Initial aggregate cohorts (pre-individuation stages) ---
-    # Each stage below `juvenile_max_stage` is seeded with one aggregate group.
-    # The egg stage carries `initial_egg_cohort_abundance`, every later stage
-    # `initial_stage_cohort_abundance`.
-    initial_egg_cohort_abundance::Float64 = 2000.0
-    initial_stage_cohort_abundance::Float64 = 500.0
+    # --- Initial abundance distribution ---
+    #
+    # Three vectors, element `i` being model stage `i - 1`. They are the whole of
+    # it: seeding reads these and nothing else, so the initial age and sex structure
+    # is *stated* rather than implied by a decay factor and a total.
+    #
+    # `initial_aggregate_cohort` seeds the undifferentiated cohorts below
+    # `OrganismParams.juvenile_max_stage`. `AggregateGroup` carries no `sex` field,
+    # so there is one cohort vector and not two: a cohort's members are unassigned
+    # until individuation, which draws them 1:1 from `leslie.male_split_fraction`.
+    #
+    # The other two seed individuals, per sex, from `juvenile_max_stage` up to each
+    # sex's terminal stage. They are separate because an organism *is* sexed and a
+    # cohort is not.
+    #
+    # The default is the whole clutch at the first cohort stage and nothing else —
+    # eggs only, no seeded individuals. Seeding previously always added `n_agents`
+    # individuals on top of the cohorts, so a run began with a populated spawning and
+    # fishable stock that it was supposed to earn, and the recruitment time series
+    # started from an artificial population.
+    #
+    # Element 1 is stage 0 and is **not seeded**: stage 0 is the brooded egg, which a
+    # female carries rather than a cohort holding it. The clutch is stage 1, so the
+    # default sits at element 2. Putting it at element 1 reads as a configuration that
+    # is ignored, and did: every shipped config reported a non-zero sum and seeded
+    # nothing at all.
+    initial_aggregate_cohort::Vector{Float64} = [0.0, 2000.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    initial_female_cohort::Vector{Float64} = fill(0.0, 12)
+    initial_male_cohort::Vector{Float64} = fill(0.0, 12)
     # Age attributed to a freshly seeded cohort at a given stage, in days.
     initial_cohort_days_per_stage::Float64 = 90.0
 
     # --- Initial benthic agents ---
-    # Stage-abundance weighting across the seeded benthic range is
-    # `initial_stage_decay^(stage - first_stage)`, so a value below 1 makes the
-    # initial cohort juvenile-skewed while still reaching every stage.
-    initial_stage_decay::Float64 = 0.75
     # Age attributed to a seeded individual of a given stage, in days, is
     # `initial_age_days_per_stage * (stage - initial_age_first_stage)` plus a
     # uniform draw on `[0, initial_age_jitter_days]`.
@@ -638,8 +658,37 @@ Base.@kwdef struct EnvironmentParams
 end
 
 Base.@kwdef struct OrganismParams
-    max_stage_male::Int = 16
-    max_stage_female::Int = 14
+    # Terminal developmental stage, the hard ceiling a molt clamps to. Males reach
+    # two stages further than females, as they grow larger and keep moulting.
+    #
+    # These are the model's own stage numbers, in which stage 1 is benthic instar
+    # 1 and the three pelagic sub-stages — zoea1, zoea2, megalopa — occupy model
+    # stages -2 to 0, so a cohort created at stage 0 on hatching is already zoea1.
+    # `gui.jl` maps these to instar labels through `cohort_stage_label`.
+    #
+    # The species stage tables stop at 12, which bounds the Leslie projection, not
+    # the animals: individuals molt on past it and their sizes keep growing along
+    # the saturating lower-bound curve towards `max_size_*`, so the ceiling has to
+    # sit above the table for the oldest cohorts to exist at all.
+max_stage_male::Int = 23
+max_stage_female::Int = 21
+    # Plot name for each developmental stage, in stage order: element `i` is model
+    # stage `i - 1`. Kept here so the figures, the configuration file and the code
+    # cannot disagree about what a stage is called; the dashboard used to derive
+    # these in code, and a row of bare `0 1 2 3` on an axis left it genuinely
+    # ambiguous whether a number was a model stage or a benthic instar.
+    #
+    # A vector rather than a `[stage_labels]` table because the configuration
+    # loader flattens one level of nesting and discards the section name, which
+    # would strip the very stage keys this is meant to preserve.
+    #
+    # Entry 1 is zoea1: a cohort is created at stage 1 on hatching. The pelagic
+    # block follows the classic chionoecetid sequence — four zoeal instars and a
+    # single megalopa — so it occupies stages 1 to 5. From stage 6 on, each entry
+    # is a benthic instar number counting from one, so model stage = instar + 5.
+    stage_labels::Vector{String} = ["Egg", "z1", "z2", "z3", "z4", "m", "1", "2", "3",
+        "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17",
+        "18", "19"]
     metabolic_rate_base::Float64 = 0.01
     intake_rate_base::Float64 = 0.05
 
@@ -684,7 +733,7 @@ Base.@kwdef struct OrganismParams
     stage_size_sample_b::Float64 = 2.5
     # Shell age is inferred as `(age_days - offset * (stage - first)) / days_per_year`.
     shell_age_stage_offset::Float64 = 180.0
-    shell_age_first_stage::Int = 3
+    shell_age_first_stage::Int = 6
     # Newmass-free shell condition index breakpoints, in days since ecdysis.
     shell_condition_days::Vector{Float64} = [30.0, 365.0, 730.0, 1277.5]
     # Wet mass and carapace size of a single egg.
@@ -693,11 +742,24 @@ Base.@kwdef struct OrganismParams
     # Probability of removing an individual in a day once its reserve is depleted.
     energy_deficit_removal_probability::Float64 = 0.75
     # Largest stage still treated as juvenile by the baseline mortality multiplier.
-    juvenile_max_stage::Int = 6
+    juvenile_max_stage::Int = 12
     # Size (mm) at or above which an individual is treated as past the juvenile
     # phase for allometry and for display, even if it never matured. This
     # replaces a hardcoded stage threshold that was specific to one species.
-    adult_size_threshold::Float64 = 68.0
+        adult_size_threshold::Float64 = 68.0
+    # --- Trait heterogeneity ---
+    #
+    # Bounds of the quantile drawn for each individual's four traits — growth,
+    # maturity, fecundity and mortality. They are *quantiles*, not values: each
+    # individual draws one and is then read off the corresponding distribution at that
+    # position, which is how an ogive is given between-individual spread without
+    # being resampled daily.
+    #
+    # Excluded at the ends because `maturity` rejects a quantile of 0 or 1 as
+    # degenerate, and because an individual at exactly the median has no spread on
+    # either side of it.
+    trait_quantile_min::Float64 = 0.01
+    trait_quantile_max::Float64 = 0.99
 end
 
 
@@ -739,7 +801,7 @@ Base.@kwdef struct PhenologyParams
     # while stages at or above it are confined to the molt season. This asymmetry
     # concentrates a cohort at the first gated stage, so it is exposed rather
     # than hardcoded; set to 1 to make every benthic stage follow one annual cycle.
-    molt_season_min_stage::Int = 7
+    molt_season_min_stage::Int = 13
     # Ecdysial thermal inhibition: the molt probability is scaled by
     # `max(0, 1 - ((T - onset) / bandwidth)^2)`. The onset must sit above the
     # warmest temperature reached during the molt season, otherwise inhibition
@@ -763,17 +825,39 @@ Base.@kwdef struct MortalityParams
     # `days_per_year` under `[simulation]` (a leap-year calendar, say) was
     # silently configuring mortality instead while the temperature field stayed
     # where they put it. One calendar, one field.
-    rate_baseline::Float64 = 0.20
-    rate_predation::Float64 = 0.15
+        # Background natural mortality by stage, annual, indexed by stage like the
+    # ecdysis schedules and clamped at the last entry.
+    #
+    # This replaces a single rate plus a binary juvenile multiplier, which gave
+    # pelagic cohorts, first-instar crabs and terminal adults the same mortality
+    # despite being very different animals. A pelagic larva is small, poorly
+    # insulated and has no shelter; a large benthic adult is the opposite. The
+    # decline continues with size rather than stopping at the boundary.
+    baseline_rate_by_stage::Vector{Float64} = [
+        0.35, 0.35, 0.35, 0.35, 0.35, 0.35,
+        0.15, 0.15, 0.15, 0.15,
+        0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08,
+        0.06,
+    ]
+    rate_predation::Float64 = 0.05
     rate_soft_shell::Float64 = 0.12
     rate_starvation::Float64 = 0.20
     rate_thermal::Float64 = 0.05
-    rate_senescence::Float64 = 0.08
+    rate_senescence::Float64 = 0.05
     rate_cannibalism::Float64 = 0.05
+    # Mortality from handling a crab that is caught and returned to the sea, annual
+    # rate. Charged on capture, and only during the window below — the damage is done
+    # at the event, so a crab already handled before is not charged again and a
+    # fishery that catches the same animal every season does not compound the rate.
+    rate_handling::Float64 = 0.05
+    # How long handling mortality is in force, in days from the start of the run.
+    # After this it is zero: the rate is not a permanent property of the fishery but a
+    # term for a bounded episode of it, so a long run does not accumulate handling
+    # deaths indefinitely.
+    handling_mortality_days::Float64 = 365.0
 
     # --- Shape modifiers ---
     baseline_trait_sigma::Float64 = 0.25
-    baseline_juvenile_multiplier::Float64 = 2.5
     predation_size_reference::Float64 = 5.0
     predation_size_decay::Float64 = 0.03
     # Window over which a post-ecdysis individual is considered soft-shelled,
@@ -790,11 +874,20 @@ Base.@kwdef struct MortalityParams
     cannibalism_density_reference::Float64 = 10.0
     cannibalism_density_cap::Float64 = 2.0
 
-    # --- Aggregate (pre-individuation) cohort transition hazard ---
-    aggregate_hazard_degree_days::Float64 = 0.15
-    aggregate_hazard_intermolt::Float64 = 0.20
+    # --- Aggregate (pre-individuation) cohort transition ---
+    #
+    # The daily transition hazard, `h0` in `h(DD) = h0 * PoissonCDF(X; DD)`. It is
+    # the rate at which an individual that has already met its own molt threshold
+    # moults, so a stage's requirement `X` — 50% of the cohort's Poisson thresholds —
+    # is reached at roughly `X / DD-per-day` days and the stage takes a little longer.
+    #
+    # `aggregate_hazard_degree_days`, `aggregate_hazard_intermolt` and
+    # `aggregate_transition_saturation` used to shape this as a logistic in
+    # `(DD - X) / (k X)` with hard gates either side. They are gone: the logistic
+    # reached its ceiling a third of the way to the next stage and held it there, so
+    # a cohort left at full rate while still short of the requirement. The
+    # distribution replaced them, and with them any need for a saturation constant.
     aggregate_transition_hazard::Float64 = 0.35
-    aggregate_transition_saturation::Float64 = 10.0
     # Baseline daily hazard for an aggregate cohort, indexed by stage through
     # `stage_schedule_lookup` so a shorter list holds its last value for the
     # higher stages. These cohorts predate individuation, so they carry the
@@ -943,11 +1036,11 @@ Base.@kwdef struct SpeciesParams
     size_lb_immature_breakpoints::Vector{Float64} = [1.5, 2.5]
     size_lb_male_intercept::Float64 = 1.102422
     size_lb_male_decay::Float64 = 0.235833
-    size_lb_male_anchor_stage::Float64 = 3.0
+    size_lb_male_anchor_stage::Float64 = 6.0
     size_lb_female_intercept::Float64 = 1.930054
     size_lb_female_decay::Float64 = 0.308476
-    size_lb_female_anchor_stage::Float64 = 4.0
-    benthic_anchor_stage::Float64 = 4.0
+    size_lb_female_anchor_stage::Float64 = 7.0
+    benthic_anchor_stage::Float64 = 7.0
 
     # Gear Selectivity
     selectivity_s50::Float64 = 95.0
@@ -968,23 +1061,48 @@ Base.@kwdef struct SpeciesParams
     # Minimum intermolt duration (days) by developmental stage. Index 0 maps to
     # stage 0, index `i` to stage `i`; the final entry applies to all stages
     # at or beyond its index.
+    # Stage durations, in days. Stages 0-5 are pelagic and read
+    # `intermolt_days_larval`; these entries are their placeholders here.
+    #
+    # Instars 1-4 take half a year each, so an animal covers two instars a year, and
+    # every instar from 5 on takes a year. Together with the pelagic block — zoea1
+    # through the end of the megalopa in one year — that is a growth schedule of
+    # roughly one year per two instars early and one per year after.
+    #
+    # The degree-day vectors below state the same timings as thermal requirements,
+    # converted at the configured thermal rate, so the two schedules cannot drift
+    # apart. The degree-days are what actually bind: `toggles.use_degree_days` makes
+    # the transition test `accumulated_degree_days >= requirement`, so a day-based
+    # requirement only takes effect if that toggle is off.
     intermolt_days_schedule::Vector{Float64} = [
-        60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    182.5, 182.5, 182.5, 182.5,
+    365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0,
+    365.0, 365.0, 365.0, 365.0,
     ]
     # Cumulative pre-ecdysial thermal requirement (degree-days) by stage, same
-    # indexing convention as `intermolt_days_schedule`.
+    # indexing convention as `intermolt_days_schedule`. Converted at 5 degree-days
+    # per day, which is `temp_base - temp_base_degreedays` at the configured
+    # temperatures; changing either rescale these in proportion.
     degree_days_schedule::Vector{Float64} = [
-        150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    912.5, 912.5, 912.5, 912.5,
+    1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0,
+    1825.0, 1825.0, 1825.0, 1825.0, 1825.0,
     ]
-    # Pelagic schedules, ordered as [egg, zoea, megalopa]. Their length is what
-    # defines how far the pelagic block reaches: stages below it are developed on
-    # these numbers, and every stage from `length(intermolt_days_larval)` upward
-    # uses the benthic schedules above. A run reads them through
-    # `min_intermolt_days` and `required_degree_days`, so an egg needing no elapsed
-    # time and no degree-days hatches on a hazard rather than after the 60 days and
-    # 150 degree-days a benthic stage 0 would imply.
-    intermolt_days_larval::Vector{Float64} = [0.0, 5.0, 10.0]
-    degree_days_larval::Vector{Float64} = [0.0, 20.0, 40.0]
+    # Pelagic schedules, ordered as [egg, zoea1, zoea2, zoea3, zoea4, megalopa] —
+    # the classic chionoecetid sequence, four zoeal instars and a single megalopa.
+    # Their length is what defines how far the pelagic block reaches: stages below it
+    # are developed on these numbers, and every stage from
+    # `length(intermolt_days_larval)` upward uses the benthic schedules above.
+    #
+    # zoea1 through the end of the megalopa is one year across five stages, so 73
+    # days each; as degree-days at 5 per day, 365 each. The egg's entry is zero: no
+    # cohort ever exists at stage 0, which is a clutch brooded by a female, and a zero
+    # there is what makes it hatch on a hazard rather than after a stage's wait.
+    # `min_intermolt_days` and `required_degree_days` read these positionally.
+    intermolt_days_larval::Vector{Float64} = [0.0, 73.0, 73.0, 73.0, 73.0, 73.0]
+    degree_days_larval::Vector{Float64} = [0.0, 365.0, 365.0, 365.0, 365.0, 365.0]
 
     # Minimum size gate (mm) below which maturity cannot be attained.
     maturity_size_gate::Float64 = 35.0
@@ -998,28 +1116,39 @@ Base.@kwdef struct SpeciesParams
     # representative size used for the stage. Indexed in parallel; a stage
     # definition is emitted only while it does not exceed the corresponding
     # `leslie_max_male_stage` / `leslie_max_female_stage`.
-    stage_size_range_stage1::Vector{Float64} = [4.0, 5.0]
+    stage_size_range_stage1::Vector{Float64} = [7.0, 8.0]
     stage_size_range_lower_stage1::Vector{Float64} = [7.0, 14.5]
     stage_size_range_upper_stage1::Vector{Float64} = [14.5, 22.0]
     stage_size_range_mean_stage1::Vector{Float64} = [10.7, 18.0]
-    stage_size_range_stage_male::Vector{Float64} = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+    stage_size_range_stage_male::Vector{Float64} = [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0]
     stage_size_range_lower_male::Vector{Float64} = [22.0, 31.0, 42.5, 58.0, 78.0, 95.0, 115.0]
     stage_size_range_upper_male::Vector{Float64} = [31.0, 42.5, 58.0, 78.0, 95.0, 115.0, 160.0]
     stage_size_range_mean_male::Vector{Float64} = [26.5, 36.5, 50.0, 68.0, 86.5, 105.0, 130.0]
-    stage_size_range_stage_female::Vector{Float64} = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+    stage_size_range_stage_female::Vector{Float64} = [9.0, 10.0, 11.0, 12.0, 13.0, 14.0]
     stage_size_range_lower_female::Vector{Float64} = [22.0, 30.5, 41.5, 54.5, 68.0, 82.0]
     stage_size_range_upper_female::Vector{Float64} = [30.5, 41.5, 54.5, 68.0, 82.0, 110.0]
     stage_size_range_mean_female::Vector{Float64} = [26.0, 35.5, 47.5, 61.0, 75.0, 90.0]
     # Terminal stages of the table above, in developmental stage numbers.
-    leslie_max_male_stage::Int = 12
-    leslie_max_female_stage::Int = 11
+    leslie_max_male_stage::Int = 15
+    leslie_max_female_stage::Int = 14
     # Size (mm) at or above which a male stage counts as legal in the projection.
     # The stage criterion below is the backstop for the largest stages, whose
     # representative size is above it already.
     leslie_legal_size_male::Float64 = 95.0
-    leslie_first_legal_stage_male::Int = 11
+    leslie_first_legal_stage_male::Int = 14
     # First female stage counted as reproductive in the projection.
-    leslie_first_repro_stage_female::Int = 9
+    leslie_first_repro_stage_female::Int = 12
+    # The stage counted as *recruitment*: the cohort immediately before maturity
+    # onset, one stage short of the first reproductive stage. This is the
+    # classical stock-recruit quantity — recruits per spawner — expressed as an
+    # abundance at the last stage before the animals are counted as spawners.
+    #
+    # It must be an individuated stage, above `OrganismParams.juvenile_max_stage`,
+    # because it is sex-specific and `AggregateGroup` carries no `sex` field. The
+    # counter used to run off the aggregate transition into
+    # `benthic_anchor_stage`, which is a size-model threshold ("first stage with
+    # sex-specific bounds") rather than any biological event.
+    recruitment_stage::Int = 13
 end
 
 """
@@ -1068,7 +1197,7 @@ Base.@kwdef struct LeslieParams
     # term are both zero, i.e. the first sex-specific stage. Stating it here keeps
     # the decay anchored to the stage the male and female series actually start at,
     # rather than to a literal that has to be changed with the stage table.
-    first_sex_specific_stage::Int = 6
+    first_sex_specific_stage::Int = 9
 end
 
 struct IBMParameters

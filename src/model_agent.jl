@@ -34,6 +34,7 @@ export LifeStage, Sex, zoea, megalopa, juvenile, adult, egg
 export male, female, undifferentiated
 export Organism, IBMParameters, ProcessToggles
 export SpeciesBehavior, SpeciesBehaviorImpl, SpeciesParams, default_species_behavior
+export FIRST_COHORT_STAGE, larval_stage_count, shell_age, shell_age_years, stage_at_maturity_fraction
 export PhenologyParams, MortalityParams, EnvironmentParams, LeslieParams
 export CriteriaParams
 export OrganismParams, ProcessToggles, SimulationParams, FisheryParams, OutputParams
@@ -112,8 +113,7 @@ export plot_functional_relationships
 export launch_organism_gui, IBMGuiState, step_gui_simulation!
 export create_empty_annual_data
 export COUNT_PLOT_FLOOR, log10_count, GUI_EARLY_STAGES
-export GUI_EARLY_LABELS, GUI_EARLY_COLOURS, GUI_EARLY_DASHES
-export DENSITY_PLOT_FLOOR, log10_density, GUI_SIZE_BIN_WIDTH_MM, size_frequency
+export kde_density, SIZE_DENSITY_BANDWIDTH_MM, SEX_DENSITY_ALPHA
 export rescan_config!, flatten_toml, config_diff, RESCAN_IMMUTABLE
 export calendar_month, CALENDAR_MONTH_END
 export parse_cli_args, run_ibm_cli, julia_main

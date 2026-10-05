@@ -1729,6 +1729,43 @@ end
 # ==============================================================================
 
 """
+    stage_at_maturity_fraction(params, fraction = 0.5; sex = female)
+
+The first developmental stage whose representative size is at or above the size
+carrying the requested maturity fraction, from `SpeciesParams.maturity_l50_*` and
+the matching slope.
+
+This is the defensible recruitment index: abundance in the last stage before the
+animals are counted as spawners. It is derived rather than declared because the
+answer moves whenever a stage-size table or an ogive parameter moves — a stage
+number written into the configuration goes stale silently, which is how the
+recruitment counter came to be keyed to `benthic_anchor_stage`, a size-model
+threshold with no biological meaning.
+
+There is no stage that sits *exactly* at 50%: the L50 falls between two stages,
+so this returns the first stage at or above the threshold, and the fraction it
+actually corresponds to is reported by the caller.
+"""
+function stage_at_maturity_fraction(params::SpeciesParams, fraction::Real = 0.5;
+    sex::Symbol = :female)
+    l50 = sex === :male ? params.maturity_l50_male : params.maturity_l50_female
+    slope = sex === :male ? params.maturity_slope_male : params.maturity_slope_female
+    stages = sex === :male ? params.stage_size_range_stage_male :
+             params.stage_size_range_stage_female
+    lower = sex === :male ? params.stage_size_range_lower_male :
+             params.stage_size_range_lower_female
+    upper = sex === :male ? params.stage_size_range_upper_male :
+             params.stage_size_range_upper_female
+    # Size carrying `fraction` under the logistic ogive.
+    lq = log(fraction / (1 - fraction))
+    target = exp(log(l50) + lq / slope)
+    for (i, s) in enumerate(stages)
+        mean_size = (lower[i] + upper[i]) / 2
+        mean_size >= target && return Int(s)
+    end
+    return Int(stages[end])
+end
+"""
     fit_delay_difference(time, numbers, catches; lag=1, label="Population")
 
 Fit the Deriso-Schnute delay-difference model in numbers:
@@ -1752,6 +1789,7 @@ R_{t+1} = \\frac{\\alpha N_{t+1-lag}}{1 + \\beta N_{t+1-lag}}
 NamedTuple containing survival s, natural mortality M, recruitment parameters,
 predicted trajectory, R², RMSE, and AIC.
 """
+
 function fit_delay_difference(
     time::AbstractVector,
     numbers::AbstractVector,
@@ -1920,18 +1958,35 @@ function fit_population_dynamics(source; lag::Int = 1)
     )
 
     # 2. Fishable component fits
+    #
+    # The delay-difference fit is driven by males at `recruitment_stage` — the
+    # cohort immediately before maturity onset — rather than by legal-sized males.
+    # Legal size is a regulatory threshold reached only after maturity, so a model
+    # fitted to it cannot speak about recruitment at all; the fishable stock is what
+    # the delay-difference process is meant to explain, and that process acts one
+    # year earlier, on the cohort entering it.
+    #
+    # Falls back to `legal_numbers` when the column is absent, so a frame written by
+    # an older build still fits rather than erroring.
+    fish_series = if :recruits_male in propertynames(ann_df)
+        ann_df.recruits_male
+    else
+        ann_df.legal_numbers
+    end
+    fish_label = (:recruits_male in propertynames(ann_df)) ?
+                 "Fishable Stock (Males at Recruitment Stage)" : "Fishable Stock (Legal Males)"
     schaefer_fish = fit_schaefer(
         ann_df.sample_index,
-        ann_df.legal_numbers,
+        fish_series,
         ann_df.catch_legal;
-        label = "Fishable Stock (Legal Males)"
+        label = fish_label
     )
     dd_fish = fit_delay_difference(
         ann_df.sample_index,
-        ann_df.legal_numbers,
+        fish_series,
         ann_df.catch_legal;
         lag = lag,
-        label = "Fishable Stock (Legal Males)"
+        label = fish_label
     )
 
     return (

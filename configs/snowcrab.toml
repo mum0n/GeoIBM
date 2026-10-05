@@ -21,7 +21,7 @@
 # against, and moving to a different crab species means editing this one file.
 #
 # Every parameter is also settable by exact name on the command line, e.g.
-#   --legal_size_male=80.0 --n_agents=500
+#   --legal_size_male=80.0 --max_stage_male=24
 # Command-line values take precedence over this file, which takes precedence over
 # the values in the parameter structs.
 #
@@ -53,8 +53,6 @@ use_reproduction      = true    # Mating, brooding and egg extrusion
 dt                      = 1.0     # Time step in days
 seed                    = 1234    # RNG seed; a run is reproducible given this
 # >>> snow crab override
-# Operating scale. 2000 individuated agents rather than the baseline 300.
-n_agents                = 2000    # Initial number of individuated agents
 days                    = 730     # Total simulated duration in days
 # >>> snow crab override
 # A 1000 x 1000 grid at one cell per metre is a 1 km x 1 km footprint, the scale of
@@ -66,18 +64,29 @@ grid_nx                 = 1000    # Grid width in cells
 grid_ny                 = 1000    # Grid height in cells
 days_per_year           = 365.0   # Calendar length; day-of-year is taken modulo this
 temp_seasonal_phase_day = 80.0    # Day of year at peak temperature
-# --- Initial aggregate cohorts ---
-# Every stage below [organism] juvenile_max_stage is seeded with one aggregate
-# group. The egg stage carries initial_egg_cohort_abundance, every later stage
-# initial_stage_cohort_abundance, each at initial_cohort_days_per_stage days of age.
-initial_egg_cohort_abundance   = 2000.0
-initial_stage_cohort_abundance = 500.0
+
+# --- Initial abundance distribution ---
+# Three vectors, element `i` being model stage `i - 1`. Seeding reads these and
+# nothing else, so the initial age and sex structure is stated rather than implied.
+#
+# initial_aggregate_cohort seeds the undifferentiated cohorts below
+# juvenile_max_stage. AggregateGroup carries no `sex` field, so there is one cohort
+# vector and not two: a cohort's members are unassigned until individuation, which
+# draws them 1:1 from leslie.male_split_fraction.
+#
+# The other two seed individuals, per sex, from juvenile_max_stage up to each sex's
+# terminal stage.
+#
+# The default starts a run with the whole clutch at the first cohort stage and
+# nothing else: eggs only, no seeded individuals. Set the two sex vectors to seed a
+# benthic population instead — e.g. a juvenile-skewed ramp — or state `n_agents` to
+# scale whatever shape these give. `n_agents` is the sum of the two sex vectors when
+# a caller does not state it, and an override when they do.
+initial_aggregate_cohort = [0.0, 2000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+initial_female_cohort    = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+initial_male_cohort      = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# Age attributed to a freshly seeded cohort at a given stage, in days.
 initial_cohort_days_per_stage  = 90.0
-# --- Initial benthic agents ---
-# Stage-abundance weighting is initial_stage_decay^(stage - first_benthic), so a
-# value below 1 makes the seeded cohort juvenile-skewed while still reaching
-# every stage.
-initial_stage_decay            = 0.75
 # A seeded individual's age is initial_age_days_per_stage * (stage -
 # initial_age_first_stage), plus a uniform draw on [0, initial_age_jitter_days].
 initial_age_days_per_stage     = 180.0
@@ -160,15 +169,38 @@ settlement_size_log_sd     = 0.04   # Lognormal SD of recruit size about its coh
 # The asymptotic carapace width of each sex is declared in [species]
 # (max_size_male / max_size_female), because it is the saturating limit of the
 # stage size curve. See the stage lower bounds section there.
-max_stage_male               = 16      # Terminal developmental stage, males
-max_stage_female             = 14      # Terminal developmental stage, females
-juvenile_max_stage           = 6       # Last stage before benthic life
+max_stage_male               = 23      # Terminal developmental stage, males
+max_stage_female             = 21      # Terminal developmental stage, females
+# --- Plot names for the stages ---
+# What each stage is called on the dashboard's axes, in stage order: element 1 is
+# model stage 0. Declared here so the figures cannot drift from the file.
+#
+# Stage 0 is the brooded egg, carried by the female rather than being a cohort.
+# Stage 1 is zoea1 — a cohort is created at stage 1 on *hatching* — then zoea2 at
+# stage 2 and the semibenthic megalopa at stage 3. From stage 4 on, each entry is
+# a benthic stage number counting from one, so benthic stage 1 is model stage 4 and
+# model stage = benthic number + 3.
+#
+# A vector, not a `[stage_labels]` table: the configuration loader flattens one
+# level of nesting and drops the section name, so a table keyed by stage would
+# arrive with the stage identity stripped.
+stage_labels = ["Egg", "z1", "z2", "z3", "z4", "m", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
+juvenile_max_stage           = 12      # Last stage before benthic life
 # Size (mm) at or above which an individual counts as past the juvenile phase for
 # allometry and for display, even if it never matured. A size test, not a
 # reproductive one: spawning stock uses maturity, not this threshold. It also
 # replaces a hardcoded stage boundary that was specific to one species.
 adult_size_threshold         = 68.0
 # --- Metabolic and feeding coefficients ---
+# --- Trait heterogeneity ---
+# Bounds of the quantile drawn for each individual's four traits (growth, maturity,
+# fecundity, mortality). They are quantiles, not values: an individual draws one and
+# is read off the corresponding distribution at that position, which is how an
+# ogive is given between-individual spread without being resampled daily.
+# Excluded at the ends because maturity rejects a quantile of 0 or 1 as degenerate.
+trait_quantile_min     = 0.01    # Lower bound of the trait quantile draw
+trait_quantile_max     = 0.99    # Upper bound of the trait quantile draw
 metabolic_rate_base             = 0.01   # Basal metabolic coefficient
 intake_rate_base                = 0.05   # Saturation ingestion coefficient
 metabolic_mass_exponent         = 0.75   # Mass exponent on metabolic rate
@@ -191,7 +223,7 @@ stage_size_sample_b          = 2.5       # Log-normal size-sample scale
 # Shell age is inferred as
 #   (age_days - offset * (stage - first)) / days_per_year
 shell_age_stage_offset      = 180.0      # Days of offset per stage beyond first
-shell_age_first_stage       = 3          # Stage at which the inference starts
+shell_age_first_stage       = 6          # Stage at which the inference starts
 shell_condition_days        = [30.0, 365.0, 730.0, 1277.5]  # Condition checkpoints
 # --- Eggs ---
 egg_mass_g                  = 7.0e-5     # Mass per egg (g)
@@ -227,23 +259,31 @@ maturity_temp_reference   = 4.0         # Reference temperature for that shift
 # size range upper edge, representative size. The block is emitted in order and
 # truncated at leslie_max_*_stage. Pooled sexes come first (the recruit and
 # juvenile bins), then the male and female series.
-stage_size_range_stage1      = [4.0, 5.0]
+stage_size_range_stage1      = [7.0, 8.0]
 stage_size_range_lower_stage1 = [7.0, 14.5]
 stage_size_range_upper_stage1 = [14.5, 22.0]
 stage_size_range_mean_stage1  = [10.7, 18.0]
-stage_size_range_stage_male  = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+stage_size_range_stage_male  = [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0]
 stage_size_range_lower_male  = [22.0, 31.0, 42.5, 58.0, 78.0, 95.0, 115.0]
 stage_size_range_upper_male  = [31.0, 42.5, 58.0, 78.0, 95.0, 115.0, 160.0]
 stage_size_range_mean_male   = [26.5, 36.5, 50.0, 68.0, 86.5, 105.0, 130.0]
-stage_size_range_stage_female  = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+stage_size_range_stage_female  = [9.0, 10.0, 11.0, 12.0, 13.0, 14.0]
 stage_size_range_lower_female  = [22.0, 30.5, 41.5, 54.5, 68.0, 82.0]
 stage_size_range_upper_female  = [30.5, 41.5, 54.5, 68.0, 82.0, 110.0]
 stage_size_range_mean_female   = [26.0, 35.5, 47.5, 61.0, 75.0, 90.0]
-leslie_max_male_stage           = 12     # Last stage emitted from the male table
-leslie_max_female_stage         = 11     # Last stage emitted from the female table
+leslie_max_male_stage           = 15     # Last stage emitted from the male table
+leslie_max_female_stage         = 14     # Last stage emitted from the female table
 leslie_legal_size_male          = 95.0   # Size at or above which a stage is legal
-leslie_first_legal_stage_male   = 11     # Backstop for the largest male stages
-leslie_first_repro_stage_female = 9      # First female stage counted as reproductive
+leslie_first_legal_stage_male   = 14     # Backstop for the largest male stages
+leslie_first_repro_stage_female = 12     # First female stage counted as reproductive
+# --- Recruitment ---
+# The stage counted as recruitment: the cohort immediately before maturity onset,
+# one stage short of the first reproductive stage. The classical stock-recruit
+# quantity is recruits per spawner, so this is an abundance at the last stage
+# before the animals count as spawners. Must be an individuated stage, above
+# juvenile_max_stage, because it is sex-specific and AggregateGroup has no sex
+# field. Under stage_labels this is label "8", instar 8.
+recruitment_stage = 13           # Recruitment = abundance at this stage
 # --- Fecundity (Moncton form) ---
 fecundity_parameterization     = "moncton"    # "moncton" or "stmarie"
 fecundity_primiparous_intercept = -0.7229     # Primiparous log-eggs intercept
@@ -324,11 +364,11 @@ size_lb_immature_sizes       = [0.95, 1.45, 2.5]  # Lower bounds (mm)
 size_lb_immature_breakpoints = [1.5, 2.5]          # Stage split points
 size_lb_male_intercept       = 1.102422  # ln(carapace width) at the male anchor stage
 size_lb_male_decay           = 0.235833  # Convergence to max_size_male, per stage
-size_lb_male_anchor_stage    = 3.0       # Stage at which the fit is anchored
+size_lb_male_anchor_stage    = 6.0       # Stage at which the fit is anchored
 size_lb_female_intercept     = 1.930054
 size_lb_female_decay         = 0.308476
-size_lb_female_anchor_stage  = 4.0
-benthic_anchor_stage         = 4.0       # First stage with sex-specific bounds
+size_lb_female_anchor_stage  = 7.0
+benthic_anchor_stage         = 7.0       # First stage with sex-specific bounds
 # --- Fishery selectivity (logistic in size) ---
 # The 50% retention size coincides with the legal size, so the fishery and the
 # regulation are consistent by construction.
@@ -345,8 +385,8 @@ mass_alpha_female_mature   = 0.00045
 mass_beta_female_mature    = 2.92
 mass_sigma                 = 0.08  # Between-individual mass SD
 # --- Ecdysis schedules, indexed by benthic stage ---
-intermolt_days_schedule = [60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0]
-degree_days_schedule   = [150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0, 950.0]
+intermolt_days_schedule = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 182.5, 182.5, 182.5, 182.5, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0]
+degree_days_schedule   = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 912.5, 912.5, 912.5, 912.5, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0]
 # --- Larval schedules, indexed by pelagic stage ---
 # egg, then zoea, then megalopa. Their length is what defines how far the pelagic
 # block reaches: stages below it develop on these numbers, and every stage from
@@ -354,8 +394,8 @@ degree_days_schedule   = [150.0, 200.0, 250.0, 300.0, 320.0, 350.0, 550.0, 750.0
 # The simulation reads them through `min_intermolt_days` and
 # `required_degree_days`; an egg at zero days and zero degree-days therefore
 # hatches on a hazard rather than after 60 days and 150 degree-days.
-intermolt_days_larval = [0.0, 5.0, 10.0]
-degree_days_larval    = [0.0, 20.0, 40.0]
+intermolt_days_larval = [0.0, 73.0, 73.0, 73.0, 73.0, 73.0]
+degree_days_larval    = [0.0, 365.0, 365.0, 365.0, 365.0, 365.0]
 
 # -----------------------------------------------------------------------------
 # [phenology] — seasonal windows for life-history events
@@ -390,7 +430,7 @@ brood_temperature_exponent   = 0.3     # Duration scales as (T_ref / T)^exponent
 # below freezing cannot make the brood duration diverge.
 brood_temperature_floor      = 1.0
 brood_duration_sd            = 5.0     # Between-female SD of brood duration
-molt_season_min_stage        = 7       # Youngest stage that can molt
+molt_season_min_stage        = 13      # Youngest stage that can molt
 molt_thermal_onset           = 10.0    # Temperature at which molting is possible
 molt_thermal_bandwidth       = 3.0     # Width of the thermal molt window
 
@@ -402,16 +442,25 @@ molt_thermal_bandwidth       = 3.0     # Width of the thermal molt window
 # a key by name, so two fields with the same name cannot be set independently.
 [mortality]
 # --- Annual rates ---
-rate_baseline      = 0.2   # Background natural mortality
-rate_predation     = 0.15  # Predation mortality
+# Background natural mortality by stage, annual, indexed by stage and clamped at
+  # the last entry. Replaces a single rate plus a binary juvenile multiplier, which
+  # gave pelagic cohorts, first-instar crabs and terminal adults the same mortality
+  # despite being very different animals. The decline continues with size rather
+  # than stopping at the individuation boundary.
+  baseline_rate_by_stage = [0.35, 0.35, 0.35, 0.35, 0.35, 0.35, 0.15, 0.15, 0.15, 0.15, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.06]
+rate_predation     = 0.05  # Predation mortality
 rate_soft_shell    = 0.12  # Predation on a freshly molted soft shell
 rate_starvation    = 0.2   # Starvation mortality
 rate_thermal       = 0.05  # Thermal stress mortality
-rate_senescence    = 0.08  # Senescence mortality
+rate_senescence    = 0.05  # Senescence mortality
 rate_cannibalism   = 0.05  # Cannibalism mortality
 # --- Baseline hazard modifiers ---
 baseline_trait_sigma       = 0.25  # Between-individual baseline SD
-baseline_juvenile_multiplier = 2.5  # Juvenile baseline multiplier
+rate_handling    = 0.05  # Handling mortality on first capture (annual)
+# Days from the start of the run during which handling mortality is in force.
+# After this the term is zero: it is a bounded episode, not a permanent
+# property of the fishery, so a long run does not accumulate handling deaths.
+handling_mortality_days = 365.0
 # --- Predation ---
 predation_size_reference = 5.0   # Size at which predation risk is reference
 predation_size_decay     = 0.03  # Risk decay per mm above the reference
@@ -434,10 +483,7 @@ cannibalism_size_threshold    = 35.0  # Minimum predator size (mm)
 cannibalism_density_reference = 10.0  # Reference local density
 cannibalism_density_cap       = 2.0   # Cap on the density multiplier
 # --- Aggregate (pre-individuation) groups ---
-aggregate_hazard_degree_days    = 0.15  # Death hazard from unmet degree-days
-aggregate_hazard_intermolt      = 0.2   # Death hazard from overrunning intermolt
 aggregate_transition_hazard     = 0.35  # Per-ecdysis death hazard
-aggregate_transition_saturation = 10.0  # Stage-index saturation bound
 # Baseline daily hazard for an aggregate cohort, indexed by stage through
 # `stage_schedule_lookup` (a shorter list holds its last value for higher stages).
 # These cohorts predate individuation, so they carry the pelagic and early-benthic
@@ -523,7 +569,7 @@ fecundity_size_reference = 65.0 # Size at which fecundity_base applies (mm)
 trajectory_error_weight   = 0.5
 # Developmental stage at which the transition-rate decay and the maturation term
 # are both zero, i.e. the first sex-specific stage.
-first_sex_specific_stage  = 6
+first_sex_specific_stage  = 9
 
 # -----------------------------------------------------------------------------
 # [criteria] — multi-attribute evaluation criteria

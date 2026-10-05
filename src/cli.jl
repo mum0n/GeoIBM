@@ -295,8 +295,7 @@ Flags:
 
 Common parameters (see configs/default.toml for the full list):
   --days=<Int>                             Total simulation days (default: 730)
-  --n_agents=<Int>                         Initial population size (default: 300)
-  --grid=<Nx,Ny>                           Spatial grid dimensions (default: 100,100)
+   --grid=<Nx,Ny>                           Spatial grid dimensions (default: 100,100)
   --grid_nx=<Int>                          Spatial grid width (default: 100)
   --grid_ny=<Int>                          Spatial grid height (default: 100)
   --dt=<Float>                             Simulation time step in days (default: 1.0)
@@ -497,7 +496,7 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     cfg_src = isempty(config[:config_file]) ? "Internal Defaults" : config[:config_file]
     println("   - Config Source   : $(cfg_src)")
     println(" Parameters:")
-    @printf("   - Agents          : %d\n", config[:n_agents])
+    @printf("   - Agents          : %d\n", sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort]))
     @printf("   - Days            : %d (%.2f years)\n", config[:days], config[:days] / 365.0)
     @printf("   - Grid Size       : %d x %d\n", config[:grid][1], config[:grid][2])
     t_base = get(config, :temp_base, 5.0)
@@ -515,7 +514,7 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     params = IBMParameters(config)
     t_start = time()
     model = initialize_model(
-        n_agents = config[:n_agents],
+        n_agents = sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort]),
         grid = config[:grid],
         dt = config[:dt],
         params = params,
@@ -539,7 +538,7 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     elapsed_time = time() - t_start
 
     summary = summarize_population(model)
-    print_simulation_report(summary, config[:n_agents], config[:days], elapsed_time)
+    print_simulation_report(summary, sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort]), config[:days], elapsed_time)
 
     # A short run legitimately has no annual samples, but a failure here is not
     # the same as that and must not be reported as a clean run.

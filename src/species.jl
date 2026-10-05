@@ -22,6 +22,19 @@ end
 SpeciesBehaviorImpl() = SpeciesBehaviorImpl(SpeciesParams())
 
 """
+    FIRST_COHORT_STAGE
+
+The lowest stage that exists as an `AggregateGroup`.
+
+Stage 0 is the brooded egg, which is carried by a female rather than being a
+cohort, so a clutch that hatches — and the seeded cohorts in `initialize_model` —
+begin at stage 1. Both call sites derive it from here rather than writing `0`: with
+a `0` at either, eggs and larvae shared a bin and every pelagic stage below was
+offset by one.
+"""
+const FIRST_COHORT_STAGE = 1
+
+"""
     default_species_behavior()
 
 Return the default concrete `SpeciesBehavior` implementation.
@@ -881,9 +894,13 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
         # 2. Clutch Release upon Hatching
         if org.egg_count > 0 && model.current_time >= org.hatch_day
             if haskey(abmproperties(model), :aggregate_populations)
+                # Hatching produces the first *cohort* stage, which is one past the
+                # egg. Stage 0 is the brooded egg — carried by the female, not a
+                # cohort — so a clutch that hatches at stage 0 put eggs and larvae
+                # in the same bin, and the pelagic stages below were offset by one.
                 new_group = AggregateGroup(
                     id = model.aggregate_populations.next_group_id,
-                    stage = 0,
+                    stage = FIRST_COHORT_STAGE,
                     abundance = Float64(org.egg_count),
                     size = model.params.organism.egg_size_mm,
                     mass = model.params.organism.egg_mass_g,

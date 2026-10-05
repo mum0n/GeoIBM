@@ -176,13 +176,20 @@ function predict_postgrowth_size(
 end
 
 """
-    growth_schedule(behavior::SpeciesBehavior)
+    growth_schedule(behavior::SpeciesBehavior; params = IBMParameters())
 
 Construct a reference `DataFrame` summarizing empirical size bounds, medians,
 and expected molt increments across developmental stages for both sexes.
+
+The stage range comes from `OrganismParams.max_stage_*` rather than the literal
+`1:14`, which had stopped at 14 while individuals could reach 16 — the table was
+quietly missing the oldest stages, and after the renumbering it covered barely a
+third of the life history.
 """
-function growth_schedule(behavior::SpeciesBehavior)
-    stages = 1:14
+function growth_schedule(behavior::SpeciesBehavior;
+    params::IBMParameters = IBMParameters())
+    last_stage = max(params.organism.max_stage_male, params.organism.max_stage_female) - 1
+    stages = 1:last_stage
     schedule = DataFrame(
         stage = collect(stages),
         size_male_lb = stage_size_lower_bound.(Ref(behavior), stages, :male),
@@ -280,8 +287,29 @@ not cosmetic:
 function shell_age_years(org::Organism, params::IBMParameters)
     op = params.organism
     inferred = (org.age_days - op.shell_age_stage_offset *
-            (org.stage - op.shell_age_first_stage)) / params.simulation.days_per_year
+               (org.stage - op.shell_age_first_stage)) / params.simulation.days_per_year
     return max(1.0, inferred)
+end
+
+"""
+    shell_age(org::Organism, params) -> Float64
+
+Years elapsed since the individual's last moult, fractional and unclamped.
+
+`age_days` is chronological age since settlement; `shell_age_stage_offset` per
+stage is the accumulated intermolt time, so the difference is time since the
+current moult. For a terminally moulted adult — which moults no more — that is its
+whole post-maturity lifespan, which is what senescence should be keyed to.
+
+`shell_age_years` is the same quantity floored at one year. The floor suits
+parity inference, which asks "how many broods has she been through" and has no
+meaning below one. It is wrong for senescence: an adult that moulted last month
+reads as a year old, which shifts the whole senescence curve by a year.
+"""
+function shell_age(org::Organism, params::IBMParameters)
+    op = params.organism
+    return (org.age_days - op.shell_age_stage_offset *
+            (org.stage - op.shell_age_first_stage)) / params.simulation.days_per_year
 end
 
 """
@@ -339,28 +367,34 @@ function selectivity(
 end
 
 """
-    growth_simulate(modes; gcv=0.4, n_max=10000, s50=50.0, s50_sigma=50.0, rng=Random.default_rng())
+    growth_simulate(modes; behavior, gcv, size_cv, n_max, rng)
 
 Simulate multi-stage population growth across defined stage modal sizes with
 growth variability and size selectivity filtering.
+
+`gcv` and `size_cv` are coefficients of variation, not sizes. Selectivity is taken
+from `behavior` rather than passed in as `s50`/`s50_sigma`: those were defaulting
+to a literal `50.0`, which is a second source of truth for the same quantity the
+species declares as `maturity_l50_male` / `maturity_l50_female`. A caller that
+changed the species ogive left this function filtering at 50 mm regardless.
 """
 function growth_simulate(
     modes::Vector{Float64};
+    behavior::SpeciesBehavior = default_species_behavior(),
     gcv::Float64 = 0.4,
+    size_cv::Float64 = 0.05,
     n_max::Int = 10000,
-    s50::Float64 = 50.0,
-    s50_sigma::Float64 = 50.0,
     rng::AbstractRNG = Random.default_rng()
 )
     n_stages = length(modes)
     incr = modes[2:end] .- modes[1:(end - 1)]
     W = zeros(Float64, n_max, n_stages)
-    W[:, 1] = rand(rng, Normal(modes[1], modes[1] / 20.0), n_max)
+    W[:, 1] = rand(rng, Normal(modes[1], modes[1] * size_cv), n_max)
     for j in 2:n_stages
         inc = rand(rng, Normal(incr[j - 1], incr[j - 1] * gcv), n_max)
         W[:, j] = W[:, j - 1] .+ inc
     end
-    s_modes = selectivity.(modes; s50=s50, s50_sigma=s50_sigma)
+    s_modes = selectivity.(modes; behavior = behavior)
     O = deepcopy(W)
     for j in 1:n_stages
         n_drop = round(Int, (1.0 - s_modes[j]) * n_max)
@@ -373,27 +407,40 @@ function growth_simulate(
 end
 
 """
-    sample_population(behavior::SpeciesBehavior, year::Int = -1; sex_ratio=0.5, rng=Random.default_rng())
+    sample_population(behavior::SpeciesBehavior, year::Int = -1;
+                      sex_ratio = 0.5, params = IBMParameters(),
+                      rng = Random.default_rng())
 
 Sample individual traits (degree-days, size, sex, maturity, stage) for
 initializing population members.
+
+The stage it samples is derived from `OrganismParams.juvenile_max_stage` rather
+than written as a literal. The literals were `5` and `4:7`, which were correct
+only while the individuation boundary sat at 6; a renumbering silently turned them
+into stages three below where they belonged, and nothing failed because they were
+still *valid* stage numbers — they just sampled the wrong part of the life history.
 """
 function sample_population(
     behavior::SpeciesBehavior,
     year::Int = -1;
     sex_ratio::Float64 = 0.5,
+    params::IBMParameters = IBMParameters(),
     rng::AbstractRNG = Random.default_rng()
 )
+    # The last aggregate stage is the one just below individuation; agents begin at
+    # `juvenile_max_stage` itself.
+    last_cohort = params.organism.juvenile_max_stage - 1
     if year == -1
-        degdays = rand(rng, Uniform(0.0, 0.1))
-        sz = exp(rand(rng, Normal(2.75, 0.25 / 3.0)))
+        degdays = rand(rng, Uniform(0.0, params.simulation.initial_degree_days_min))
+        sz = exp(rand(rng, Normal(params.organism.stage_size_sample_a,
+            params.organism.stage_size_sample_b / 3.0)))
         sex = (rand(rng) < sex_ratio) ? 0 : 1
         mat = 0
-        stage_val = 5
+        stage_val = last_cohort
         return (degdays=degdays, size=sz, sex=sex, mat=mat, stage=stage_val)
     else
-        degdays = rand(rng, Uniform(0.0, 0.2))
-        stage_val = rand(rng, 4:7)
+        degdays = rand(rng, Uniform(0.0, params.simulation.initial_degree_days_min))
+        stage_val = rand(rng, max(1, last_cohort - 1):(last_cohort + 2))
         sex = (rand(rng) < sex_ratio) ? 0 : 1
         sz = get_stage_size(behavior, stage_val, sex; type=:random, rng=rng)
         mat = 0
@@ -747,10 +794,19 @@ end
 """
     perform_molt!(org, current_time, temp=nothing; params=IBMParameters(), rng=Random.default_rng())
 
-Execute ecdysis on `org`: increments `stage`, evaluates terminal morphometric maturity,
-predicts post-growth size, updates wet mass, resets degree-days, and deducts energetic
-molting expenditure.
-"""
+    Execute ecdysis on `org`: increments `stage`, predicts post-growth size, updates
+    wet mass, resets degree-days, and deducts energetic molting expenditure.
+
+    Maturity is deliberately **not** evaluated here. It used to be, and that made
+    maturation an annual coin flip: ecdysis for any stage at or above
+    `molt_season_min_stage` is confined to `molt_season_start..molt_season_end`, so
+    an individual that failed its maturity draw in one spring waited a full year for
+    the next. Two routes into maturity — this draw and the terminal-stage rule below
+    — were both step functions aligned to the same ~125-day window, which quantised
+    legal-male biomass into annual pulses of several-fold amplitude. Maturity is now
+    evaluated every step in `agent_step!`, where the size-dependent probability can
+    actually accumulate.
+    """
 function perform_molt!(
     org::Organism,
     current_time::Real,
@@ -763,21 +819,6 @@ function perform_molt!(
     end
 
     sex_code = (org.sex === female) ? 1 : 0
-    prob_mat = maturity(
-        org.behavior,
-        sex_code,
-        log(org.size);
-        temp = temp,
-        maturity_quantile = org.trait_maturity_quantile,
-        rng = rng
-    )
-    mat_status = (rand(rng) < prob_mat) ? 1 : 0
-
-    if mat_status == 1
-        org.is_mature = true
-        org.is_mating_ready = true
-    end
-
     condition_factor = if params.toggles.use_energetics
         req_e = max(params.organism.energy_molt_floor,
                      params.organism.energy_molt_slope * org.size)
@@ -792,7 +833,9 @@ function perform_molt!(
         org.behavior,
         org.size;
         sex = sex_code,
-        mat = mat_status,
+        # Always immature here: the guard above returns for a mature animal, and
+        # maturity is no longer decided inside this function.
+        mat = 0,
         temp = temp,
         condition = condition_factor,
         rng = rng,
@@ -894,8 +937,16 @@ function mortality_components(
     # a daily probability of one.
     cap = clamp(m.hazard_cap, 0.0, 1.0)
 
-    # 1. Baseline natural mortality modulated by individual mortality trait
-    #    quantile and by population density relative to carrying capacity
+    # 1. Background natural mortality, modulated by the individual's mortality trait
+    #    quantile, by stage and by population density relative to carrying capacity.
+    #
+    #    `baseline_rate_by_stage` replaces a single rate plus a juvenile multiplier.
+    #    The multiplier was binary — one value below the individuation boundary and
+    #    one above — so pelagic cohorts, first-instar crabs and terminal adults all
+    #    shared a rate despite being three very different animals. The schedule is
+    #    indexed by stage like every other, and holds its last value beyond its end,
+    #    so it says the thing directly: high while pelagic, lower once benthic, lower
+    #    again as the animal grows.
     q_mort = org.trait_mortality_quantile
     if q_mort <= 0.0 || q_mort >= 1.0
         error("trait_mortality_quantile must be strictly in (0, 1), received: $(q_mort)")
@@ -903,9 +954,8 @@ function mortality_components(
     individual_mort_factor = exp(
         m.baseline_trait_sigma * quantile(Normal(0.0, 1.0), q_mort)
     )
-    base_daily = ((m.rate_baseline / dpy) * individual_mort_factor * feedback) * dt
-    stage_multiplier = (org.stage < params.organism.juvenile_max_stage) ?
-        m.baseline_juvenile_multiplier : 1.0
+    base_rate = stage_schedule_lookup(m.baseline_rate_by_stage, org.stage)
+    base_daily = (base_rate / dpy) * individual_mort_factor * feedback * dt
 
     # 2. Predation risk attenuated by size
     size_excess = max(0.0, org.size - m.predation_size_reference)
@@ -943,16 +993,38 @@ function mortality_components(
         0.0
     end
 
-    # 6. Senescence mortality for terminal molt adults.
-    #    Keyed on inferred shell age, not on time since the last ecdysis: those are
-    #    different quantities, and senescence is an age process. See
-    #    `shell_age_years` for what the previous formulation got wrong.
-    senescence_risk = if params.toggles.use_senescence && org.is_mature
-        age_years = shell_age_years(org, params)
+    # 6. Senescence mortality.
+    #
+    # Keyed on inferred shell age, not on time since the last ecdysis: those are
+    # different quantities, and senescence is an age process.
+    #
+    # Restricted to **terminally moulted** adults. `is_mature` is too weak a gate:
+    # it is set as soon as an individual passes the maturity ogive, and for a crab
+    # that is several years before it has finished growing. Senescence is wear-out
+    # on a grown animal, so the gate is the terminal stage, and an animal that has
+    # not got there pays no senescence at however old it is.
+    #
+    # The annual rate is formed first and converted to a daily probability by
+    # `1 - exp(-λ·dt/dpy)`. The previous form, `λ/dpy * dt` clamped at
+    # `hazard_cap`, was linear: at a shell age where λ reached 107/yr it computed a
+    # daily hazard of 1.87, which the cap turned into certainty — one day's
+    # arithmetic overflow presented as a modelled death. The exponential form cannot
+    # exceed one however large λ becomes, so a steep ramp now degrades to "almost
+    # certain" instead of "certain", which is what a large λ actually means.
+    terminal = (org.sex === female) ? params.organism.max_stage_female :
+               params.organism.max_stage_male
+    senescence_risk = if params.toggles.use_senescence &&
+                         org.is_mature &&
+                         org.stage >= terminal
+        # Fractional years since the last moult, unfloored: for a terminally
+        # moulted adult that is the post-maturity lifespan, and it is 0 in the
+        # year it reaches the terminal moult.
+        age_years = shell_age(org, params)
         thresh = m.senescence_age_threshold
         if age_years > thresh
-            raw = ((m.rate_senescence / dpy) *
-                   exp(m.senescence_exp_rate * (age_years - thresh))) * dt
+            lambda_per_year = m.rate_senescence *
+                              exp(m.senescence_exp_rate * (age_years - thresh))
+            raw = -expm1(-lambda_per_year * dt / dpy)
             raw > cap && report_clamp(:senescence, raw, cap)
             clamp(raw, 0.0, cap)
         else
@@ -971,14 +1043,14 @@ function mortality_components(
         0.0
     end
 
-    raw_total = (base_daily * stage_multiplier) +
+    raw_total = base_daily +
         predation_risk + soft_shell_risk + starvation_risk +
         thermal_stress + senescence_risk + cannibalism_risk
     total_prob = clamp(raw_total, 0.0, cap)
     raw_total > cap && report_clamp(:total, raw_total, cap)
 
     return (
-        baseline = base_daily * stage_multiplier,
+        baseline = base_daily,
         predation = predation_risk,
         soft_shell = soft_shell_risk,
         starvation = starvation_risk,
@@ -1053,12 +1125,12 @@ end
 """
     step_aggregate_groups!(model)
 
-Advance aggregate cohort groups (stage 0 / egg through stage 5) by one time step `dt`.
+Advance aggregate cohort groups (the pelagic stages from zoea1 through the last benthic cohort stage) by one time step `dt`.
 Applies continuous stochastic survival (binomial trials) and probabilistic developmental
 stage transitions (binomial draws scaling with accumulated physiological development).
 
-Upon completing stage 5 (~4 years cumulative development), surviving individuals
-undergo individuation into spatial `Organism` agents at stage 6 with 1:1 sex allocation.
+Upon completing the last cohort stage (~4 years cumulative development), surviving individuals
+undergo individuation into spatial `Organism` agents at `juvenile_max_stage` with 1:1 sex allocation.
 """
 function step_aggregate_groups!(
     model;
@@ -1108,25 +1180,50 @@ function step_aggregate_groups!(
             continue
         end
 
-        # 2. Continuous Probabilistic Transition (Degree-Days or Chronological Days)
+        # 2. Continuous probabilistic transition.
+        #
+        # A cohort's members do not share a molt threshold. Each one draws its own
+        # from a Poisson distribution whose mean is the stage's requirement, so the
+        # requirement is the degree-days at which *half* the cohort has become
+        # eligible — a 50% transition point, not a gate everyone crosses together.
+        # That is what desynchronises a cohort, and it is why the requirement has to
+        # be read as a distribution rather than as a threshold.
+        #
+        # The daily hazard is `h0 * P(threshold already met)`:
+        #
+        #     h(DD) = h0 * PoissonCDF(X; DD)
+        #
+        # which is zero at DD = 0, `h0 / 2` at DD = X by construction, and saturates
+        # at `h0`. `h0` is `aggregate_transition_hazard`, a daily rate.
+        #
+        # There are deliberately no hard gates here. The previous form was a logistic
+        # in `(DD - X) / (0.15 X)`, which reached its ceiling a third of the way to the
+        # next stage and then held it there: the cohort left at full rate while still
+        # short of the requirement, which is how a stage configured for half a year
+        # was cleared in days.
+        #
+        # `required_degree_days` and `min_intermolt_days` are *per stage*, not
+        # cumulative, and the cohort's `degree_days` is reset on transition.
         days_in_stage = max(0.0, model.current_time - grp.last_growth_time)
-        d_metric, d_req, d_scale = if model.params.toggles.use_degree_days
-            req_dd = required_degree_days(behavior, grp.stage)
-            (grp.degree_days, req_dd, max(1.0, params.mortality.aggregate_hazard_degree_days * req_dd))
+        (metric, req, h0) = if model.params.toggles.use_degree_days
+            (grp.degree_days, required_degree_days(behavior, grp.stage),
+             params.mortality.aggregate_transition_hazard)
         else
-            min_days = min_intermolt_days(behavior, grp.stage)
-            (days_in_stage, min_days, max(1.0, params.mortality.aggregate_hazard_intermolt * min_days))
+            (days_in_stage, min_intermolt_days(behavior, grp.stage),
+             params.mortality.aggregate_transition_hazard)
         end
 
-        diff = (d_metric - d_req) / d_scale
-        p_trans = if diff < -params.mortality.aggregate_transition_saturation
-            0.0
-        elseif diff > params.mortality.aggregate_transition_saturation
-            1.0 - exp(-params.mortality.aggregate_transition_hazard * dt)
+        # Fraction of the cohort whose own threshold has been reached. `req` may be
+        # zero, in which case every member is eligible immediately.
+        # `cdf(Poisson(req), ...)`, not `poiscdf`: `Distributions` does not export
+        # `poiscdf` — it lives in `StatsFuns` — so the shorter name compiles and then
+        # throws `UndefVarError` on the first cohort that reaches a transition.
+        ready = if req > 0.0
+            cdf(Poisson(req), floor(metric))
         else
-            hazard = params.mortality.aggregate_transition_hazard / (1.0 + exp(-diff))
-            1.0 - exp(-hazard * dt)
+            1.0
         end
+        p_trans = ready > 0.0 ? 1 - exp(-h0 * ready * dt) : 0.0
 
         n_trans = (p_trans > 0.0 && n_surv > 0) ? rand(abmrng(model), Binomial(n_surv, p_trans)) : 0
         n_remain = n_surv - n_trans

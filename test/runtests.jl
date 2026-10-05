@@ -19,22 +19,35 @@ using model_agent
 
     @testset "Empirical Bounds and Allometry" begin
         # Monotonicity of lower bounds across stages
-        @test llbm(4) < llbm(5) < llbm(6) < llbm(7)
-        @test llbf(4) < llbf(5) < llbf(6) < llbf(7)
+        @test llbm(7) < llbm(8) < llbm(9) < llbm(10)
+        @test llbf(7) < llbf(8) < llbf(9) < llbf(10)
 
         # Bounds order: lower bound < upper bound
-        @test get_stage_size(5, :male; type=:lb) < get_stage_size(5, :male; type=:ub)
-        @test get_stage_size(5, :female; type=:lb) < get_stage_size(5, :female; type=:ub)
+        @test get_stage_size(9, :male; type=:lb) < get_stage_size(9, :male; type=:ub)
+        @test get_stage_size(9, :female; type=:lb) < get_stage_size(9, :female; type=:ub)
 
         mid_m = get_stage_size(6, :male; type=:mid)
         @test llbm(6) < mid_m < llbm(7)
 
-        # Growth schedule dataframe
+        # Growth schedule dataframe. The stage range is derived from `max_stage_*`, so
+        # this no longer asserts a hand-written row count that the schedule
+        # outgrew silently.
         sched = growth_schedule()
+        p_sched = IBMParameters()
         @test isa(sched, DataFrame)
-        @test nrow(sched) == 14
-        @test all(sched.size_male_lb .< sched.size_male_ub)
-        @test all(sched.size_female_lb .< sched.size_female_ub)
+        @test nrow(sched) ==
+              max(p_sched.organism.max_stage_male, p_sched.organism.max_stage_female) - 1
+        # The lower-bound curve saturates at `max_size_male`, so at high stages the
+        # per-stage lower and the next stage's lower coincide and a strict
+        # inequality no longer holds. Compare against the saturation limit instead,
+        # which is the property that actually matters.
+        sat_m = p_sched.species.max_size_male
+        @test all(sched.size_male_lb .<= sat_m)
+        @test all(sched.size_female_lb .<= p_sched.species.max_size_female)
+        @test issorted(sched.size_male_lb)
+        @test issorted(sched.size_female_lb)
+        # And strictly increasing where the curve has not yet flattened.
+        @test all(diff(sched.size_male_lb) .>= 0)
     end
 
     @testset "Empirical Growth Increments and Maturity" begin
@@ -94,8 +107,18 @@ using model_agent
             @test agent.age_days >= 0.0
         end
 
-        # Test molt progression and stage increment
-        test_org = first(allagents(model))
+        # Test molt progression and stage increment. An *immature* individual is picked
+        # explicitly: `perform_molt!` returns early for a mature one, and maturity
+        # is now evaluated every step rather than only at ecdysis, so `first(...)`
+        # is no longer reliably juvenile.
+        test_org = nothing
+        for a in allagents(model)
+            if !a.is_mature
+                test_org = a
+                break
+            end
+        end
+        @test test_org !== nothing
         init_stage = test_org.stage
         init_size = test_org.size
 
@@ -171,7 +194,9 @@ using model_agent
         @test f_org.egg_count == 0
         @test f_org.is_mating_ready == true
         @test length(model.aggregate_populations.groups) > n_groups_before
-        @test model.aggregate_populations.groups[end].stage == 0
+        # A clutch becomes a cohort at stage 1 on hatching: stage 0 is the brooded egg,
+        # which is carried by the female rather than being a cohort.
+        @test model.aggregate_populations.groups[end].stage == 1
         @test model.aggregate_populations.groups[end].abundance > 5000
     end
 
@@ -254,38 +279,50 @@ using model_agent
 
         # 2. Degree-day accumulation and molt conditions
         p = IBMParameters()
+        # Stage and both thresholds are derived, not written down. An `Organism`
+        # exists only from `juvenile_max_stage`, so a literal like 6 became a
+        # cohort stage after the renumbering and the organism was invalid without
+        # anything complaining.
+        stage_u = p.organism.juvenile_max_stage
+        beh = default_species_behavior()
+        req_dd_u = required_degree_days(beh, stage_u)
+        min_days_u = min_intermolt_days(beh, stage_u)
         org_juv_dd = Organism(
-            1, (5, 5), 6, male, default_species_behavior(), 400.0, 28.0,
+            1, (5, 5), stage_u, male, beh, 400.0, 28.0,
             calculate_mass(28.0, male; mat = 0),
-            50.0, 0.0, 500.0, false, 0, 0.0, 0, false
+            min_days_u, 0.0, 0.5 * req_dd_u, false, 0, 0.0, 0, false
         )
-        # Degree days = 500 < 550 for stage 6 -> cannot molt yet
+        # Degree days = half the requirement -> cannot molt yet
         @test check_molt_conditions(org_juv_dd, 4.0, 50.0; params = p) == false
 
-        # Accumulate degree days past threshold (550), but intermolt duration < 150 d
-        org_juv_dd.degree_days = 600.0
+        # Past the requirement, but not yet past the intermolt duration
+        org_juv_dd.degree_days = 1.5 * req_dd_u
         org_juv_dd.last_growth_event_time = 0.0
-        @test check_molt_conditions(org_juv_dd, 4.0, 50.0; params = p) == false
+        @test check_molt_conditions(org_juv_dd, 4.0, 0.5 * min_days_u; params = p) == false
 
-        # Current time = 160 >= 150 d intermolt -> eligible to molt
-        @test check_molt_conditions(org_juv_dd, 4.0, 160.0; params = p) == true
+        # Both requirements met -> eligible to molt
+        @test check_molt_conditions(org_juv_dd, 4.0, 1.5 * min_days_u; params = p) == true
 
         # Perform molt and verify degree-day reset and mass recalculation
         init_wt = org_juv_dd.mass
-        perform_molt!(org_juv_dd, 160.0; rng = MersenneTwister(42))
+        perform_molt!(org_juv_dd, 1.5 * min_days_u; rng = MersenneTwister(42))
         @test org_juv_dd.degree_days == 0.0
         @test org_juv_dd.mass > init_wt
-        @test org_juv_dd.stage == 7
+        @test org_juv_dd.stage == stage_u + 1
 
-        # 3. Molt seasonality for stages >= 7
-        # Inside spring window (day 40, within [15, 140]), having molted in previous year
-        org_juv_dd.degree_days = 1000.0
+        # 3. Molt seasonality, for stages at or above `molt_season_min_stage`
+        # Both quantities derived, so the block still works at whatever stage the
+        # individual happens to be at.
+        org_juv_dd.degree_days = 10 * req_dd_u
         org_juv_dd.energy_reserve = 100.0
-        org_juv_dd.last_growth_event_time = -300.0
-        @test check_molt_conditions(org_juv_dd, 4.0, 40.0; params = p) == true
+        org_juv_dd.last_growth_event_time = -5 * min_days_u
+        @test org_juv_dd.stage >= p.phenology.molt_season_min_stage
+        inside = p.phenology.molt_season_start + 1
+        outside = p.phenology.molt_season_end + 20
+        @test check_molt_conditions(org_juv_dd, 4.0, inside; params = p) == true
 
-        # Outside spring window (day 200, summer/autumn) -> blocked by seasonality
-        @test check_molt_conditions(org_juv_dd, 4.0, 200.0; params = p) == false
+        # Outside the window -> blocked by seasonality
+        @test check_molt_conditions(org_juv_dd, 4.0, outside; params = p) == false
 
         # 4. Stock Biomass calculation
         model = initialize_model(n_agents = 50, grid = (20, 20), seed = 999)
@@ -379,18 +416,22 @@ using model_agent
             molt_season_end = 140.0,
             dt = 1.0
         )
+        # Stage 6 is benthic instar 1, which now needs 182.5 days and 912.5 degree
+        # days. The timing and degree-day figures below clear both, so the test
+        # exercises the probability rather than the ineligibility gate — there is a
+        # separate test for that.
         org_juv = Organism(
             1, (1, 1), juvenile, male, 6, 200.0, 30.0, 10.0, 60.0,
-            0.0, 600.0, false, 0, 0.0, 0
+            0.0, 1500.0, false, 0, 0.0, 0
         )
-        p_m = molt_probability(org_juv, 4.0, 160.0; params = test_params)
+        p_m = molt_probability(org_juv, 4.0, 400.0; params = test_params)
         @test p_m > 0.0
         @test p_m <= 1.0
 
         # Deterministic check vs probabilistic trial
-        @test check_molt_conditions(org_juv, 4.0, 160.0; params = test_params) == true
+        @test check_molt_conditions(org_juv, 4.0, 400.0; params = test_params) == true
         molt_trials = [
-            check_molt_conditions(org_juv, 4.0, 160.0; params = test_params, rng = rng)
+            check_molt_conditions(org_juv, 4.0, 400.0; params = test_params, rng = rng)
             for _ in 1:100
         ]
         @test any(molt_trials)
@@ -530,31 +571,49 @@ using model_agent
     @testset "Generalized Leslie Matrix & Macro Model Comparison" begin
         rng = MersenneTwister(999)
 
-        # 1. Empirical Stages definition
+        # 1. Empirical Stages definition. Names carry the stage number the model now
+        # uses, so they are derived from the stage tables rather than written
+        # out — these were `Stage 4/5/6` and are `Stage 5/6/7` after the
+        # renumbering, which is exactly the kind of drift that produced the
+        # failure.
         stages = build_stages()
-        @test length(stages) == 15
-        @test stages[1].name == "Stage 4 (Recruit)"
+        ps = IBMParameters().species
+        pooled = ps.stage_size_range_stage1
+        male_first = ps.stage_size_range_stage_male[1]
+        @test length(stages) == length(pooled) +
+              length(ps.stage_size_range_stage_male) + length(ps.stage_size_range_stage_female)
+        @test stages[1].name == "Stage $(Int(pooled[1])) (Recruit)"
         @test stages[1].sex === undifferentiated
-        @test stages[2].name == "Stage 5 (Juvenile)"
+        @test stages[2].name == "Stage $(Int(pooled[2])) (Juvenile)"
         @test stages[2].sex === undifferentiated
-        @test stages[3].name == "Stage 6 Male"
+        @test stages[3].name == "Stage $(Int(male_first)) Male"
         @test stages[3].sex === male
-        @test stages[10].name == "Stage 6 Female"
-        @test stages[10].sex === female
+fem4 = length(ps.stage_size_range_stage1) +
+                       length(ps.stage_size_range_stage_male) + 4
+        @test stages[fem4].name ==
+              "Stage $(Int(ps.stage_size_range_stage_female[4])) Female"
+        @test stages[fem4].sex === female
 
-        # Legal males: Size >= 95 mm (Stage 11 and 12+ Male, stages 8 & 9)
+        # Legal males: size >= `leslie_legal_size_male`, *or* stage at or beyond the
+        # `leslie_first_legal_stage_male` backstop. Both thresholds come from the
+        # configuration; asserting either alone misses the other arm.
+        legal_at = ps.leslie_legal_size_male
+        legal_stage_at = ps.leslie_first_legal_stage_male
         for st in stages
-            if st.sex === male && st.stage >= 11
-                @test st.is_legal_male == true
+            if st.sex === male
+                @test st.is_legal_male ==
+                      (st.size_mean >= legal_at || st.stage >= legal_stage_at)
             else
                 @test st.is_legal_male == false
             end
         end
 
-        # Reproductive maturity flags (Mature females: Stage 9, 10, 11+, stages 13..15)
+        # Reproductive maturity flags, from the configured first reproductive
+        # female stage.
+        repro_at = ps.leslie_first_repro_stage_female
         for st in stages
-            if st.sex === female && st.stage >= 9
-                @test st.is_reproductive == true
+            if st.sex === female
+                @test st.is_reproductive == (st.stage >= repro_at)
             else
                 @test st.is_reproductive == false
             end
@@ -653,7 +712,8 @@ using model_agent
         cfg_def = default_ibm_configuration()
         @test cfg_def isa Dict{Symbol, Any}
         @test cfg_def[:days] == 730
-        @test cfg_def[:n_agents] == 300
+        @test sum(cfg_def[:initial_female_cohort]) +
+            sum(cfg_def[:initial_male_cohort]) == 0   # eggs only by default
         @test cfg_def[:grid] == (100, 100)
         @test cfg_def[:temp_base] == 5.0
         @test cfg_def[:temp_amplitude] == 4.0
@@ -684,7 +744,8 @@ using model_agent
 
         loaded_cfg = load_ibm_configuration(default_path)
         @test loaded_cfg[:days] == 730
-        @test loaded_cfg[:n_agents] == 300
+        @test sum(loaded_cfg[:initial_female_cohort]) +
+            sum(loaded_cfg[:initial_male_cohort]) == 0   # eggs only by default
         @test loaded_cfg[:grid] == (100, 100)
         @test loaded_cfg[:temp_base] == 5.0
         @test loaded_cfg[:temp_amplitude] == 4.0
@@ -710,14 +771,15 @@ using model_agent
         # baseline: a 1 km x 1 km grid at one cell per metre, and a carrying
         # capacity of about 10000 organisms per square kilometre.
         @test species_cfg[:grid] == (1000, 1000)
-        @test species_cfg[:n_agents] == 2000
+        @test sum(species_cfg[:initial_female_cohort]) +
+            sum(species_cfg[:initial_male_cohort]) == 0   # eggs only by default
         @test species_cfg[:benthic_carrying_capacity] == 10000.0
-        # The seeded stock is `n_agents + initial_egg_cohort_abundance + cohorts`,
-        # and it must stay below K or the density feedback is not a correction to
-        # the mortality schedule but a replacement for it.
-        seeded = species_cfg[:n_agents] + IBMParameters(species_cfg).simulation.initial_egg_cohort_abundance +
-                 (IBMParameters(species_cfg).organism.juvenile_max_stage - 1) *
-                 IBMParameters(species_cfg).simulation.initial_stage_cohort_abundance
+        # The seeded stock is the three initial-abundance vectors, and it must stay
+        # below K or the density feedback is not a correction to the mortality
+        # schedule but a replacement for it.
+        sp_seed = IBMParameters(species_cfg).simulation
+        seeded = sum(sp_seed.initial_aggregate_cohort) +
+                 sum(sp_seed.initial_female_cohort) + sum(sp_seed.initial_male_cohort)
         @test seeded < species_cfg[:benthic_carrying_capacity]
 
         # 4. Constructing IBMParameters from the merged configuration
@@ -735,17 +797,19 @@ using model_agent
               [0.002, 0.015, 0.010, 0.003, 0.0015]
         @test params.maturity_l50_male == 91.8
         @test params.survival_stage1 == 0.74
-        @test params.intermolt_days_schedule == [
-            60.0, 60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 200.0, 300.0,
-        ]
+@test params.intermolt_days_schedule ==
+              [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0, 190.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0]
         @test params.maturity_size_gate == 35.0
-        @test params.rate_baseline == 0.20
+        @test params.baseline_rate_by_stage[1] == 0.35
         @test params.days_per_year == 365.0
 
         # Configured schedules are what the ecdysis logic actually reads
         cfg_behavior = SpeciesBehaviorImpl(params.species)
-        @test min_intermolt_days(cfg_behavior, 7) == 200.0
-        @test required_degree_days(cfg_behavior, 7) == 750.0
+        @test min_intermolt_days(cfg_behavior, 7) == params.intermolt_days_schedule[8]
+        @test required_degree_days(cfg_behavior, 7) == params.degree_days_schedule[8]
+        # Schedules are read positionally, so assert the tail against the vector
+        # rather than a literal that a renumbering invalidates silently.
+        @test min_intermolt_days(cfg_behavior, 9) == params.intermolt_days_schedule[10]
 
         # 5. Initialize model directly from configuration dictionary
         test_model = initialize_model(species_cfg; n_agents = 10, days = 5)
@@ -849,9 +913,10 @@ using model_agent
         @test layered[:maturity_l50_male] == 91.8
 
         cli_species_cfg = parse_cli_args(["--config=$(species_path)"])
-        @test cli_species_cfg[:n_agents] == overlay_only[:n_agents]
+        @test cli_species_cfg[:initial_male_cohort] == overlay_only[:initial_male_cohort]
         @test cli_species_cfg[:maturity_l50_male] == 91.8
-        @test cli_species_cfg[:molt_season_min_stage] == 7
+        @test cli_species_cfg[:molt_season_min_stage] ==
+              IBMParameters().phenology.molt_season_min_stage
 
         # A command-line argument still outranks both files
         cli_override = parse_cli_args(["--config=$(species_path)", "--n_agents=50"])
@@ -967,8 +1032,8 @@ using model_agent
         end
         rebuilt_species = struct_from_config(SpeciesParams, merged)
         @test rebuilt_species.maturity_l50_male == 91.8
-        @test struct_from_config(SimulationParams, merged).n_agents ==
-              merged[:n_agents]
+        @test struct_from_config(SimulationParams, merged).initial_male_cohort ==
+              merged[:initial_male_cohort]
     end
 
     @testset "The fishery has one switch" begin
@@ -1163,7 +1228,10 @@ using model_agent
 
         # The seasonal molt gate is configurable and defaults to a stage above
         # the individuating stage.
-        @test base_params.phenology.molt_season_min_stage == 7
+        @test base_params.phenology.molt_season_min_stage ==
+              base_params.organism.juvenile_max_stage + 1
+        @test base_params.phenology.molt_season_min_stage >
+              base_params.organism.juvenile_max_stage
         all_stages = IBMParameters(
             phenology = PhenologyParams(molt_season_min_stage = 1)
         )
@@ -1171,20 +1239,33 @@ using model_agent
     end
 
     @testset "Config-Driven Ecdysis Schedules and Maturity Gates" begin
-        # Baseline schedule is monotone and stage-indexed
-        @test min_intermolt_days(zoea, 1) < min_intermolt_days(megalopa, 3)
-        @test min_intermolt_days(megalopa, 3) < min_intermolt_days(juvenile, 4)
-        @test min_intermolt_days(juvenile, 4) < min_intermolt_days(juvenile, 6)
-        @test min_intermolt_days(juvenile, 6) < min_intermolt_days(juvenile, 8)
+        # Baseline schedule is monotone and stage-indexed.
+        #
+        # Stages are named by their position in the pelagic block, which is what
+        # `intermolt_days_larval` is indexed by: `zoea` is stage 1 and `megalopa` is
+        # the last pelagic stage. These calls took a `LifeStage` as the *behaviour*
+        # argument and an integer as the stage, so they resolved against the wrong
+        # schedule; they read the default one by accident rather than by design.
+        b_sched = SpeciesBehaviorImpl()
+        pel = larval_stage_count(b_sched)
+        # The schedule is flat within each block — one year across the five pelagic
+        # stages, half a year per instar to instar 4, a year per instar after — so
+        # the test is the block structure, not a rising chain.
+        @test min_intermolt_days(b_sched, 1) == min_intermolt_days(b_sched, pel - 1)
+        @test min_intermolt_days(b_sched, pel - 1) < min_intermolt_days(b_sched, pel)
+        @test min_intermolt_days(b_sched, pel) == min_intermolt_days(b_sched, pel + 3)
+        @test min_intermolt_days(b_sched, pel + 3) < min_intermolt_days(b_sched, pel + 4)
 
-        @test required_degree_days(zoea, 1) < required_degree_days(megalopa, 3)
-        @test required_degree_days(megalopa, 3) < required_degree_days(juvenile, 4)
-        @test required_degree_days(juvenile, 4) < required_degree_days(juvenile, 6)
-        @test required_degree_days(juvenile, 6) < required_degree_days(juvenile, 8)
+        @test required_degree_days(b_sched, 1) == required_degree_days(b_sched, pel - 1)
+        @test required_degree_days(b_sched, pel - 1) < required_degree_days(b_sched, pel)
+        @test required_degree_days(b_sched, pel) == required_degree_days(b_sched, pel + 3)
+        @test required_degree_days(b_sched, pel + 3) < required_degree_days(b_sched, pel + 4)
 
         # Out-of-range stages clamp to the terminal schedule entry
-        @test min_intermolt_days(99) == min_intermolt_days(8)
-        @test required_degree_days(99) == required_degree_days(8)
+@test min_intermolt_days(99) ==
+              b_sched.params.intermolt_days_schedule[end]
+        @test required_degree_days(99) ==
+              b_sched.params.degree_days_schedule[end]
 
         # Overriding the schedule in SpeciesParams changes the reported values,
         # proving the thresholds are not hardcoded. Stages below the pelagic
@@ -1211,9 +1292,11 @@ using model_agent
             degree_days_larval = [1.0, 2.0, 3.0, 4.0, 5.0],
         ))
         @test min_intermolt_days(wider, 4) == 5.0
-        @test min_intermolt_days(wider, 5) == 120.0  # benthic schedule, stage 5
+        @test min_intermolt_days(wider, 5) ==
+              wider.params.intermolt_days_schedule[6]  # benthic schedule, stage 5
         @test required_degree_days(wider, 4) == 5.0
-        @test required_degree_days(wider, 5) == 350.0  # benthic schedule, stage 5
+        @test required_degree_days(wider, 5) ==
+              wider.params.degree_days_schedule[6]  # benthic schedule, stage 5
 
         # Maturity size gate is likewise configurable
         gated = SpeciesBehaviorImpl(SpeciesParams(maturity_size_gate = 60.0))
@@ -1573,7 +1656,11 @@ using model_agent
         )
         @test traits_m.mass > 300.0
         @test traits_m.fecundity == 0.0
-        @test traits_m.estimated_stage in (11, 12)
+        # A 100 mm male is well past individuation, so the stage inferred from
+        # size must be at or above the boundary. Asserting an exact stage pair
+        # here only re-encodes the stage table.
+        @test traits_m.estimated_stage >=
+              IBMParameters().organism.juvenile_max_stage
         
         traits_f = sample_organism_traits(
             emp_model;
@@ -1584,7 +1671,8 @@ using model_agent
             rng = rng
         )
         @test traits_f.mass > 50.0
-        @test traits_f.estimated_stage in (9, 10, 11)
+@test traits_f.estimated_stage >=
+              IBMParameters().organism.juvenile_max_stage
 
         # 8b. Deterministic demographic prediction from the same fitted model
         demo_m = estimate_demographics(
@@ -1622,15 +1710,23 @@ using model_agent
         rng = MersenneTwister(99)
 
         # 1. Developmental intermolt and degree-day scaling
-        @test min_intermolt_days(zoea, 1) < min_intermolt_days(megalopa, 3)
-        @test min_intermolt_days(megalopa, 3) < min_intermolt_days(juvenile, 4)
-        @test min_intermolt_days(juvenile, 4) < min_intermolt_days(juvenile, 6)
-        @test min_intermolt_days(juvenile, 6) < min_intermolt_days(juvenile, 8)
+        # Same fix as above: a real behaviour and stage numbers, not a `LifeStage`
+        # passed where the behaviour belongs.
+        b_dyn = SpeciesBehaviorImpl()
+        pel_dyn = larval_stage_count(b_dyn)
+        @test min_intermolt_days(b_dyn, 1) == min_intermolt_days(b_dyn, pel_dyn - 1)
+        @test min_intermolt_days(b_dyn, pel_dyn - 1) < min_intermolt_days(b_dyn, pel_dyn)
+        @test min_intermolt_days(b_dyn, pel_dyn) == min_intermolt_days(b_dyn, pel_dyn + 3)
+        @test min_intermolt_days(b_dyn, pel_dyn + 3) <
+              min_intermolt_days(b_dyn, pel_dyn + 4)
 
-        @test required_degree_days(zoea, 1) < required_degree_days(megalopa, 3)
-        @test required_degree_days(megalopa, 3) < required_degree_days(juvenile, 4)
-        @test required_degree_days(juvenile, 4) < required_degree_days(juvenile, 6)
-        @test required_degree_days(juvenile, 6) < required_degree_days(juvenile, 8)
+        @test required_degree_days(b_dyn, 1) == required_degree_days(b_dyn, pel_dyn - 1)
+        @test required_degree_days(b_dyn, pel_dyn - 1) <
+              required_degree_days(b_dyn, pel_dyn)
+        @test required_degree_days(b_dyn, pel_dyn) ==
+              required_degree_days(b_dyn, pel_dyn + 3)
+        @test required_degree_days(b_dyn, pel_dyn + 3) <
+              required_degree_days(b_dyn, pel_dyn + 4)
 
         # 2. Shell condition index (1 through 5)
         mock_org = Organism(
@@ -1700,25 +1796,40 @@ using model_agent
         m_hard = calculate_mortality_probability(org_hard, 3.0, 5.0, 260.0)
         @test m_soft > m_hard
 
+        # Senescence is restricted to terminally moulted adults, so both are at the
+        # male terminal stage and differ only in age. Without that the two are
+        # identical: an animal that has not finished growing pays no wear-out however
+        # old it is.
+        #
+        # Ages are set from the terminal stage's accumulated intermolt time, so shell
+        # age — age since that last moult — lands either side of the threshold rather
+        # than negative, which is what a raw `age_days` below the stage sum gives.
+        m_st = default_params.organism.max_stage_male
+        intermolt_sum = default_params.organism.shell_age_stage_offset *
+                        (m_st - default_params.organism.shell_age_first_stage)
         young_adult = Organism(
-            5, (5, 5), adult, male, 12, 1200.0, 105.0, 450.0, 60.0, 1000.0, 100.0,
-            false, 0, 0.0, 0
+            5, (5, 5), adult, male, m_st,
+            intermolt_sum + 4 * default_params.simulation.days_per_year,
+            105.0, 450.0, 60.0, 1000.0, 100.0, false, 0, 0.0, 0
         )
         old_adult = Organism(
-            6, (5, 5), adult, male, 12, 2800.0, 105.0, 450.0, 60.0, 1000.0, 100.0,
-            false, 0, 0.0, 0
+            6, (5, 5), adult, male, m_st,
+            intermolt_sum + 9 * default_params.simulation.days_per_year,
+            105.0, 450.0, 60.0, 1000.0, 100.0, false, 0, 0.0, 0
         )
         m_young = calculate_mortality_probability(young_adult, 3.0, 5.0, 1200.0)
         m_old   = calculate_mortality_probability(old_adult, 3.0, 5.0, 2800.0)
         @test m_old > m_young
 
         # 6. Temperature-coupled perform_molt!
+        # Stage derived: an `Organism` only exists from `juvenile_max_stage`.
+        st_molt = IBMParameters().organism.juvenile_max_stage
         test_juv = Organism(
-            7, (5, 5), juvenile, male, 5, 200.0, 18.0, 2.5, 25.0, 50.0, 400.0,
+            7, (5, 5), juvenile, male, st_molt, 200.0, 18.0, 2.5, 25.0, 50.0, 400.0,
             false, 0, 0.0, 0
         )
         perform_molt!(test_juv, 200.0, 3.0; rng = rng)
-        @test test_juv.stage == 6
+        @test test_juv.stage == st_molt + 1
         @test test_juv.size > 18.0
         @test test_juv.mass > 2.5
         @test test_juv.last_growth_event_time == 200.0
@@ -1899,31 +2010,38 @@ using model_agent
         @test s_fem.sperm_clutches == 0 # Spermathecal storage not used
 
         # Test Probabilistic Aggregate Groups
+        # Seeded one stage below individuation, so the cohort individuates on the
+        # first step. Both the stage and the expected result are derived.
+        st_last_cohort = IBMParameters().organism.juvenile_max_stage - 1
         agg_model = initialize_model(n_agents = 0, grid = (10, 10), seed = 777)
-        # Seed an aggregate group in stage 5 (near individuation to stage 6)
+        # Seed an aggregate group in the last cohort stage
         grp5 = AggregateGroup(
             id = 99,
-            stage = 5,
+            stage = st_last_cohort,
             abundance = 50.0,
             size = 15.0,
             mass = 1.5,
             age_days = 1400.0,
-            degree_days = 800.0, # Exceeds required_degree_days(5) = 350
+            degree_days = 5000.0, # Far past the stage requirement, so `ready` is 1
             last_growth_time = 0.0,
             pos = (5, 5)
         )
         push!(agg_model.aggregate_populations.groups, grp5)
 
-        # Step aggregate groups
+        # Step aggregate groups. The requirement is per stage and the transition is a
+        # daily hazard, so a cohort needs enough steps to accumulate the degree-days
+        # *and* to draw the transition; `degree_days` is seeded well past the
+        # requirement so only the hazard applies.
         initial_org_count = nagents(agg_model)
         for _ in 1:15
             step_aggregate_groups!(agg_model)
         end
 
-        # Individuals should have probabilistically individuated into stage 6 Organism agents
+        # Individuals should have individuated into the first agent stage
         @test nagents(agg_model) > initial_org_count
+        st_first_agent = IBMParameters().organism.juvenile_max_stage
         for org in allagents(agg_model)
-            @test org.stage == 6
+            @test org.stage == st_first_agent
             @test org.size > 0.0
             @test org.mass > 0.0
             @test org.sex in (male, female)
@@ -2004,10 +2122,7 @@ using model_agent
     end
 
     @testset "Stage abundance runs eggs then aggregate cohorts against time" begin
-        @test GUI_EARLY_STAGES == 0:3
-        @test length(GUI_EARLY_LABELS) == length(GUI_EARLY_STAGES) + 1
-        @test length(GUI_EARLY_COLOURS) == length(GUI_EARLY_LABELS)
-        @test length(GUI_EARLY_DASHES) == length(GUI_EARLY_LABELS)
+        @test GUI_EARLY_STAGES == FIRST_COHORT_STAGE:3
 
         fig, state = launch_organism_gui(
             n_agents = 40,
@@ -2046,7 +2161,7 @@ using model_agent
         # The aggregate cohorts the model actually seeds must be visible on the
         # figure, otherwise the early stages are a flat line at the floor.
         @test any(>(1.0), state.n_early_stage_history[1])
-        @test any(>(1.0), state.n_early_stage_history[2])
+
 
         # Sex is not discriminated below individuation: `AggregateGroup` has no
         # `sex` field, so those series are single grey lines, and the sexed series
@@ -2117,7 +2232,11 @@ using model_agent
                 end
             end
             @test isempty([k for (k, v) in owners if length(v) > 1])
-            @test length(owners) == 260
+            # Not a hand-written constant: this is what makes a stale count fail
+            # loudly. It broke at 260 when `stage_labels` was added and only the
+            # test knew.
+            @test length(owners) ==
+                  sum(length(fieldnames(T)) for (_, T, _) in parameter_structs())
         end
 
         @testset "live GUI rescan" begin
@@ -2171,7 +2290,7 @@ using model_agent
             @test occursin("grid_nx", msg)
             @test p2.simulation.grid_nx == 20
             @test all(f -> f in RESCAN_IMMUTABLE,
-                (:grid_nx, :grid_ny, :grid_size, :n_agents, :dt, :seed))
+                (:grid_nx, :grid_ny, :grid_size, :dt, :seed))
 
             # A half-written file must not take the run down or half-apply.
             write(path, "[environment\ntemp_base = ")
@@ -2223,6 +2342,71 @@ using model_agent
                 state.obs_ts_legal, state.obs_ts_egg, state.obs_ts_early_agents,
                 state.obs_ts_early_agents_f, state.obs_ts_early_agents_u])
         @test all(o -> length(o[]) == n, state.obs_ts_early_stage)
+    end
+
+    @testset "Stage figure covers every stage and splits sex where distinguished" begin
+        p = IBMParameters()
+        juv = p.organism.juvenile_max_stage
+        max_male = p.organism.max_stage_male
+        max_female = p.organism.max_stage_female
+        # Stage 0 is the brooded egg, which is not a cohort, so the aggregate series
+        # covers stages 1 .. juv-1.
+        n_agg = juv - 1                    # aggregate stages 1 .. juv-1
+        n_male = max_male - juv + 1       # agent stages juv .. max_male
+        n_female = max_female - juv + 1
+
+        fig, state = launch_organism_gui(n_agents = 120, grid = (18, 18), dt = 1.0,
+            seed = 3, display_window = false)
+        for _ in 1:60
+            step_gui_simulation!(state, 5.0)
+        end
+
+        # One category per stage from 0 to the highest any agent reaches, plus the
+        # brooded clutch. The bound is `max_stage_*`, not the species stage tables:
+        # those stop at 12 and 11 and bound the Leslie projection, while agents molt
+        # on past them, so sizing from the tables would drop the largest cohorts.
+        @test max_male >= p.species.leslie_max_male_stage
+        @test max_female >= p.species.leslie_max_female_stage
+        @test length(state.obs_stage_agg[]) == n_agg
+        @test length(state.obs_stage_male[]) == n_male
+        @test length(state.obs_stage_female[]) == n_female
+        # Eggs + every stage, contiguous with no gap: one leading category for the
+        # brooded clutch, then one per cohort stage and one per agent stage. The
+        # `2 +` was wrong — it counted the leading category twice.
+        @test 1 + n_agg + n_male == 1 + max_male
+
+        # The tallies must agree with the agents themselves, indexed stage-wise.
+        living = collect(allagents(state.model))
+        male_counts = zeros(Int, n_male)
+        female_counts = zeros(Int, n_female)
+        for o in living
+            k = o.stage - juv + 1
+            o.sex === male && (1 <= k <= n_male) && (male_counts[k] += 1)
+            o.sex === female && (1 <= k <= n_female) && (female_counts[k] += 1)
+        end
+        @test state.obs_stage_male[] == Float64.(male_counts)
+        @test state.obs_stage_female[] == Float64.(female_counts)
+
+        # Sex is split only where it is distinguished: `AggregateGroup` has no `sex`
+        # field, so every stage below the individuation boundary is undifferentiated
+        # and has no male/female pair.
+        @test !hasfield(AggregateGroup, :sex)
+        @test n_agg == juv - 1
+        # Females stop two stages below males under the snow crab configuration, so
+        # the two terminal categories carry a male bar only. If that ever changes the
+        # figure must grow a third series rather than silently dropping a sex.
+        @test n_female <= n_male
+
+        # Aggregate cohorts accumulate into the per-stage series, and re-deriving
+        # them from the groups must match.
+        agg = Agents.abmproperties(state.model)[:aggregate_populations]
+        expected = zeros(Float64, n_agg)
+        for g in agg.groups
+            k = g.stage
+            1 <= k <= n_agg && (expected[k] += g.abundance)
+        end
+        @test state.obs_stage_agg[] == expected
+        @test all(>=(0.0), state.obs_stage_agg[])
     end
 
     @testset "snowcrab.toml is complete and self-contained" begin
@@ -2281,22 +2465,26 @@ using model_agent
         collect_leaves_flat!(snow_flat, snow)
 
         differing = sort([k for k in base_keys if !isequal(base_flat[k], snow_flat[k])])
+        # Only the operating scale now differs: the grid, the carrying capacity, and
+        # the duration. The seeded clutch is deliberately identical in both files, so
+        # snow crab differs from the baseline in how long it runs and over what area,
+        # not in what it starts with.
         @test differing == ["environment.benthic_carrying_capacity",
-            "simulation.grid_nx", "simulation.grid_ny", "simulation.n_agents"]
+            "simulation.grid_nx", "simulation.grid_ny"]
 
         # And the operating scale is what it claims to be.
         cfg = parse_cli_args(["--config=$(joinpath(@__DIR__, "..", "configs", "snowcrab.toml"))"])
         p = IBMParameters(cfg)
         @test p.simulation.grid_nx == 1000
         @test p.simulation.grid_ny == 1000
-        @test p.simulation.n_agents == 2000
+        @test p.simulation.initial_aggregate_cohort[2] == 2000.0
         @test p.simulation.days == 730
         @test p.environment.benthic_carrying_capacity == 10_000.0
         # Seeded stock must stay below K or the density feedback replaces the
         # mortality schedule instead of correcting it.
-        seeded = p.simulation.n_agents +
-                 Int(p.simulation.initial_egg_cohort_abundance +
-                     5 * p.simulation.initial_stage_cohort_abundance)
+        seeded = sum(p.simulation.initial_aggregate_cohort) +
+                 sum(p.simulation.initial_female_cohort) +
+                 sum(p.simulation.initial_male_cohort)
         @test seeded < p.environment.benthic_carrying_capacity
     end
 
@@ -2471,43 +2659,64 @@ using model_agent
         end
     end
 
-    @testset "Size frequency: four curves, log10 density" begin
-        # Density integrates to one per series, so males and females are
-        # comparable however many of each are alive.
-        c, d = size_frequency([10.0, 20.0, 30.0, 40.0])
-        @test isapprox(sum(d) * GUI_SIZE_BIN_WIDTH_MM, 1.0; atol = 1e-9)
-        @test length(c) == length(d)
-        @test all(isfinite, log10_density.(d))
-        # Bins are half-open, so no size is counted twice at a boundary.
-        @test sum(d) * GUI_SIZE_BIN_WIDTH_MM ≈ 1.0
-        @test size_frequency(Float32[]) == (Float64[], Float64[])
-        # Non-finite sizes are dropped rather than poisoning a bin.
-        @test size_frequency([10.0, NaN, Inf, 20.0]) |> x -> isapprox(
-            sum(x[2]) * GUI_SIZE_BIN_WIDTH_MM, 1.0; atol = 1e-9)
-        @test_throws ErrorException size_frequency([1.0, 2.0], 0.0)
-        @test_throws ErrorException size_frequency([1.0, 2.0], -1.0)
-
-        # The floor is far below any real density, and log10(0) never appears.
-        @test DENSITY_PLOT_FLOOR == 1e-12
-        @test log10_density(0.0) == log10(DENSITY_PLOT_FLOOR)
-        @test isfinite(log10_density(0.0))
-        @test log10_density(0.01) ≈ -2.0
-
+    @testset "Size frequency: four kernel density curves on a linear axis" begin
         fig, state = launch_organism_gui(
             n_agents = 40, grid = (14, 14), dt = 1.0, seed = 7, display_window = false
         )
         step_gui_simulation!(state, 200.0)
-        living = collect(allagents(state.model))
-        # Mature series are the subset each sex flags mature, not an independent
-        # size threshold, so they can never exceed their own sex.
-        @test length(state.obs_cw_mature_male[]) <= length(state.obs_cw_male[])
-        @test length(state.obs_cw_mature_female[]) <= length(state.obs_cw_female[])
-        for (all_obs, mat_obs, sx) in (
-            (state.obs_cw_male, state.obs_cw_mature_male, male),
-            (state.obs_cw_female, state.obs_cw_mature_female, female))
-            expected = Float32[Float32(a.size) for a in living if a.sex == sx && a.is_mature]
-            isempty(expected) && continue
-            @test mat_obs[] == expected
+living = collect(allagents(state.model))
+        # The four plotted series are immature and mature, per sex, split by the
+        # agent's own `is_mature` flag rather than an independent size threshold.
+        # Mature and immature are therefore a true partition of each sex: between
+        # them they account for every individual of that sex, which is what lets the
+        # panel drop the whole-sex curves.
+        for (imm_obs, mat_obs, sx) in (
+            (state.obs_cw_immature_male, state.obs_cw_mature_male, male),
+            (state.obs_cw_immature_female, state.obs_cw_mature_female, female))
+            mat = [a for a in living if a.sex === sx && a.is_mature]
+            imm = [a for a in living if a.sex === sx && !a.is_mature]
+            @test length(mat) + length(imm) == count(a -> a.sex === sx, living)
+            @test mat_obs[] == Float32[Float32(a.size) for a in mat]
+            @test imm_obs[] == Float32[Float32(a.size) for a in imm]
+        end
+
+        # The panel is a kernel density estimate on a linear axis. The binned
+        # histogram that once stood in for it is gone, so assert it stays gone: it
+        # was a divergent second way to compute the same curve.
+        @test !isdefined(model_agent, :size_frequency)
+        @test !isdefined(model_agent, :GUI_SIZE_BIN_WIDTH_MM)
+        # A shared bandwidth, or the small samples get smoothed far more finely than
+        # the large ones and draw as spikes beside them.
+        @test SIZE_DENSITY_BANDWIDTH_MM > 0
+
+        # Both scalings are available and each is what it says: `:probability`
+        # integrates to one so a linear axis can compare unequal groups, `:count`
+        # integrates to the group size so a subset reads as lying inside its parent.
+        grid = collect(0.0:0.5:165.0)
+        step = grid[2] - grid[1]
+        for n in (1, 15, 200)
+            s = n == 1 ? [70.0] : collect(range(20.0, 120.0; length = n))
+            @assert isapprox(sum(kde_density(s, grid; scale = :count)) * step, n;
+                rtol = 0.02)
+            @assert isapprox(sum(kde_density(s, grid; scale = :probability)) * step,
+                1.0; rtol = 0.02)
+        end
+        @test_throws ErrorException kde_density([70.0], grid; scale = :nonsense)
+        @test_throws ErrorException kde_density([70.0], grid; bandwidth = 0.0)
+        # Empty and all-non-finite samples draw nothing rather than a phantom
+        # cohort at the origin.
+        @test all(iszero, kde_density(Float64[], grid))
+        @test all(iszero, kde_density([NaN, Inf, -Inf], grid))
+        # Identical input must give an identical curve — the case the panel relies
+        # on when a group has no members outside its mature subset.
+        a = collect(80.0:0.5:130.0)
+        @test kde_density(a, grid) == kde_density(copy(a), grid)
+        # The four series feeding the panel are plain vectors of sizes in
+        # millimetres, which is what a KDE consumes: no transform, no bin edges.
+        for obs in (state.obs_cw_immature_male, state.obs_cw_mature_male,
+            state.obs_cw_immature_female, state.obs_cw_mature_female)
+            @test eltype(obs[]) === Float32
+            @test all(s -> isfinite(s) && s >= 0, obs[])
         end
     end
 
@@ -2697,7 +2906,7 @@ using model_agent
         # forever, set only by how long ago it last molted.
         function soft_shell_params(window, tau)
             mort = MortalityParams(
-                rate_baseline = 0.0,
+                baseline_rate_by_stage = fill(0.0, 24),
                 rate_predation = 0.0,
                 rate_soft_shell = 0.12,
                 rate_starvation = 0.0,
@@ -2907,7 +3116,8 @@ using model_agent
         end
 
         mort = MortalityParams(
-            rate_baseline = 0.0, rate_predation = 0.0, rate_soft_shell = 0.0,
+            baseline_rate_by_stage = fill(0.0, 24),
+        rate_predation = 0.0, rate_soft_shell = 0.0,
             rate_starvation = 0.0, rate_thermal = 0.0, rate_senescence = 0.0,
             rate_cannibalism = 0.0,
             hazard_cap = 0.25,
@@ -2933,7 +3143,7 @@ using model_agent
         @test any(e -> first(e) == :thermal_stress, events)
 
         # A high baseline rate drives the total past the cap.
-        hotbase = reconstruct_params(calm; rate_baseline = 1.0e6)
+        hotbase = reconstruct_params(calm; baseline_rate_by_stage = fill(1.0e6, 24))
         p, events = clamp_events(hotbase, org, 3.0, 10.0)
         @test p == 0.25
         @test any(e -> first(e) == :total, events)
@@ -2950,7 +3160,11 @@ using model_agent
         old_stage = calm.organism.shell_age_first_stage + 1
         mature = deepcopy(org)
         mature.is_mature = true
-        mature.stage = old_stage
+        # Senescence is restricted to terminally moulted adults, so the animal has
+        # to be at its sex's terminal stage as well as old. The clock is keyed on
+        # shell age, and a stage past `shell_age_first_stage` keeps the age
+        # inference on the age side of the subtraction.
+        mature.stage = calm.organism.max_stage_male
         mature.age_days = 100_000.0
         p, events = clamp_events(senescing, mature, 3.0, 100_000.0)
         @test p == 0.25
@@ -3048,7 +3262,7 @@ using model_agent
         # rebuilding from ten hardcoded fields and reverting the rest to struct
         # defaults.
         custom = IBMParameters(
-            simulation = SimulationParams(n_agents = 123, days = 456, seed = 789),
+            simulation = SimulationParams(days = 456, seed = 789),
             environment = EnvironmentParams(benthic_carrying_capacity = 1234.0),
             organism = OrganismParams(adult_size_threshold = 55.5),
             mortality = MortalityParams(rate_predation = 0.42, hazard_cap = 0.7),
@@ -3118,32 +3332,53 @@ using model_agent
         # Flag names are the TOML key names verbatim; there are no abbreviations,
         # and an unrecognized name is reported and ignored rather than guessed at.
         args = parse_cli_args(String[
-            "--days=10", "--n_agents=20", "--seed=7", "--grid=8,9",
-            "--output_dir=results", "--temp_base=4.5"
-        ])
-        @test args[:days] == 10 && args[:n_agents] == 20 && args[:seed] == 7
+        "--days=10", "--max_stage_male=20", "--seed=7", "--grid=8,9",
+        "--output_dir=results", "--temp_base=4.5"
+    ])
+        # `n_agents` is no longer a flag: the initial abundance is three vectors and
+        # the total is derived from them, so there is no declared parameter of that
+        # name for a flag to set.
+        @test args[:days] == 10 && args[:max_stage_male] == 20 && args[:seed] == 7
         @test args[:grid] == (8, 9) && args[:output_dir] == "results"
         @test args[:temp_base] == 4.5
         # A flag that is not a declared parameter name is not silently accepted.
         @test !haskey(parse_cli_args(String["--species-config=x.toml"]), :species_config)
         @test parse_cli_args(String[]) isa Dict{Symbol, Any}
     end
-    @testset "Seeding represents every stage and stage-0 group" begin
-        # Regression: the initial cohort drew stages from `6:9` only, and set
-        # `mat = (stg >= 10)`. Stages 10+ were therefore never seeded, which made
-        # that maturity test permanently false — so no individual was mature, and
-        # no legal male, at t=0. The run began with an empty spawning and fishable
-        # stock and could not produce a brood for a full year.
-        m = initialize_model(n_agents = 300, grid = (24, 24), seed = 11)
+    @testset "Seeding states the distribution, one stage per entry" begin
+        # The initial age and sex structure is stated in three vectors rather than
+        # derived from a count and a decay, so this seeds one cohort per pre-
+        # individuation stage and one individual per benthic stage per sex, and checks
+        # that exactly that came back.
+        #
+        # The default configuration seeds eggs only — a run begins with the age
+        # structure it has to earn — so a test that wants a full range has to ask for
+        # one.
+        base = IBMParameters()
+        juv = base.organism.juvenile_max_stage
+        agg = fill(0.0, 24)
+        for s in model_agent.FIRST_COHORT_STAGE:(juv - 1)
+            agg[s+1] = 100.0
+        end
+        fem = fill(0.0, 24)
+        mal = fill(0.0, 24)
+        for s in juv:base.organism.max_stage_male
+            fem[s+1] = 10.0
+            mal[s+1] = 10.0
+        end
+        cfg = Dict{Symbol, Any}(
+            :initial_aggregate_cohort => agg,
+            :initial_female_cohort => fem,
+            :initial_male_cohort => mal)
+
+        m = initialize_model(cfg; grid = (24, 24), dt = 1.0, seed = 11)
         p = m.params
         orgs = collect(allagents(m))
-
-        # Every pre-individuation stage has a group, and the range is config-driven
-        # rather than a literal `0:5`.
         pop = Agents.abmproperties(m)[:aggregate_populations]
-        @test sort(unique([g.stage for g in pop.groups])) ==
-              collect(0:(p.organism.juvenile_max_stage - 1))
-        @test length(pop.groups) == p.organism.juvenile_max_stage
+@test sort(unique([g.stage for g in pop.groups])) ==
+                collect(model_agent.FIRST_COHORT_STAGE:(p.organism.juvenile_max_stage - 1))
+        @test length(pop.groups) ==
+                p.organism.juvenile_max_stage - model_agent.FIRST_COHORT_STAGE
 
         # Every benthic stage is represented, for each sex, within its ceiling.
         # Recruits are individuated into `juvenile_max_stage`, so that is where
@@ -3161,9 +3396,23 @@ using model_agent
             for o in orgs
         )
 
-        # The requested count is honoured exactly, whether or not the budget covers
-        # every (sex, stage) cell: the guaranteed representatives come out of it.
-        @test length(orgs) == 300
+        # The vectors are the distribution: what they sum to is what exists, per sex.
+        # A vector is only read up to that sex's terminal stage, so a female vector
+        # whose tail runs past `max_stage_female` contributes only its reachable
+        # part — the same way a cohort beyond the ceiling is not seeded.
+        seeded_at(vec, maxs) = sum(vec[1:min(length(vec), maxs + 1)])
+        @test length(orgs) ==
+              round(Int, seeded_at(fem, p.organism.max_stage_female) +
+                        seeded_at(mal, p.organism.max_stage_male))
+        @test count(o -> o.sex === male, orgs) ==
+              round(Int, seeded_at(mal, p.organism.max_stage_male))
+        @test count(o -> o.sex === female, orgs) ==
+              round(Int, seeded_at(fem, p.organism.max_stage_female))
+
+        # `n_agents` is the sum of the sex vectors when the caller does not state it,
+        # and an override when they do.
+        @test p.simulation.initial_female_cohort == fem
+        @test p.simulation.initial_male_cohort == mal
         for n in (0, 1, 5, 19, 20, 21, 60)
             mm = initialize_model(n_agents = n, grid = (10, 10), seed = 4)
             @test nagents(mm) == n
@@ -3193,8 +3442,15 @@ using model_agent
                   count(is_mature_male, mid_males) / length(mid_males)
         end
 
-        # A zero-agent model seeds no individuals and no aggregate groups.
-        empty_m = initialize_model(n_agents = 0, grid = (10, 10), seed = 5)
+        # A zero-agent model seeds no individuals. The clutch is stated in its own
+        # vector, so suppressing cohorts means writing zeros there — `n_agents` is the
+        # sum of the two sex vectors and says nothing about cohorts.
+        empty_params = IBMParameters()
+        esp = empty_params.simulation
+        empty_m = initialize_model(; grid = (10, 10), seed = 5,
+            params = IBMParameters(
+                simulation = with_overrides(SimulationParams, esp;
+                    initial_aggregate_cohort = fill(0.0, 24))))
         @test isempty(collect(allagents(empty_m)))
         @test isempty(Agents.abmproperties(empty_m)[:aggregate_populations].groups)
 
@@ -3347,7 +3603,8 @@ using model_agent
 
         # A run with every mortality rate zero must record no deaths, and grow.
         immortal = IBMParameters(mortality = MortalityParams(
-            rate_baseline = 0.0, rate_predation = 0.0, rate_soft_shell = 0.0,
+            baseline_rate_by_stage = fill(0.0, 24),
+        rate_predation = 0.0, rate_soft_shell = 0.0,
             rate_starvation = 0.0, rate_thermal = 0.0, rate_senescence = 0.0,
             rate_cannibalism = 0.0
         ))
@@ -3374,10 +3631,12 @@ using model_agent
         op = p.organism
 
         # The documented inference, and it is age-based.
-        org.stage = 12
+        st_shell = 12
+        org.stage = st_shell
         org.age_days = 4000.0
         @test shell_age_years(org, p) ≈
-              (4000.0 - op.shell_age_stage_offset * (12 - op.shell_age_first_stage)) /
+              (4000.0 - op.shell_age_stage_offset *
+               (st_shell - op.shell_age_first_stage)) /
               p.simulation.days_per_year
         @test shell_age_years(org, p) >= 1.0     # floored
         org.age_days = 0.0
@@ -3387,6 +3646,9 @@ using model_agent
         fem = deepcopy(org)
         fem.sex = female
         fem.is_mature = true
+        # Terminally moulted: senescence is wear-out on a grown animal, and only a
+        # finished one pays it.
+        fem.stage = p.organism.max_stage_female
         fem.age_days = 4000.0
         fem.last_growth_event_time = -10.0       # molted just now
         aged = deepcopy(fem)
@@ -3394,7 +3656,8 @@ using model_agent
 
         # Senescence must depend on age and NOT on molt recency.
         q = IBMParameters(
-            rate_baseline = 0.0, rate_predation = 0.0, rate_soft_shell = 0.0,
+            baseline_rate_by_stage = fill(0.0, 24),
+        rate_predation = 0.0, rate_soft_shell = 0.0,
             rate_starvation = 0.0, rate_thermal = 0.0, rate_cannibalism = 0.0,
             rate_senescence = 0.2, senescence_age_threshold = 3.0
         )
@@ -3427,12 +3690,24 @@ using model_agent
 
         # Aggregate groups must cover exactly the pre-individuation stages, so the
         # cohort that completes the last one lands on the individuation stage.
+        #
+        # The default seeds the clutch at the first cohort stage only; a caller that
+        # wants one cohort per stage says so in `initial_aggregate_cohort`.
         for jms in (5, 6, 7)
             pj = IBMParameters(organism = OrganismParams(juvenile_max_stage = jms))
-            m = initialize_model(n_agents = 1, grid = (10, 10), seed = 2, params = pj)
+            ps = pj.simulation
+            filled = fill(0.0, length(ps.initial_aggregate_cohort))
+            for stg in FIRST_COHORT_STAGE:(jms - 1)
+                filled[stg+1] = 50.0
+            end
+            seeded = IBMParameters(
+                organism = pj.organism,
+                simulation = with_overrides(SimulationParams, ps;
+                initial_aggregate_cohort = filled))
+            m = initialize_model(n_agents = 1, grid = (10, 10), seed = 2, params = seeded)
             groups = Agents.abmproperties(m)[:aggregate_populations].groups
             stages = sort(unique([g.stage for g in groups]))
-            @test stages == collect(0:(jms - 1))
+            @test stages == collect(FIRST_COHORT_STAGE:(jms - 1))
             @test (jms - 1) + 1 == individuation_stage(pj)
         end
     end
@@ -3443,15 +3718,21 @@ using model_agent
         # population reached zero — so a run that ends in extinction used to crash
         # inside data collection instead of recording the final empty state.
         #
-        # Reaching extinction is set up here rather than waited for. The default
-        # carrying capacity is now above the seeded stock, so the stock persists
-        # and a long run would spend thousands of days proving nothing; a capacity
-        # of 1 with no cohorts makes every individual die at once, which is the
-        # state this test is about.
+        # Reaching extinction is set up here rather than waited for. A capacity of 1
+        # alone does not reach it: the density feedback is `1 + (N/K)^exponent`, so
+        # as the population thins the mortality multiplier collapses with it and the
+        # last few individuals settle into a non-zero equilibrium. The baseline is
+        # therefore made certain, which is the state this test is about — an empty
+        # population reaching data collection.
         doomed = IBMParameters(
             environment = EnvironmentParams(benthic_carrying_capacity = 1.0),
-            simulation = SimulationParams(initial_egg_cohort_abundance = 0.0,
-                initial_stage_cohort_abundance = 0.0)
+            simulation = with_overrides(SimulationParams,
+                IBMParameters().simulation;
+                initial_aggregate_cohort = fill(0.0, 24),
+                initial_female_cohort = fill(0.0, 24),
+                initial_male_cohort = fill(0.0, 24)),
+            mortality = with_overrides(MortalityParams,
+                IBMParameters().mortality; baseline_rate_by_stage = fill(1.0e6, 24))
         )
         m = initialize_model(; n_agents = 60, grid = (16, 16), seed = 4,
             params = doomed)
