@@ -226,7 +226,7 @@ megalopa. Supplied by `OrganismParams.stage_labels` in the configuration file fo
 the figures; kept here for the tests and for anything that needs the names without
 a parameter object.
 """
-const PELAGIC_STAGE_LABELS = ("z1", "z2", "z3", "z4", "m")
+const PELAGIC_STAGE_LABELS = ("z1", "z2", "m")
 
 # `STAGE_UNSEXED_COLOUR` used to sit here, a grey for the stages that carry no
 # sex. Every stage from the egg to the first individuated one is now drawn as a

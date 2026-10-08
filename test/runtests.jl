@@ -752,7 +752,7 @@ fem4 = length(ps.stage_size_range_stage1) +
         @test loaded_cfg[:mating_search_radius] == 5
         @test loaded_cfg[:mating_energy_cost] == 8.0
         @test loaded_cfg[:aggregate_baseline_hazards] ==
-              [0.002, 0.015, 0.010, 0.003, 0.0015]
+              [0.002, 0.020, 0.020, 0.015, 0.0015]
 
         # Ecdysis schedules and maturity gates are config-driven
         @test loaded_cfg[:intermolt_days_schedule] isa Vector{Float64}
@@ -794,11 +794,11 @@ fem4 = length(ps.stage_size_range_stage1) +
         @test params.mating_search_radius == 5
         @test params.mating_energy_cost == 8.0
         @test params.aggregate_baseline_hazards ==
-              [0.002, 0.015, 0.010, 0.003, 0.0015]
+              [0.002, 0.020, 0.020, 0.015, 0.0015]
         @test params.maturity_l50_male == 91.8
         @test params.survival_stage1 == 0.74
 @test params.intermolt_days_schedule ==
-              [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0, 190.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0]
+              [0.0, 0.0, 0.0, 0.0, 182.5, 182.5, 182.5, 182.5, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0]
         @test params.maturity_size_gate == 35.0
         @test params.baseline_rate_by_stage[1] == 0.35
         @test params.days_per_year == 365.0
@@ -1256,7 +1256,8 @@ fem4 = length(ps.stage_size_range_stage1) +
         @test min_intermolt_days(b_sched, pel) == min_intermolt_days(b_sched, pel + 3)
         @test min_intermolt_days(b_sched, pel + 3) < min_intermolt_days(b_sched, pel + 4)
 
-        @test required_degree_days(b_sched, 1) == required_degree_days(b_sched, pel - 1)
+        @test required_degree_days(b_sched, 1) == required_degree_days(b_sched, 2)
+        @test required_degree_days(b_sched, 1) < required_degree_days(b_sched, pel - 1)
         @test required_degree_days(b_sched, pel - 1) < required_degree_days(b_sched, pel)
         @test required_degree_days(b_sched, pel) == required_degree_days(b_sched, pel + 3)
         @test required_degree_days(b_sched, pel + 3) < required_degree_days(b_sched, pel + 4)
@@ -1720,7 +1721,8 @@ fem4 = length(ps.stage_size_range_stage1) +
         @test min_intermolt_days(b_dyn, pel_dyn + 3) <
               min_intermolt_days(b_dyn, pel_dyn + 4)
 
-        @test required_degree_days(b_dyn, 1) == required_degree_days(b_dyn, pel_dyn - 1)
+        @test required_degree_days(b_dyn, 1) == required_degree_days(b_dyn, 2)
+        @test required_degree_days(b_dyn, 1) < required_degree_days(b_dyn, pel_dyn - 1)
         @test required_degree_days(b_dyn, pel_dyn - 1) <
               required_degree_days(b_dyn, pel_dyn)
         @test required_degree_days(b_dyn, pel_dyn) ==
@@ -3812,5 +3814,51 @@ living = collect(allagents(state.model))
         @test cumulative_maturity_curves(sizes, female) == cum_f
     end
 
+    @testset "Habitat Suitability and GeoData Environmental Integration" begin
+        # 1. Thermal suitability component
+        # Cold optimal temperature
+        hsi_opt = calculate_habitat_suitability(1.5, 150.0)
+        @test 0.8 < hsi_opt <= 1.0
+
+        # Half-saturation temperature (~5.0 °C)
+        hsi_half = calculate_habitat_suitability(5.0, 150.0)
+        @test isapprox(hsi_half, 0.5; atol = 0.05)
+
+        # Cutoff temperature: strictly zero at or above 10 °C
+        @test calculate_habitat_suitability(10.0, 150.0) == 0.0
+        @test calculate_habitat_suitability(12.5, 150.0) == 0.0
+
+        # Sub-zero cold tolerance
+        hsi_subzero = calculate_habitat_suitability(-1.0, 150.0)
+        @test hsi_subzero > hsi_half
+
+        # 2. Bathymetric depth suitability component
+        # Peak at 150 m
+        hsi_deep_opt = calculate_habitat_suitability(2.0, 150.0)
+        @test hsi_deep_opt > calculate_habitat_suitability(2.0, 75.0)
+        @test hsi_deep_opt > calculate_habitat_suitability(2.0, 250.0)
+
+        # Strictly 0 at shallow limit (<= 20 m) and deep limit (>= 400 m)
+        @test calculate_habitat_suitability(2.0, 20.0) == 0.0
+        @test calculate_habitat_suitability(2.0, 15.0) == 0.0
+        @test calculate_habitat_suitability(2.0, 400.0) == 0.0
+        @test calculate_habitat_suitability(2.0, 500.0) == 0.0
+
+        # 3. Environmental properties in StandardABM
+        m = initialize_model(grid = (20, 20), n_agents = 10, days = 2)
+        @test haskey(m.properties, :depth_field)
+        @test haskey(m.properties, :temperature_field)
+        @test haskey(m.properties, :habitat_quality_field)
+        @test size(m.depth_field) == (20, 20)
+        @test size(m.temperature_field) == (20, 20)
+        @test size(m.habitat_quality_field) == (20, 20)
+
+        # 4. Step simulation and verify environmental field dynamics
+        t0 = copy(m.temperature_field)
+        model_step!(m)
+        @test m.current_time == 1.0
+        @test size(m.temperature_field) == (20, 20)
+        @test all(0.0 .<= m.habitat_quality_field .<= 1.0)
+    end
 end
 

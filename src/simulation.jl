@@ -175,6 +175,7 @@ of these as a mistake, because it is otherwise copied into the configuration and
 then silently dropped when the parameter structs are built.
 """
 runtime_config_keys() = Set{Symbol}([
+    :n_agents,
     :grid,
     :output_dir,
     :save_file,
@@ -670,6 +671,103 @@ function build_habitat_quality_field(params::EnvironmentParams,
 end
 
 """
+    build_geodata_environmental_fields(
+        env_params::EnvironmentParams,
+        grid::Tuple{Int, Int};
+        depth_map::Union{Nothing, Matrix{Float64}} = nothing,
+        verbose::Bool = false
+    )
+
+Construct bathymetry, bottom temperature, and habitat suitability index (HSI)
+fields using real physical datasets accessed through `GeoData`.
+
+# Mathematical and Analytical Workflow
+1. Spatial coordinate mesh:
+   Discretizes the spatial domain `(domain_lon, domain_lat)` into regular `nx` by `ny`
+   geographic coordinates.
+2. Seabed Bathymetry:
+   If `depth_map` is not provided, queries ERDDAP/ETOPO via
+   `GeoData.fetch_erddap_bathymetry` and builds continuous interpolator
+   `GeoData.get_bathymetry_interpolator`. Depth is extracted as `max(0.0, -elevation)`.
+3. Seabed Bottom Temperature:
+   Queries climatological hydrography via `GeoData.fetch_boundary_hydrography_geodata`
+   (e.g., WOA23 or GLORYS12v1) and samples temperature at seabed depth `z`.
+4. Habitat Suitability Index (HSI):
+   Evaluates `calculate_habitat_suitability(temperature, depth)` across the grid.
+
+# Arguments
+- `env_params`: `EnvironmentParams` specifying domain bounds and data providers.
+- `grid`: Spatial grid dimensions `(nx, ny)`.
+- `depth_map`: Optional pre-computed depth matrix.
+- `verbose`: Diagnostic reporting toggle.
+
+# Returns
+NamedTuple `(depth = depth_field, temperature = temp_field, hsi = hsi_field)`.
+"""
+function build_geodata_environmental_fields(
+    env_params::EnvironmentParams,
+    grid::Tuple{Int, Int};
+    depth_map::Union{Nothing, Matrix{Float64}} = nothing,
+    verbose::Bool = false
+)
+    nx, ny = grid
+    lon_bounds = env_params.domain_lon
+    lat_bounds = env_params.domain_lat
+    length(lon_bounds) >= 2 || error("domain_lon requires [min_lon, max_lon]")
+    length(lat_bounds) >= 2 || error("domain_lat requires [min_lat, max_lat]")
+
+    lon_range = (Float64(lon_bounds[1]), Float64(lon_bounds[2]))
+    lat_range = (Float64(lat_bounds[1]), Float64(lat_bounds[2]))
+
+    lons = range(lon_range[1], lon_range[2], length = nx)
+    lats = range(lat_range[1], lat_range[2], length = ny)
+
+    # 1. Bathymetric depth field
+    depth_field = if depth_map !== nothing
+        size(depth_map) == grid || error(
+            "depth_map dimensions $(size(depth_map)) do not match grid $(grid)")
+        abs.(Float64.(copy(depth_map)))
+    else
+        bathy_ds = GeoData.fetch_erddap_bathymetry(
+            lon_range = lon_range,
+            lat_range = lat_range,
+            dataset_id = env_params.bathymetry_source == "etopo2022" ?
+                "ETOPO_2022_v1_15s" : env_params.bathymetry_source,
+            output_path = joinpath(env_params.geodata_input_dir, "bathymetry.zarr"),
+            verbose = verbose
+        )
+        bathy_itp = GeoData.get_bathymetry_interpolator(bathy_ds)
+        d_mat = zeros(Float64, nx, ny)
+        for j in 1:ny, i in 1:nx
+            d_mat[i, j] = max(0.0, -bathy_itp(lons[i], lats[j]))
+        end
+        d_mat
+    end
+
+    # 2. Bottom temperature from hydrography
+    temp_src = Symbol(env_params.temperature_source)
+    hydro = GeoData.fetch_boundary_hydrography_geodata(
+        temp_src;
+        lon_range = lon_range,
+        lat_range = lat_range,
+        input_dir = env_params.geodata_input_dir,
+        month = env_params.temperature_month,
+        verbose = verbose
+    )
+
+    temp_field = zeros(Float64, nx, ny)
+    hsi_field = zeros(Float64, nx, ny)
+    for j in 1:ny, i in 1:nx
+        z = depth_field[i, j]
+        t_bottom = hydro.T(lons[i], lats[j], -z, 0.0)
+        temp_field[i, j] = t_bottom
+        hsi_field[i, j] = calculate_habitat_suitability(t_bottom, z)
+    end
+
+    return (depth = depth_field, temperature = temp_field, hsi = hsi_field)
+end
+
+"""
     initialize_model(; grid=(50, 50), ...)
 
 Construct and populate an `Agents.StandardABM` representing the organism ecosystem.
@@ -722,10 +820,49 @@ function initialize_model(;
         Random.Xoshiro(seed)
     end
 
-    initial_temp = if temp_map === nothing
-        fill(params.environment.temp_base, grid)
+    initial_depth = if haskey(kwargs, :depth_map) && kwargs[:depth_map] !== nothing
+        copy(kwargs[:depth_map])
     else
+        nothing
+    end
+
+    initial_temp = if temp_map !== nothing
         copy(temp_map)
+    else
+        nothing
+    end
+
+    initial_habitat = if habitat_map !== nothing
+        copy(habitat_map)
+    else
+        nothing
+    end
+
+    if params.environment.use_geodata
+        geo_env = build_geodata_environmental_fields(
+            params.environment,
+            grid;
+            depth_map = initial_depth
+        )
+        if initial_depth === nothing
+            initial_depth = geo_env.depth
+        end
+        if initial_temp === nothing
+            initial_temp = geo_env.temperature
+        end
+        if initial_habitat === nothing
+            initial_habitat = geo_env.hsi
+        end
+    end
+
+    if initial_depth === nothing
+        initial_depth = fill(150.0, grid)
+    end
+    if initial_temp === nothing
+        initial_temp = fill(params.environment.temp_base, grid)
+    end
+    if initial_habitat === nothing
+        initial_habitat = build_habitat_quality_field(params.environment, grid, rng)
     end
 
     initial_food = if food_map === nothing
@@ -734,15 +871,11 @@ function initialize_model(;
         copy(food_map)
     end
 
-    initial_habitat = if habitat_map === nothing
-        build_habitat_quality_field(params.environment, grid, rng)
-    else
-        copy(habitat_map)
-    end
-
     properties = Dict{Symbol, Any}(
         :current_time => 0.0,
         :temperature_field => initial_temp,
+        :depth_field => initial_depth,
+        :baseline_temperature_field => copy(initial_temp),
         :food_availability_field => initial_food,
         :habitat_quality_field => initial_habitat,
         :dt => dt,
@@ -1202,9 +1335,14 @@ function agent_step!(org::Organism, model)
             maturity_quantile = org.trait_maturity_quantile,
             rng = abmrng(model)
         )
-        if prob_mat > 0.0
-            daily_hazard = prob_mat / params.simulation.days_per_year
-            if rand(abmrng(model)) < 1 - exp(-daily_hazard * dt)
+        if prob_mat >= 0.9999
+            org.is_mature = true
+            org.is_mating_ready = true
+        elseif prob_mat > 0.0
+            # Continuous daily hazard rate lambda such that 1 - exp(-lambda * days) = prob_mat:
+            # lambda = -log(1 - prob_mat) / days_per_year
+            daily_hazard = -log(1.0 - prob_mat) / params.simulation.days_per_year
+            if rand(abmrng(model)) < (1.0 - exp(-daily_hazard * dt))
                 org.is_mature = true
                 org.is_mating_ready = true
             end
@@ -1362,11 +1500,25 @@ function model_step!(model)
     # allocation.
     seasonal_target = t_base + t_amp * sinusoidal_factor
     temperature = model.temperature_field
-    if t_sd > 0.0
-        randn!(abmrng(model), temperature)
-        @. temperature = seasonal_target + t_sd * temperature
+    if env.use_geodata && haskey(model.properties, :baseline_temperature_field)
+        base_field = model.baseline_temperature_field
+        if t_sd > 0.0
+            randn!(abmrng(model), temperature)
+            @. temperature = base_field + t_amp * sinusoidal_factor + t_sd * temperature
+        else
+            @. temperature = base_field + t_amp * sinusoidal_factor
+        end
+        if haskey(model.properties, :depth_field)
+            @. model.habitat_quality_field = calculate_habitat_suitability(
+                temperature, model.depth_field)
+        end
     else
-        fill!(temperature, seasonal_target)
+        if t_sd > 0.0
+            randn!(abmrng(model), temperature)
+            @. temperature = seasonal_target + t_sd * temperature
+        else
+            fill!(temperature, seasonal_target)
+        end
     end
 
     # Published for the agent phase, which needs the same day of year for every

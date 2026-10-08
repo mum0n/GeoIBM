@@ -234,6 +234,8 @@ function parse_cli_args(args::AbstractVector)
             # parameters; `sync_grid_dimensions!` propagates it to both.
             parts = parse.(Int, [strip(p) for p in split(replace(v_str, r"[\(\)\[\]]" => ""), ',')])
             config[:grid] = (parts[1], parts[2])
+        elseif k_str == "n_agents"
+            config[:n_agents] = parse(Int, strip(v_str))
         else
             sym_k = Symbol(k_str)
             declared = config_field_type(sym_k)

@@ -848,7 +848,7 @@ function perform_molt!(
     org.size = min(next_size, size_cap)
     org.stage += 1
 
-    # Stage ceilings: 16 for males, 14 for females
+    # Model stage ceilings: 19 for males (instar 16), 16 for females (instar 13)
     max_stage = (org.sex === female) ? params.organism.max_stage_female : params.organism.max_stage_male
     if org.stage >= max_stage
         org.stage = max_stage
@@ -1387,3 +1387,105 @@ function merge_cohort_groups(groups::AbstractVector{AggregateGroup})
     end
     return merged
 end
+
+"""
+    calculate_habitat_suitability(
+        temperature::Real,
+        depth::Real;
+        temp_half::Real = 5.0,
+        temp_steepness::Real = 1.0,
+        depth_opt::Real = 150.0,
+        depth_sigma::Real = 50.0,
+        depth_min::Real = 20.0,
+        depth_max::Real = 400.0,
+        temp_zero_threshold::Real = 10.0
+    )::Float64
+
+Compute the Habitat Suitability Index (HSI) for snow crab (*Chionoecetes opilio*)
+as the product of thermal and bathymetric suitability components:
+
+```math
+HSI = S_T(T) \\times S_z(z)
+```
+
+# Thermal Suitability \$S_T(T)\$
+A decreasing logistic response representing cold-water preference:
+```math
+S_T(T) = \\begin{cases}
+0, & T \\ge T_{\\text{zero}} \\\\
+\\frac{1}{1 + \\exp(k_T (T - T_{50}))} \\cdot w_T(T), & T > T_{50} \\\\
+\\frac{1}{1 + \\exp(k_T (T - T_{50}))}, & T \\le T_{50}
+\\end{cases}
+```
+where \$w_T(T) = \\frac{1}{2}\\left(1 + \\cos\\left(\\pi \\frac{T - T_{50}}{T_{\\text{zero}} - T_{50}}\\right)\\right)\$
+smoothly tapers the probability to zero at \$T_{\\text{zero}}\$ (default 10.0 °C).
+
+# Bathymetric Depth Suitability \$S_z(z)\$
+A Gaussian response centered at optimal depth \$z_{\\text{opt}}\$ (150 m) with smooth
+cosine window tapers at shallow (\$z_{\\min} = 20\$ m) and deep (\$z_{\\max} = 400\$ m) limits:
+```math
+S_z(z) = \\exp\\left(-\\frac{1}{2}\\left(\\frac{z - z_{\\text{opt}}}{\\sigma_z}\\right)^2\\right) \\cdot w_z(z)
+```
+where \$w_z(z)\$ strictly vanishes outside \$(z_{\\min}, z_{\\max})\$.
+
+# Arguments
+- `temperature`: Bottom water temperature in °C.
+- `depth`: Bathymetric seabed depth in meters (positive down).
+- `temp_half`: Temperature of 50% thermal suitability (default: 5.0 °C).
+- `temp_steepness`: Logistic slope parameter (default: 1.0).
+- `depth_opt`: Optimal modal depth (default: 150.0 m).
+- `depth_sigma`: Gaussian dispersion around modal depth (default: 50.0 m).
+- `depth_min`: Shallow depth limit below which HSI is zero (default: 20.0 m).
+- `depth_max`: Deep depth limit beyond which HSI is zero (default: 400.0 m).
+- `temp_zero_threshold`: Temperature at which HSI tapers strictly to zero (default: 10.0 °C).
+
+# Returns
+Habitat suitability index as a `Float64` in `[0.0, 1.0]`.
+"""
+function calculate_habitat_suitability(
+    temperature::Real,
+    depth::Real;
+    temp_half::Real = 5.0,
+    temp_steepness::Real = 1.0,
+    depth_opt::Real = 150.0,
+    depth_sigma::Real = 50.0,
+    depth_min::Real = 20.0,
+    depth_max::Real = 400.0,
+    temp_zero_threshold::Real = 10.0
+)::Float64
+    T = Float64(temperature)
+    z = abs(Float64(depth))
+
+    # Thermal suitability S_T
+    s_t = if T >= temp_zero_threshold
+        0.0
+    else
+        raw_prob = 1.0 / (1.0 + exp(temp_steepness * (T - temp_half)))
+        if T > temp_half
+            w_t = 0.5 * (1.0 + cos(π * (T - temp_half) / (temp_zero_threshold - temp_half)))
+            raw_prob * w_t
+        else
+            raw_prob
+        end
+    end
+
+    # Bathymetric depth suitability S_z
+    s_z = if z <= depth_min || z >= depth_max
+        0.0
+    else
+        g_raw = exp(-0.5 * ((z - depth_opt) / depth_sigma)^2)
+        w_z = if z < depth_opt
+            0.5 * (1.0 - cos(π * (z - depth_min) / (depth_opt - depth_min)))
+        else
+            0.5 * (1.0 + cos(π * (z - depth_opt) / (depth_max - depth_opt)))
+        end
+        g_raw * w_z
+    end
+
+    val = s_t * s_z
+    if val < 0.0 || val > 1.0
+        error("Analytical bounds violated in calculate_habitat_suitability: value $(val) outside [0.0, 1.0]")
+    end
+    return val
+end
+

@@ -18,6 +18,7 @@ using Distributions
 using CairoMakie
 using Random
 using Statistics
+using GeoData
 
 # Include submodules and components
 include("types.jl")
@@ -68,10 +69,11 @@ export NamedAggregate, total_sum
 export total_benthic_abundance, benthic_density_feedback
 export shell_condition, min_intermolt_days, required_degree_days
 export step_aggregate_groups!, perform_development!, perform_reproduction!
+export calculate_habitat_suitability
 
 # Export simulation engine
 export initialize_model, agent_step!, model_step!, run_simulation
-export build_habitat_quality_field
+export build_habitat_quality_field, build_geodata_environmental_fields
 export default_agent_observations
 export organism_disperse!, nagents, allagents, abmrng, safe_mean, safe_sum
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration

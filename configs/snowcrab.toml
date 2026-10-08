@@ -105,7 +105,15 @@ initial_degree_days_max        = 300.0
 temp_base             = 5.0        # Annual baseline temperature (deg C)
 temp_amplitude        = 4.0        # Seasonal oscillation amplitude (deg C)
 temp_noise_sd         = 0.5        # Spatial thermal stochasticity (SD)
-temp_base_degreedays  = 0.0        # Extra degree-days contributed by temperature
+temp_base_degreedays  = -1.5       # Extra degree-days contributed by temperature
+# --- GeoData Real Habitat Integration ---
+use_geodata           = false      # Query GeoData for real bathymetry and hydrography
+domain_lon            = [-65.0, -63.0] # Longitudinal bounds [min_lon, max_lon]
+domain_lat            = [43.0, 45.0]   # Latitudinal bounds [min_lat, max_lat]
+temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
+temperature_month     = 0          # Climatological month (0 = annual)
+bathymetry_source     = "etopo2022"# Bathymetric dataset (etopo2022, erddap)
+geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
 # --- Food and habitat ---
 food_max                        = 10.0    # Maximum local benthic food density
 food_replenishment_rate         = 0.1     # Daily replenishment increment per cell
@@ -169,8 +177,8 @@ settlement_size_log_sd     = 0.04   # Lognormal SD of recruit size about its coh
 # The asymptotic carapace width of each sex is declared in [species]
 # (max_size_male / max_size_female), because it is the saturating limit of the
 # stage size curve. See the stage lower bounds section there.
-max_stage_male               = 23      # Terminal developmental stage, males
-max_stage_female             = 21      # Terminal developmental stage, females
+max_stage_male               = 19      # Terminal developmental stage, males (instar 16 + 3 pelagic)
+max_stage_female             = 16      # Terminal developmental stage, females (instar 13 + 3 pelagic)
 # --- Plot names for the stages ---
 # What each stage is called on the dashboard's axes, in stage order: element 1 is
 # model stage 0. Declared here so the figures cannot drift from the file.
@@ -184,8 +192,8 @@ max_stage_female             = 21      # Terminal developmental stage, females
 # A vector, not a `[stage_labels]` table: the configuration loader flattens one
 # level of nesting and drops the section name, so a table keyed by stage would
 # arrive with the stage identity stripped.
-stage_labels = ["Egg", "z1", "z2", "z3", "z4", "m", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
+stage_labels = ["Egg", "z1", "z2", "m", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "10", "11", "12", "13", "14", "15", "16"]
 juvenile_max_stage           = 12      # Last stage before benthic life
 # Size (mm) at or above which an individual counts as past the juvenile phase for
 # allometry and for display, even if it never matured. A size test, not a
@@ -364,11 +372,11 @@ size_lb_immature_sizes       = [0.95, 1.45, 2.5]  # Lower bounds (mm)
 size_lb_immature_breakpoints = [1.5, 2.5]          # Stage split points
 size_lb_male_intercept       = 1.102422  # ln(carapace width) at the male anchor stage
 size_lb_male_decay           = 0.235833  # Convergence to max_size_male, per stage
-size_lb_male_anchor_stage    = 6.0       # Stage at which the fit is anchored
+size_lb_male_anchor_stage    = 4.0       # Stage at which the fit is anchored
 size_lb_female_intercept     = 1.930054
 size_lb_female_decay         = 0.308476
-size_lb_female_anchor_stage  = 7.0
-benthic_anchor_stage         = 7.0       # First stage with sex-specific bounds
+size_lb_female_anchor_stage  = 5.0
+benthic_anchor_stage         = 5.0       # First stage with sex-specific bounds
 # --- Fishery selectivity (logistic in size) ---
 # The 50% retention size coincides with the legal size, so the fishery and the
 # regulation are consistent by construction.
@@ -385,17 +393,15 @@ mass_alpha_female_mature   = 0.00045
 mass_beta_female_mature    = 2.92
 mass_sigma                 = 0.08  # Between-individual mass SD
 # --- Ecdysis schedules, indexed by benthic stage ---
-intermolt_days_schedule = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 182.5, 182.5, 182.5, 182.5, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0]
-degree_days_schedule   = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 912.5, 912.5, 912.5, 912.5, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0]
+intermolt_days_schedule = [0.0, 0.0, 0.0, 0.0, 182.5, 182.5, 182.5, 182.5, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0]
+degree_days_schedule   = [0.0, 0.0, 0.0, 0.0, 912.5, 912.5, 912.5, 912.5, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0]
 # --- Larval schedules, indexed by pelagic stage ---
-# egg, then zoea, then megalopa. Their length is what defines how far the pelagic
-# block reaches: stages below it develop on these numbers, and every stage from
+# egg, then zoea1, zoea2, then megalopa. Their length is what defines how far the
+# pelagic block reaches: stages below it develop on these numbers, and every stage from
 # `length(intermolt_days_larval)` upward develops on the benthic schedules above.
-# The simulation reads them through `min_intermolt_days` and
-# `required_degree_days`; an egg at zero days and zero degree-days therefore
-# hatches on a hazard rather than after 60 days and 150 degree-days.
-intermolt_days_larval = [0.0, 73.0, 73.0, 73.0, 73.0, 73.0]
-degree_days_larval    = [0.0, 365.0, 365.0, 365.0, 365.0, 365.0]
+# The simulation reads them through `min_intermolt_days` and `required_degree_days`.
+intermolt_days_larval = [0.0, 30.0, 30.0, 30.0]
+degree_days_larval    = [0.0, 65.0, 65.0, 70.0]
 
 # -----------------------------------------------------------------------------
 # [phenology] — seasonal windows for life-history events
@@ -447,7 +453,7 @@ molt_thermal_bandwidth       = 3.0     # Width of the thermal molt window
   # gave pelagic cohorts, first-instar crabs and terminal adults the same mortality
   # despite being very different animals. The decline continues with size rather
   # than stopping at the individuation boundary.
-  baseline_rate_by_stage = [0.35, 0.35, 0.35, 0.35, 0.35, 0.35, 0.15, 0.15, 0.15, 0.15, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.06]
+  baseline_rate_by_stage = [0.35, 0.35, 0.35, 0.35, 0.15, 0.15, 0.15, 0.15, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.06]
 rate_predation     = 0.05  # Predation mortality
 rate_soft_shell    = 0.12  # Predation on a freshly molted soft shell
 rate_starvation    = 0.2   # Starvation mortality
@@ -488,7 +494,7 @@ aggregate_transition_hazard     = 0.35  # Per-ecdysis death hazard
 # `stage_schedule_lookup` (a shorter list holds its last value for higher stages).
 # These cohorts predate individuation, so they carry the pelagic and early-benthic
 # mortality that the individual hazard terms above do not represent.
-aggregate_baseline_hazards      = [0.002, 0.015, 0.010, 0.003, 0.0015]
+aggregate_baseline_hazards      = [0.002, 0.020, 0.020, 0.015, 0.0015]
 # --- Guard ---
 # Every daily hazard is capped, because senescence is unbounded in age and a
 # terminal-molt individual never molts again. A clamped probability is not one

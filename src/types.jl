@@ -580,9 +580,16 @@ Base.@kwdef struct EnvironmentParams
     temp_base::Float64 = 5.0
     temp_amplitude::Float64 = 4.0
     temp_noise_sd::Float64 = 0.5
-    temp_base_degreedays::Float64 = 0.0
+    temp_base_degreedays::Float64 = -1.5
     food_max::Float64 = 10.0
     food_replenishment_rate::Float64 = 0.1
+    use_geodata::Bool = false
+    domain_lon::Vector{Float64} = [-65.0, -63.0]
+    domain_lat::Vector{Float64} = [43.0, 45.0]
+    temperature_source::String = "woa23"
+    temperature_month::Int = 0
+    bathymetry_source::String = "etopo2022"
+    geodata_input_dir::String = "inputs"
     # Density-dependent crowding. Total benthic abundance is
     # `individuated + aggregate`, and the mortality feedback is
     # `1 + (N / K)^exponent`.
@@ -670,8 +677,8 @@ Base.@kwdef struct OrganismParams
     # the animals: individuals molt on past it and their sizes keep growing along
     # the saturating lower-bound curve towards `max_size_*`, so the ceiling has to
     # sit above the table for the oldest cohorts to exist at all.
-max_stage_male::Int = 23
-max_stage_female::Int = 21
+    max_stage_male::Int = 19
+    max_stage_female::Int = 16
     # Plot name for each developmental stage, in stage order: element `i` is model
     # stage `i - 1`. Kept here so the figures, the configuration file and the code
     # cannot disagree about what a stage is called; the dashboard used to derive
@@ -683,12 +690,12 @@ max_stage_female::Int = 21
     # would strip the very stage keys this is meant to preserve.
     #
     # Entry 1 is zoea1: a cohort is created at stage 1 on hatching. The pelagic
-    # block follows the classic chionoecetid sequence — four zoeal instars and a
-    # single megalopa — so it occupies stages 1 to 5. From stage 6 on, each entry
-    # is a benthic instar number counting from one, so model stage = instar + 5.
-    stage_labels::Vector{String} = ["Egg", "z1", "z2", "z3", "z4", "m", "1", "2", "3",
-        "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17",
-        "18", "19"]
+    # block follows the snow crab sequence — two zoeal instars and a single
+    # megalopa — so it occupies stages 1 to 3. From stage 4 on, each entry is a
+    # benthic instar number counting from one, so model stage = instar + 3.
+    # Benthic instars 1 through 16 reach model stage 19 (egg + 3 pelagic + 16 benthic).
+    stage_labels::Vector{String} = ["Egg", "z1", "z2", "m", "1", "2", "3",
+        "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"]
     metabolic_rate_base::Float64 = 0.01
     intake_rate_base::Float64 = 0.05
 
@@ -733,7 +740,7 @@ max_stage_female::Int = 21
     stage_size_sample_b::Float64 = 2.5
     # Shell age is inferred as `(age_days - offset * (stage - first)) / days_per_year`.
     shell_age_stage_offset::Float64 = 180.0
-    shell_age_first_stage::Int = 6
+    shell_age_first_stage::Int = 4
     # Newmass-free shell condition index breakpoints, in days since ecdysis.
     shell_condition_days::Vector{Float64} = [30.0, 365.0, 730.0, 1277.5]
     # Wet mass and carapace size of a single egg.
@@ -834,7 +841,7 @@ Base.@kwdef struct MortalityParams
     # insulated and has no shelter; a large benthic adult is the opposite. The
     # decline continues with size rather than stopping at the boundary.
     baseline_rate_by_stage::Vector{Float64} = [
-        0.35, 0.35, 0.35, 0.35, 0.35, 0.35,
+        0.35, 0.35, 0.35, 0.35,
         0.15, 0.15, 0.15, 0.15,
         0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08,
         0.06,
@@ -894,7 +901,7 @@ Base.@kwdef struct MortalityParams
     # pelagic and early-benthic mortality that the individual hazard terms above
     # do not represent.
     aggregate_baseline_hazards::Vector{Float64} = [
-        0.002, 0.015, 0.010, 0.003, 0.0015,
+        0.002, 0.020, 0.020, 0.015, 0.0015,
     ]
 end
 
@@ -1036,11 +1043,11 @@ Base.@kwdef struct SpeciesParams
     size_lb_immature_breakpoints::Vector{Float64} = [1.5, 2.5]
     size_lb_male_intercept::Float64 = 1.102422
     size_lb_male_decay::Float64 = 0.235833
-    size_lb_male_anchor_stage::Float64 = 6.0
+    size_lb_male_anchor_stage::Float64 = 4.0
     size_lb_female_intercept::Float64 = 1.930054
     size_lb_female_decay::Float64 = 0.308476
-    size_lb_female_anchor_stage::Float64 = 7.0
-    benthic_anchor_stage::Float64 = 7.0
+    size_lb_female_anchor_stage::Float64 = 5.0
+    benthic_anchor_stage::Float64 = 5.0
 
     # Gear Selectivity
     selectivity_s50::Float64 = 95.0
@@ -1075,34 +1082,32 @@ Base.@kwdef struct SpeciesParams
     # the transition test `accumulated_degree_days >= requirement`, so a day-based
     # requirement only takes effect if that toggle is off.
     intermolt_days_schedule::Vector{Float64} = [
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    182.5, 182.5, 182.5, 182.5,
-    365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0,
-    365.0, 365.0, 365.0, 365.0,
+        0.0, 0.0, 0.0, 0.0,
+        182.5, 182.5, 182.5, 182.5,
+        365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0, 365.0,
+        365.0, 365.0, 365.0, 365.0,
     ]
     # Cumulative pre-ecdysial thermal requirement (degree-days) by stage, same
     # indexing convention as `intermolt_days_schedule`. Converted at 5 degree-days
     # per day, which is `temp_base - temp_base_degreedays` at the configured
     # temperatures; changing either rescale these in proportion.
     degree_days_schedule::Vector{Float64} = [
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    912.5, 912.5, 912.5, 912.5,
-    1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0,
-    1825.0, 1825.0, 1825.0, 1825.0, 1825.0,
+        0.0, 0.0, 0.0, 0.0,
+        912.5, 912.5, 912.5, 912.5,
+        1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0, 1825.0,
+        1825.0, 1825.0, 1825.0, 1825.0, 1825.0,
     ]
-    # Pelagic schedules, ordered as [egg, zoea1, zoea2, zoea3, zoea4, megalopa] —
-    # the classic chionoecetid sequence, four zoeal instars and a single megalopa.
+    # Pelagic schedules, ordered as [egg, zoea1, zoea2, megalopa] —
+    # two zoeal instars and a single megalopa for Chionoecetes opilio.
     # Their length is what defines how far the pelagic block reaches: stages below it
     # are developed on these numbers, and every stage from
     # `length(intermolt_days_larval)` upward uses the benthic schedules above.
     #
-    # zoea1 through the end of the megalopa is one year across five stages, so 73
-    # days each; as degree-days at 5 per day, 365 each. The egg's entry is zero: no
-    # cohort ever exists at stage 0, which is a clutch brooded by a female, and a zero
-    # there is what makes it hatch on a hazard rather than after a stage's wait.
-    # `min_intermolt_days` and `required_degree_days` read these positionally.
-    intermolt_days_larval::Vector{Float64} = [0.0, 73.0, 73.0, 73.0, 73.0, 73.0]
-    degree_days_larval::Vector{Float64} = [0.0, 365.0, 365.0, 365.0, 365.0, 365.0]
+    # Durations (~30 days each, or degree-days 65, 65, 70 DD at T0 = -1.5 °C) align
+    # with empirical larval development studies (Incze et al. 1987, Webb et al. 2007).
+    # The egg's entry is zero: no cohort ever exists at stage 0 (brooded clutch).
+    intermolt_days_larval::Vector{Float64} = [0.0, 30.0, 30.0, 30.0]
+    degree_days_larval::Vector{Float64} = [0.0, 65.0, 65.0, 70.0]
 
     # Minimum size gate (mm) below which maturity cannot be attained.
     maturity_size_gate::Float64 = 35.0
