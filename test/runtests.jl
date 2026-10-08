@@ -1722,7 +1722,7 @@ fem4 = length(ps.stage_size_range_stage1) +
               min_intermolt_days(b_dyn, pel_dyn + 4)
 
         @test required_degree_days(b_dyn, 1) == required_degree_days(b_dyn, 2)
-        @test required_degree_days(b_dyn, 1) < required_degree_days(b_dyn, pel_dyn - 1)
+        @test required_degree_days(b_dyn, 1) == required_degree_days(b_dyn, pel_dyn - 1)
         @test required_degree_days(b_dyn, pel_dyn - 1) <
               required_degree_days(b_dyn, pel_dyn)
         @test required_degree_days(b_dyn, pel_dyn) ==

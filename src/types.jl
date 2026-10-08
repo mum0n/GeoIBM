@@ -905,6 +905,12 @@ Base.@kwdef struct MortalityParams
     aggregate_baseline_hazards::Vector{Float64} = [
         0.002, 0.020, 0.020, 0.015, 0.0015,
     ]
+    # Pelagic larval over-age developmental mortality hazard (daily excess rate
+    # when larvae exceed maximum viable intermolt duration ~84 days).
+    larval_overage_hazard::Float64 = 0.05
+    # Parabolic optimal temperature for larval survival (Ouellet & Sainte-Marie 2018: 10-12°C).
+    larval_temp_opt::Float64 = 11.0
+    larval_temp_sigma::Float64 = 3.5
 end
 
 Base.@kwdef struct FisheryParams
@@ -1105,11 +1111,11 @@ Base.@kwdef struct SpeciesParams
     # are developed on these numbers, and every stage from
     # `length(intermolt_days_larval)` upward uses the benthic schedules above.
     #
-    # Durations (~30 days each, or degree-days 65, 65, 70 DD at T0 = -1.5 °C) align
-    # with empirical larval development studies (Incze et al. 1987, Webb et al. 2007).
+    # Durations (36-42 days minimum, degree-days 270 DD at T0 = -1.5 °C) align
+    # with empirical larval development studies (Ouellet & Sainte-Marie 2018, Incze et al. 1987).
     # The egg's entry is zero: no cohort ever exists at stage 0 (brooded clutch).
-    intermolt_days_larval::Vector{Float64} = [0.0, 30.0, 30.0, 30.0]
-    degree_days_larval::Vector{Float64} = [0.0, 65.0, 65.0, 70.0]
+    intermolt_days_larval::Vector{Float64} = [0.0, 36.0, 36.0, 42.0]
+    degree_days_larval::Vector{Float64} = [0.0, 270.0, 270.0, 270.0]
 
     # Minimum size gate (mm) below which maturity cannot be attained.
     maturity_size_gate::Float64 = 35.0

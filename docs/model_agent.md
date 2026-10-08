@@ -183,7 +183,24 @@ $$Z_{\text{daily}} = \left( Z_{\text{base}} \cdot \mu_{\text{stage}} \right) + Z
 4. **Thermal Stress**: For $T > T_{\text{crit}}$, $Z_{\text{thermal}} = \frac{0.05}{365} (T - T_{\text{crit}})^{1.5}$.
 5. **Adult Senescence**: For shell age $\tau > \tau_{\text{thresh}}$, $Z_{\text{senescence}} = \frac{0.08}{365} \exp(0.80 (\tau - \tau_{\text{thresh}}))$.
 
+### 3.6 Pelagic Larval Ontogeny, Thermal Viability, and Developmental Gates
+
+Pre-recruit cohorts develop through discrete pelagic instars (egg, Zoea I, Zoea II, and Megalopa) before benthic metamorphosis and settlement (Instar 1 juvenile). In accordance with empirical rearing and southern Gulf of St. Lawrence field observations (Ouellet & Sainte-Marie 2018):
+
+1. **Thermal Degree-Day Accumulation**:
+   $$\Delta \text{DD}_t = \max(0.0, T_t - T_0) \Delta t, \quad T_0 = -1.5^\circ\text{C}$$
+   Zoea I, Zoea II, and Megalopa each require $\approx 270\text{ DD}$ (empirical range $225\text{--}350\text{ DD}$, typically $260\text{--}280\text{ DD}$ at $2.8\text{--}7.8^\circ\text{C}$), with minimum intermolt durations $\Delta t_{\min} = [0, 36, 36, 42]\text{ days}$, bringing cumulative pelagic development to $\sim 800\text{ DD}$.
+
+2. **Parabolic Thermal Survival**:
+   Pelagic larval survival is maximal at $10\text{--}12^\circ\text{C}$ with symmetric concave-down thermal viability away from optimum $T_{\text{opt}} = 11.0^\circ\text{C}$ ($\sigma_T = 3.5^\circ\text{C}$):
+   $$h_{\text{temp}}(T) = \exp\left( \frac{1}{2} \left( \frac{T - T_{\text{opt}}}{\sigma_T} \right)^2 \right)$$
+
+3. **Over-Age Developmental Hazard Gate**:
+   Larvae that exceed maximum viable stage duration without molting experience an escalating attrition hazard:
+   $$Z_{\text{overage}} = \begin{cases} 0.05 \cdot \frac{t_{\text{stage}} - 84.0}{10.0}, & \text{if } t_{\text{stage}} > 84.0\text{ days} \\ 0.0, & \text{otherwise} \end{cases}$$
+
 ---
+
 
 ## 4. Operating Scale and Performance
 

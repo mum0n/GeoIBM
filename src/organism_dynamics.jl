@@ -1151,7 +1151,8 @@ function step_aggregate_groups!(
         # Pelagic stages (egg, zoea 1, zoea 2, megalopa) occupy the upper water column;
         # benthic juveniles settle to the seabed and experience bottom temperature.
         is_pelagic = grp.stage < larval_stage_count(behavior)
-        temp_field = (is_pelagic && haskey(model.properties, :surface_temperature_field)) ?
+        props = abmproperties(model)
+        temp_field = (is_pelagic && haskey(props, :surface_temperature_field)) ?
                      model.surface_temperature_field : model.temperature_field
         temp = temp_field[cx, cy]
         dd_inc = max(0.0, temp - model.params.environment.temp_base_degreedays) * dt
@@ -1166,7 +1167,27 @@ function step_aggregate_groups!(
         # Density feedback uses the whole benthic population, so carrying
         # capacity constrains the juveniles as well as the individuals.
         density_feedback = benthic_density_feedback(model)
-        hazard_rate = base_m * density_feedback
+
+        # Thermal survival modulation: for pelagic larvae, survival is maximal at
+        # 10-12°C (Ouellet & Sainte-Marie 2018), with concave-down viability:
+        # h_temp(T) = exp(((T - T_opt)/sigma)^2 / 2)
+        thermal_mult = if is_pelagic
+            t_opt = params.mortality.larval_temp_opt
+            t_sig = params.mortality.larval_temp_sigma
+            exp(0.5 * ((temp - t_opt) / max(0.5, t_sig))^2)
+        else
+            1.0
+        end
+
+        # Over-age developmental penalty for pelagic larvae exceeding maximum duration (84 days)
+        days_in_stage = max(0.0, model.current_time - grp.last_growth_time)
+        overage_hazard = if is_pelagic && days_in_stage > 84.0
+            params.mortality.larval_overage_hazard * (days_in_stage - 84.0) / 10.0
+        else
+            0.0
+        end
+
+        hazard_rate = (base_m * thermal_mult * density_feedback) + overage_hazard
         cumulative_hazard = hazard_rate * dt
 
         if cumulative_hazard < 0.0

@@ -187,6 +187,7 @@ runtime_config_keys() = Set{Symbol}([
     :help,
     :gui,
     :gui_simple,
+    :gui_compare,
     :config_file,
     :species_config_file,
     :fishery_on,
@@ -985,22 +986,38 @@ function initialize_model(;
     # first step. `model_step!` refreshes it once per step.
     properties[:density_feedback] = benthic_density_feedback(model)
 
+    # Valid marine habitat cells for benthic organisms (strictly non-land: depth >= 20.0 and hsi > 0)
+    depth_min_bound = 20.0
+    marine_cells = Tuple{Int, Int}[]
+    marine_weights = Float64[]
+    for j in 1:grid[2], i in 1:grid[1]
+        z = initial_depth[i, j]
+        h = initial_habitat[i, j]
+        if z >= depth_min_bound && h > 0.0
+            push!(marine_cells, (i, j))
+            push!(marine_weights, h)
+        end
+    end
+    if isempty(marine_cells)
+        for j in 1:grid[2], i in 1:grid[1]
+            if initial_depth[i, j] >= depth_min_bound
+                push!(marine_cells, (i, j))
+                push!(marine_weights, 1.0)
+            end
+        end
+    end
+    if isempty(marine_cells)
+        marine_cells = [(i, j) for i in 1:grid[1], j in 1:grid[2]]
+        marine_weights = fill(1.0, length(marine_cells))
+    end
+    sample_marine_pos() = sample_weighted(marine_cells, marine_weights, rng)
+
     # --- Initialize Aggregate Populations (stage 0 through juvenile_max_stage - 1) ---
-    #
-    # The range comes from the configuration, not a literal. It previously ran
-    # `0:5`, which happened to match the default `juvenile_max_stage = 6` but
-    # would silently mis-seed any other value: individuation happens at stage 6, so
-    # a group per stage below that is what feeds the benthic population.
     pop = AggregatePopulations()
     sim_params = params.simulation
     org_params = params.organism
     juvenile_max = org_params.juvenile_max_stage
     if juvenile_max > FIRST_COHORT_STAGE
-        # Cohorts occupy stages `FIRST_COHORT_STAGE : juvenile_max - 1`; stage 0
-        # is the brooded egg and is not a cohort.
-        #
-        # Abundance comes from `initial_aggregate_cohort`, element `i` being stage
-        # `i - 1`. A zero entry seeds no cohort at all rather than an empty one.
         cohort_abundance = sim_params.initial_aggregate_cohort
         for stg in FIRST_COHORT_STAGE:(juvenile_max - 1)
             abundance = stg + 1 <= length(cohort_abundance) ? cohort_abundance[stg+1] : 0.0
@@ -1021,7 +1038,7 @@ function initialize_model(;
                 age_days = stg * sim_params.initial_cohort_days_per_stage,
                 degree_days = 0.0,
                 last_growth_time = 0.0,
-                pos = (rand(rng, 1:grid[1]), rand(rng, 1:grid[2]))
+                pos = sample_marine_pos()
             )
             pop.next_group_id += 1
             push!(pop.groups, grp)
@@ -1138,16 +1155,14 @@ function initialize_model(;
                       sim_params.initial_male_cohort
                 n_here = round(Int, abundance_at(vec, stg) * (seed_target / seed_sum))
                 for _ in 1:n_here
-                    seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
+                    seed_one(stg, sex, sample_marine_pos())
                 end
             end
         else
-            # No distribution stated: cycle the total evenly over the cells. Counting
-            # how often a floor expression steps gives the number of *cells*, not the
-            # number requested — asking for 60 with 22 cells produced 22.
+            # No distribution stated: cycle the total evenly over the cells.
             for k in 1:seed_target
                 stg, sex = cells[mod1(k, length(cells))]
-                seed_one(stg, sex, (rand(rng, 1:grid[1]), rand(rng, 1:grid[2])))
+                seed_one(stg, sex, sample_marine_pos())
             end
         end
     end
@@ -1288,22 +1303,28 @@ function organism_disperse!(
         # Hyperbolic food suitability
         s_food = cfood / (cfood + half_sat)
 
-        # Substrate/Refuge quality
+        # Substrate/Refuge quality and depth check (avoiding land)
         chabitat = model.habitat_quality_field[cx, cy]
+        cdepth = model.depth_field[cx, cy]
 
-        u = chabitat * s_temp * (1.0 + food_weight * s_food)
+        if cdepth < 20.0 || chabitat <= 0.0 || ctemp >= 10.0
+            u = 0.0
+        else
+            u = chabitat * s_temp * (1.0 + food_weight * s_food)
+        end
         push!(utilities, u)
     end
 
-    # Softmax over suitability. A larger temperature spreads the heading
-    # distribution over more directions; a smaller one concentrates it.
+    # Softmax over suitability. Zero utility (land) gets zero probability weight.
     tau = env.movement_softmax_temperature
     max_u = maximum(utilities)
-    weights = [exp((u - max_u) / tau) for u in utilities]
+    weights = [u > 0.0 ? exp((u - max_u) / tau) : 0.0 for u in utilities]
 
-    chosen_pos = sample_weighted(candidates, weights, rng)
-    if chosen_pos != org.pos
-        move_agent!(org, chosen_pos, model)
+    if sum(weights) > 0.0
+        chosen_pos = sample_weighted(candidates, weights, rng)
+        if chosen_pos != org.pos
+            move_agent!(org, chosen_pos, model)
+        end
     end
 
     return org.pos
@@ -1549,8 +1570,9 @@ function model_step!(model)
     # allocation.
     seasonal_target = t_base + t_amp * sinusoidal_factor
     temperature = model.temperature_field
+    mprops = abmproperties(model)
     has_monthly = env.use_geodata &&
-                  haskey(model.properties, :monthly_bottom) &&
+                  haskey(mprops, :monthly_bottom) &&
                   model.monthly_bottom !== nothing
 
     if has_monthly
@@ -1575,14 +1597,14 @@ function model_step!(model)
             @. surface_temp = (1.0 - frac) * s1 + frac * s2
             @. temperature = (1.0 - frac) * b1 + frac * b2
         end
-        if haskey(model.properties, :depth_field)
+        if haskey(mprops, :depth_field)
             @. model.habitat_quality_field = calculate_habitat_suitability(
                 temperature, model.depth_field)
         end
-    elseif env.use_geodata && haskey(model.properties, :baseline_temperature_field)
+    elseif env.use_geodata && haskey(mprops, :baseline_temperature_field)
         base_field = model.baseline_temperature_field
-        base_surf = get(model.properties, :baseline_surface_temperature_field, base_field)
-        surface_temp = get(model.properties, :surface_temperature_field, temperature)
+        base_surf = get(mprops, :baseline_surface_temperature_field, base_field)
+        surface_temp = get(mprops, :surface_temperature_field, temperature)
         if t_sd > 0.0
             randn!(abmrng(model), temperature)
             @. surface_temp = base_surf + t_amp * sinusoidal_factor + t_sd * temperature
@@ -1591,12 +1613,12 @@ function model_step!(model)
             @. surface_temp = base_surf + t_amp * sinusoidal_factor
             @. temperature = base_field + t_amp * sinusoidal_factor
         end
-        if haskey(model.properties, :depth_field)
+        if haskey(mprops, :depth_field)
             @. model.habitat_quality_field = calculate_habitat_suitability(
                 temperature, model.depth_field)
         end
     else
-        surface_temp = get(model.properties, :surface_temperature_field, temperature)
+        surface_temp = get(mprops, :surface_temperature_field, temperature)
         if t_sd > 0.0
             randn!(abmrng(model), temperature)
             @. surface_temp = seasonal_target + t_sd * temperature

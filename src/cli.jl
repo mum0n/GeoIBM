@@ -229,6 +229,8 @@ function parse_cli_args(args::AbstractVector)
             config[:gui] = (lowercase(v_str) != "false")
         elseif k_str == "gui_simple"
             config[:gui_simple] = (lowercase(v_str) != "false")
+        elseif k_str in ("gui_compare", "gui-compare", "compare")
+            config[:gui_compare] = (lowercase(v_str) != "false")
         elseif k_str == "config"
             # Already consumed by the pre-scan that located the configuration
             # files; it is recorded on the config dict rather than set here.
@@ -296,6 +298,7 @@ alternative spellings: an unrecognized name is reported and ignored.
 Flags:
   --config=<Path>            Configuration file (TOML format)
   --gui=<Bool>               Launch the interactive Leaflet spatial dashboard (default GUI)
+  --gui_compare=<Bool>       Launch the dual-column Leaflet scenario comparison dashboard
   --gui_simple=<Bool>        Launch the simple real-time GLMakie dashboard
   --help                     Show this help message
 
@@ -485,18 +488,31 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
         println("="^80)
         fig, state = launch_organism_gui(
             config;
-            display_window = false
+            display_window = true
         )
         println(" GUI launched. Close the window to terminate.")
         try
-            screen = display(fig)
+            screen = GLMakie.display(fig)
             wait(screen)
         catch
         end
         return 0
     end
 
-    if config[:gui]
+    if get(config, :gui_compare, false)
+        println("="^80)
+        println(" Launching Organism IBM Dual-Column Leaflet Comparison Dashboard...")
+        println("="^80)
+        launch_leaflet_comparison_dashboard(
+            config;
+            display_window = true,
+            n_agents = get(config, :n_agents, nothing),
+            output_html = joinpath(config[:output_dir], "dashboard_compare.html")
+        )
+        return 0
+    end
+
+    if get(config, :gui, false)
         println("="^80)
         println(" Launching Organism IBM Interactive Leaflet Spatial Dashboard...")
         println("="^80)

@@ -383,9 +383,11 @@ degree_days_schedule   = [0.0, 0.0, 0.0, 0.0, 912.5, 912.5, 912.5, 912.5, 1825.0
 # egg, then zoea1, zoea2, then megalopa. Their length is what defines how far the
 # pelagic block reaches: stages below it develop on these numbers, and every stage from
 # that stage onward develops on the benthic schedules above.
-# The simulation reads them through `min_intermolt_days` and `required_degree_days`.
-intermolt_days_larval = [0.0, 30.0, 30.0, 30.0]
-degree_days_larval    = [0.0, 65.0, 65.0, 70.0]
+# Durations (36-42 days minimum, degree-days ~270 DD, total pelagic ~800 DD) align
+# with empirical larval development studies (Ouellet & Sainte-Marie 2018).
+intermolt_days_larval = [0.0, 36.0, 36.0, 42.0]
+degree_days_larval    = [0.0, 270.0, 270.0, 270.0]
+
 
 # -----------------------------------------------------------------------------
 # [phenology] — seasonal windows for life-history events
@@ -479,6 +481,11 @@ aggregate_transition_hazard     = 0.35  # Per-ecdysis death hazard
 # These cohorts predate individuation, so they carry the pelagic and early-benthic
 # mortality that the individual hazard terms above do not represent.
 aggregate_baseline_hazards      = [0.002, 0.020, 0.020, 0.015, 0.0015]
+# Larval developmental over-age hazard penalty (per day excess beyond ~84 days)
+larval_overage_hazard           = 0.05
+# Optimal temperature for pelagic larval survival (Ouellet & Sainte-Marie 2018: 10-12°C)
+larval_temp_opt                 = 11.0
+larval_temp_sigma               = 3.5
 # --- Guard ---
 # Every daily hazard is capped, because senescence is unbounded in age and a
 # terminal-molt individual never molts again. A clamped probability is not one
