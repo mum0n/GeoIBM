@@ -1148,7 +1148,12 @@ function step_aggregate_groups!(
         grp.age_days += dt
         cx = min(max(grp.pos[1], 1), nx)
         cy = min(max(grp.pos[2], 1), ny)
-        temp = model.temperature_field[cx, cy]
+        # Pelagic stages (egg, zoea 1, zoea 2, megalopa) occupy the upper water column;
+        # benthic juveniles settle to the seabed and experience bottom temperature.
+        is_pelagic = grp.stage < larval_stage_count(behavior)
+        temp_field = (is_pelagic && haskey(model.properties, :surface_temperature_field)) ?
+                     model.surface_temperature_field : model.temperature_field
+        temp = temp_field[cx, cy]
         dd_inc = max(0.0, temp - model.params.environment.temp_base_degreedays) * dt
         grp.degree_days += dd_inc
 

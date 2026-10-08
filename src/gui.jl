@@ -1433,10 +1433,10 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
     # instead of the failure surfacing as an unreadable signature mismatch.
     state = IBMGuiState(
         model = model,
-        is_running = Observable(false),
+        is_running = Observable(true),
         sim_speed_days = Observable(5.0),
         current_time = Observable(0.0),
-        status_text = Observable("Initialized | Ready to run"),
+        status_text = Observable("Simulation Active | Running"),
         obs_env_field = Observable(copy(model.temperature_field)),
         obs_agent_x = Observable(xs_init),
         obs_agent_y = Observable(ys_init),

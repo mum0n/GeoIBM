@@ -94,6 +94,8 @@ temp_base_degreedays  = -1.5       # Extra degree-days contributed by temperatur
 use_geodata           = false      # Query GeoData for real bathymetry and hydrography
 domain_lon            = [-65.0, -63.0] # Longitudinal bounds [min_lon, max_lon]
 domain_lat            = [43.0, 45.0]   # Latitudinal bounds [min_lat, max_lat]
+time_range            = ["1993-01-01", "1993-12-31"] # Simulation temporal window
+pelagic_depth         = 15.0       # Mean water column depth for planktonic stages (m)
 temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
 temperature_month     = 0          # Climatological month (0 = annual)
 bathymetry_source     = "etopo2022"# Bathymetric dataset (etopo2022, erddap)

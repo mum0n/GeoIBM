@@ -144,6 +144,7 @@ function parse_cli_args(args::AbstractVector)
     config[:config_file] = ""
     config[:output_dir] = "outputs"
     config[:gui] = false
+    config[:gui_simple] = false
 
     function extract_key_val(idx::Int)
         tok = argv[idx]
@@ -226,6 +227,8 @@ function parse_cli_args(args::AbstractVector)
             config[:help] = true
         elseif k_str == "gui"
             config[:gui] = (lowercase(v_str) != "false")
+        elseif k_str == "gui_simple"
+            config[:gui_simple] = (lowercase(v_str) != "false")
         elseif k_str == "config"
             # Already consumed by the pre-scan that located the configuration
             # files; it is recorded on the config dict rather than set here.
@@ -292,7 +295,8 @@ alternative spellings: an unrecognized name is reported and ignored.
 
 Flags:
   --config=<Path>            Configuration file (TOML format)
-  --gui=<Bool>               Launch the real-time interactive dashboard
+  --gui=<Bool>               Launch the interactive Leaflet spatial dashboard (default GUI)
+  --gui_simple=<Bool>        Launch the simple real-time GLMakie dashboard
   --help                     Show this help message
 
 Common parameters (see configs/default.toml for the full list):
@@ -467,7 +471,7 @@ Execute the full organism IBM workflow from command line argument vector.
 # Returns
 `Int`: Exit status code (0 for success).
 """
-function run_ibm_cli(args::Vector{String} = ARGS)::Int
+function run_ibm_cli(args::AbstractVector = ARGS)::Int
     config = parse_cli_args(args)
 
     if config[:help]
@@ -475,9 +479,9 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
         return 0
     end
 
-    if config[:gui]
+    if config[:gui_simple]
         println("="^80)
-        println(" Launching Organism IBM Interactive Real-Time Dashboard...")
+        println(" Launching Organism IBM Simple GUI Dashboard (GLMakie)...")
         println("="^80)
         fig, state = launch_organism_gui(
             config;
@@ -492,13 +496,27 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
         return 0
     end
 
+    if config[:gui]
+        println("="^80)
+        println(" Launching Organism IBM Interactive Leaflet Spatial Dashboard...")
+        println("="^80)
+        launch_leaflet_dashboard(
+            config;
+            display_window = true,
+            n_agents = get(config, :n_agents, nothing),
+            output_html = joinpath(config[:output_dir], "dashboard.html")
+        )
+        return 0
+    end
+
     println("="^80)
     println(" Initializing Organism IBM Simulation...")
     println(" Configuration:")
     cfg_src = isempty(config[:config_file]) ? "Internal Defaults" : config[:config_file]
     println("   - Config Source   : $(cfg_src)")
     println(" Parameters:")
-    @printf("   - Agents          : %d\n", sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort]))
+    n_init = get(config, :n_agents, sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort]))
+    @printf("   - Agents          : %d\n", n_init)
     @printf("   - Days            : %d (%.2f years)\n", config[:days], config[:days] / 365.0)
     @printf("   - Grid Size       : %d x %d\n", config[:grid][1], config[:grid][2])
     t_base = get(config, :temp_base, 5.0)
@@ -516,7 +534,7 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     params = IBMParameters(config)
     t_start = time()
     model = initialize_model(
-        n_agents = sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort]),
+        n_agents = n_init,
         grid = config[:grid],
         dt = config[:dt],
         params = params,
@@ -540,7 +558,7 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
     elapsed_time = time() - t_start
 
     summary = summarize_population(model)
-    print_simulation_report(summary, sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort]), config[:days], elapsed_time)
+    print_simulation_report(summary, n_init, config[:days], elapsed_time)
 
     # A short run legitimately has no annual samples, but a failure here is not
     # the same as that and must not be reported as a clean run.
@@ -577,6 +595,30 @@ function run_ibm_cli(args::Vector{String} = ARGS)::Int
             model_df = model_df
         )
         println(" Exported $(length(generated)) figure(s).")
+    end
+
+    if get(config, :animate, false)
+        mkpath(config[:output_dir])
+        anim_path = isabspath(config[:animation_file]) ?
+            config[:animation_file] : joinpath(config[:output_dir], config[:animation_file])
+        println(" Recording Agents.jl simulation animation to: $(anim_path)")
+        t_anim = time()
+        anim_model = initialize_model(
+            n_agents = n_init,
+            grid = config[:grid],
+            dt = config[:dt],
+            params = params,
+            seed = config[:seed]
+        )
+        animate_organism_simulation(
+            anim_model;
+            filepath = anim_path,
+            frames = Int(config[:anim_frames]),
+            dt = Int(config[:anim_dt]),
+            framerate = Int(config[:anim_fps]),
+            heat_field = Symbol(config[:anim_field])
+        )
+        @printf(" Animation video recorded in %.2f seconds.\n", time() - t_anim)
     end
 
     return 0

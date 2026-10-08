@@ -28,6 +28,7 @@ include("simulation.jl")
 include("analysis.jl")
 include("visualization.jl")
 include("gui.jl")
+include("leaflet_dashboard.jl")
 include("cli.jl")
 
 # Export types and enums
@@ -113,6 +114,7 @@ export organism_color, organism_size, organism_marker, organism_heatarray
 export plot_abm_summary, animate_organism_simulation
 export plot_functional_relationships
 export launch_organism_gui, IBMGuiState, step_gui_simulation!
+export generate_leaflet_dashboard_html, launch_leaflet_dashboard
 export create_empty_annual_data
 export COUNT_PLOT_FLOOR, log10_count, GUI_EARLY_STAGES
 export kde_density, SIZE_DENSITY_BANDWIDTH_MM, SEX_DENSITY_ALPHA

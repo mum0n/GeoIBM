@@ -586,6 +586,8 @@ Base.@kwdef struct EnvironmentParams
     use_geodata::Bool = false
     domain_lon::Vector{Float64} = [-65.0, -63.0]
     domain_lat::Vector{Float64} = [43.0, 45.0]
+    time_range::Vector{String} = ["1993-01-01", "1993-12-31"]
+    pelagic_depth::Float64 = 15.0
     temperature_source::String = "woa23"
     temperature_month::Int = 0
     bathymetry_source::String = "etopo2022"

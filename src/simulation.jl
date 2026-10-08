@@ -186,6 +186,7 @@ runtime_config_keys() = Set{Symbol}([
     :plot,
     :help,
     :gui,
+    :gui_simple,
     :config_file,
     :species_config_file,
     :fishery_on,
@@ -744,8 +745,11 @@ function build_geodata_environmental_fields(
         d_mat
     end
 
-    # 2. Bottom temperature from hydrography
+    # 2. Bottom and upper water column (pelagic) temperature from hydrography
     temp_src = Symbol(env_params.temperature_source)
+    pelagic_z = -abs(Float64(env_params.pelagic_depth))
+
+    # Fetch initial/specified month hydrography
     hydro = GeoData.fetch_boundary_hydrography_geodata(
         temp_src;
         lon_range = lon_range,
@@ -756,15 +760,48 @@ function build_geodata_environmental_fields(
     )
 
     temp_field = zeros(Float64, nx, ny)
+    surface_temp_field = zeros(Float64, nx, ny)
     hsi_field = zeros(Float64, nx, ny)
     for j in 1:ny, i in 1:nx
         z = depth_field[i, j]
         t_bottom = hydro.T(lons[i], lats[j], -z, 0.0)
+        t_surf = hydro.T(lons[i], lats[j], pelagic_z, 0.0)
         temp_field[i, j] = t_bottom
+        surface_temp_field[i, j] = t_surf
         hsi_field[i, j] = calculate_habitat_suitability(t_bottom, z)
     end
 
-    return (depth = depth_field, temperature = temp_field, hsi = hsi_field)
+    # Build 12-month seasonal hydrography sequence if dynamic climatology requested
+    monthly_bottom = Vector{Matrix{Float64}}(undef, 12)
+    monthly_surface = Vector{Matrix{Float64}}(undef, 12)
+    for m in 1:12
+        m_hydro = GeoData.fetch_boundary_hydrography_geodata(
+            temp_src;
+            lon_range = lon_range,
+            lat_range = lat_range,
+            input_dir = env_params.geodata_input_dir,
+            month = m,
+            verbose = false
+        )
+        b_mat = zeros(Float64, nx, ny)
+        s_mat = zeros(Float64, nx, ny)
+        for j in 1:ny, i in 1:nx
+            z = depth_field[i, j]
+            b_mat[i, j] = m_hydro.T(lons[i], lats[j], -z, 0.0)
+            s_mat[i, j] = m_hydro.T(lons[i], lats[j], pelagic_z, 0.0)
+        end
+        monthly_bottom[m] = b_mat
+        monthly_surface[m] = s_mat
+    end
+
+    return (
+        depth = depth_field,
+        temperature = temp_field,
+        surface_temperature = surface_temp_field,
+        hsi = hsi_field,
+        monthly_bottom = monthly_bottom,
+        monthly_surface = monthly_surface
+    )
 end
 
 """
@@ -871,13 +908,25 @@ function initialize_model(;
         copy(food_map)
     end
 
+    initial_surface_temp = if params.environment.use_geodata && @isdefined(geo_env)
+        geo_env.surface_temperature
+    else
+        copy(initial_temp)
+    end
+
     properties = Dict{Symbol, Any}(
         :current_time => 0.0,
         :temperature_field => initial_temp,
+        :surface_temperature_field => initial_surface_temp,
         :depth_field => initial_depth,
         :baseline_temperature_field => copy(initial_temp),
+        :baseline_surface_temperature_field => copy(initial_surface_temp),
         :food_availability_field => initial_food,
         :habitat_quality_field => initial_habitat,
+        :monthly_bottom => (params.environment.use_geodata && @isdefined(geo_env)) ?
+            geo_env.monthly_bottom : nothing,
+        :monthly_surface => (params.environment.use_geodata && @isdefined(geo_env)) ?
+            geo_env.monthly_surface : nothing,
         :dt => dt,
         :params => params,
         :total_eggs_spawned => 0,
@@ -1500,12 +1549,46 @@ function model_step!(model)
     # allocation.
     seasonal_target = t_base + t_amp * sinusoidal_factor
     temperature = model.temperature_field
-    if env.use_geodata && haskey(model.properties, :baseline_temperature_field)
-        base_field = model.baseline_temperature_field
+    has_monthly = env.use_geodata &&
+                  haskey(model.properties, :monthly_bottom) &&
+                  model.monthly_bottom !== nothing
+
+    if has_monthly
+        # Monthly dynamic hydrographic sequence with linear interpolation between month midpoints
+        # Midpoint of month m is (m - 0.5) * 365 / 12
+        month_frac = (day_of_year / sim.days_per_year) * 12.0
+        m1 = mod(floor(Int, month_frac - 0.5), 12) + 1
+        m2 = mod(m1, 12) + 1
+        frac = (month_frac - 0.5) - floor(month_frac - 0.5)
+
+        b1 = model.monthly_bottom[m1]
+        b2 = model.monthly_bottom[m2]
+        s1 = model.monthly_surface[m1]
+        s2 = model.monthly_surface[m2]
+
+        surface_temp = model.surface_temperature_field
         if t_sd > 0.0
             randn!(abmrng(model), temperature)
+            @. surface_temp = (1.0 - frac) * s1 + frac * s2 + t_sd * temperature
+            @. temperature = (1.0 - frac) * b1 + frac * b2 + t_sd * temperature
+        else
+            @. surface_temp = (1.0 - frac) * s1 + frac * s2
+            @. temperature = (1.0 - frac) * b1 + frac * b2
+        end
+        if haskey(model.properties, :depth_field)
+            @. model.habitat_quality_field = calculate_habitat_suitability(
+                temperature, model.depth_field)
+        end
+    elseif env.use_geodata && haskey(model.properties, :baseline_temperature_field)
+        base_field = model.baseline_temperature_field
+        base_surf = get(model.properties, :baseline_surface_temperature_field, base_field)
+        surface_temp = get(model.properties, :surface_temperature_field, temperature)
+        if t_sd > 0.0
+            randn!(abmrng(model), temperature)
+            @. surface_temp = base_surf + t_amp * sinusoidal_factor + t_sd * temperature
             @. temperature = base_field + t_amp * sinusoidal_factor + t_sd * temperature
         else
+            @. surface_temp = base_surf + t_amp * sinusoidal_factor
             @. temperature = base_field + t_amp * sinusoidal_factor
         end
         if haskey(model.properties, :depth_field)
@@ -1513,10 +1596,13 @@ function model_step!(model)
                 temperature, model.depth_field)
         end
     else
+        surface_temp = get(model.properties, :surface_temperature_field, temperature)
         if t_sd > 0.0
             randn!(abmrng(model), temperature)
+            @. surface_temp = seasonal_target + t_sd * temperature
             @. temperature = seasonal_target + t_sd * temperature
         else
+            fill!(surface_temp, seasonal_target)
             fill!(temperature, seasonal_target)
         end
     end
