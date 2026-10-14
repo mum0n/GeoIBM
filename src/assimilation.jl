@@ -14,7 +14,7 @@
 #  The separation this file makes:
 #
 #      a published product   ETOPO 2022, WOA23 / GLORYS12V1, over HTTP
-#      lakehouse/IABM/       the assimilated store, GeoData-native, built once
+#      lakehouse/GeoIBM/       the assimilated store, GeoData-native, built once
 #      a run                 reads the store; writes its own results to its output dir
 #
 #  Assimilation is idempotent, and it knows when to stop: a store artefact at least as new as
@@ -22,7 +22,7 @@
 #
 #  The layout is one directory per input rather than one archive per run:
 #
-#      lakehouse/IABM/
+#      lakehouse/GeoIBM/
 #        bathymetry.zarr        the sea floor, from ETOPO 2022 through ERDDAP
 #        hydrography/           the 12-month climatological temperature and salinity
 #        manifest.toml          what was assimilated, from which product, when
@@ -32,16 +32,16 @@
 # ==============================================================================
 
 """
-    iabm_store_root() -> String
+    geoibm_store_root() -> String
 
-Where the assimilated environmental store lives: `projects/lakehouse/IABM`, beside the other
-halves' directories, so the lakehouse reads as one directory per package. `IABM_STORE_ROOT`
+Where the assimilated environmental store lives: `projects/lakehouse/GeoIBM`, beside the other
+halves' directories, so the lakehouse reads as one directory per package. `GEOIBM_STORE_ROOT`
 overrides it for a machine with the lakehouse somewhere else.
 """
-function iabm_store_root()::String
-    override = get(ENV, "IABM_STORE_ROOT", "")
+function geoibm_store_root()::String
+    override = get(ENV, "GEOIBM_STORE_ROOT", "")
     isempty(override) || return abspath(override)
-    return normpath(joinpath(@__DIR__, "..", "..", "..", "lakehouse", "IABM"))
+    return normpath(joinpath(@__DIR__, "..", "..", "lakehouse", "GeoIBM"))
 end
 
 """

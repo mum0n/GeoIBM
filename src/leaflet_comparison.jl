@@ -1,7 +1,7 @@
 """
     src/leaflet_comparison.jl
 
-Dual-Column Leaflet Comparison Dashboard for IABM.
+Dual-Column Leaflet Comparison Dashboard for GeoIBM.
 Runs two simultaneous simulation scenarios (Run A: Baseline vs. Run B: Scenario)
 initialized with the exact same pseudo-random seed, spatial grid, and initial
 agent population, but allows real-time interactive tuning of single or multiple

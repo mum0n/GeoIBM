@@ -1,6 +1,6 @@
-# Biological Individual-Based Model (BIBM) Engine Documentation
+# Individual and Agent Based Models (GeoIBM) Documentation
 
-This document describes the architecture, mathematical formulations, command-line interface, and public API of the Biological Individual-Based Model (`IABM`) engine. The engine implements a high-performance, modular individual- and cohort-based simulation system for organismal population dynamics, bioenergetics, and harvest management.
+This document describes the architecture, mathematical formulations, command-line interface, and public API of the biological Individual and Agent Based Model (`GeoIBM`) engine. The engine implements a high-performance, modular individual- and cohort-based simulation system for organismal population dynamics, bioenergetics, and harvest management.
 
 Species-specific biological processes (allometry, developmental thresholds, ecdysis, and reproduction) are fully decoupled from generic individual-based model (IBM) simulation logic via an extensible behavioral dispatch interface (`SpeciesBehavior`). A complete concrete implementation is provided for the snow crab (*Chionoecetes*).
 
@@ -93,13 +93,13 @@ Allometry   Development         Phenology         Reproduction
 The source repository is organized into focused, modular components:
 
 ```
-IABM/
+GeoIBM/
 ├── Project.toml              # Dependencies and compatibility bounds
 ├── docs/
-│   ├── IABM.md        # Comprehensive architecture and API reference (this file)
+│   ├── GeoIBM.md        # Comprehensive architecture and API reference (this file)
 │   └── notes.md              # Research notes and design specifications
 ├── src/
-│   ├── IABM.jl        # Module definition, includes, and exported public APIs
+│   ├── GeoIBM.jl        # Module definition, includes, and exported public APIs
 │   ├── types.jl              # Core type system: Organism, StageDefinition, IBMParameters
 │   ├── organism_dynamics.jl  # Generic growth, allometry fallbacks, bioenergetics, molt
 │   ├── species.jl            # Species behaviour: allometry, phenology, reproduction

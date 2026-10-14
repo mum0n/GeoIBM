@@ -3218,7 +3218,7 @@ registries = "General"
 uuid = "337d8026-41b4-5cde-a456-74a10e5b31d1"
 version = "1.11.4+0"
 
-[[deps.IABM]]
+[[deps.GeoIBM]]
 deps = ["Agents", "CairoMakie", "DataFrames", "Distributions", "DrWatson", "GLMakie", "GeoData", "GeoDataSources", "KaimonGate", "LinearAlgebra", "Optim", "Printf", "Random", "Statistics", "TOML", "Test"]
 path = "."
 uuid = "c4601835-c3b2-4cd5-956f-7b396041e2d9"

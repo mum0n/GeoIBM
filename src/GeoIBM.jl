@@ -1,5 +1,5 @@
 """
-    IABM
+    GeoIBM
 
 End-to-end individual- and agent-based simulation model (IBM) for biological populations.
 
@@ -10,7 +10,7 @@ This package provides:
 - Bioenergetics and dynamic spatial simulation in discrete grid environments.
 - High-level execution and statistical analysis utilities.
 """
-module IABM
+module GeoIBM
 
 using Agents
 using DataFrames
@@ -81,7 +81,7 @@ export build_habitat_quality_field, build_geodata_environmental_fields
 export default_agent_observations
 export organism_disperse!, nagents, allagents, abmrng, safe_mean, safe_sum
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
-export iabm_store_root, environmental_store_dir, environmental_input_status
+export geoibm_store_root, environmental_store_dir, environmental_input_status
 export assimilate_environmental_inputs, read_assimilated_environment
 export parameter_struct_defaults
 export config_field_types, config_field_type, coerce_config_value
@@ -131,4 +131,4 @@ export print_simulation_report, print_save_step_outputs, generate_summary_plots
 export display_cli_help
 export Figure
 
-end # module IABM
+end # module GeoIBM

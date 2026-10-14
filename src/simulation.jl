@@ -738,7 +738,7 @@ function build_geodata_environmental_fields(
             # The store, not a run-local cache. `geodata_input_dir` stays honoured for a
             # configuration written before the store existed; when `geodata_store_dir` is set
             # it wins, and assimilation and ingestion then agree by construction.
-            output_path = joinpath(IABM.environmental_store_dir(env_params),
+            output_path = joinpath(GeoIBM.environmental_store_dir(env_params),
                                    "bathymetry.zarr"),
             verbose = verbose
         )
@@ -759,7 +759,7 @@ function build_geodata_environmental_fields(
         temp_src;
         lon_range = lon_range,
         lat_range = lat_range,
-        input_dir = IABM.environmental_store_dir(env_params),
+        input_dir = GeoIBM.environmental_store_dir(env_params),
         month = env_params.temperature_month,
         verbose = verbose
     )
@@ -784,7 +784,7 @@ function build_geodata_environmental_fields(
             temp_src;
             lon_range = lon_range,
             lat_range = lat_range,
-            input_dir = IABM.environmental_store_dir(env_params),
+            input_dir = GeoIBM.environmental_store_dir(env_params),
             month = m,
             verbose = false
         )

@@ -1,4 +1,4 @@
-# Biological Individual-Based Model (BIBM) Engine
+# Individual and Agent Based Models (GeoIBM)
 
 A species-parameterised individual-based model engine built on
 [Agents.jl](https://juliadynamics.github.io/Agents.jl/stable/). The engine is
@@ -58,16 +58,16 @@ Two pillars:
    each one, and `configs/snowcrab.toml` is the species overlay.
 
 ```
-IABM/
+GeoIBM/
 ├── Project.toml
 ├── configs/
 │   ├── default.toml          # every declared parameter, at its struct default
 │   └── snowcrab.toml         # snow crab overlay: biology plus operating scale
 ├── docs/
-│   ├── IABM.md        # detailed reference
+│   ├── GeoIBM.md        # detailed reference
 │   └── snowcrab_ibm_research_paper.md
 ├── src/
-│   ├── IABM.jl        # module, includes, exports
+│   ├── GeoIBM.jl        # module, includes, exports
 │   ├── types.jl              # Organism, the twelve parameter structs, config plumbing
 │   ├── species.jl            # the SpeciesBehavior implementation and stage tables
 │   ├── organism_dynamics.jl  # allometry, bioenergetics, molting, mortality, cohorts
@@ -93,14 +93,14 @@ into a GeoData store beside the other halves':
 
 | artefact | product | where |
 |---|---|---|
-| `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `../lakehouse/IABM/` |
-| `woa23_temperature_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/IABM/` |
-| `woa23_salinity_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/IABM/` |
+| `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `../lakehouse/GeoIBM/` |
+| `woa23_temperature_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/GeoIBM/` |
+| `woa23_salinity_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/GeoIBM/` |
 
 ```julia
-status  = IABM.environmental_input_status(env)        # what is already there
-result  = IABM.assimilate_environmental_inputs(env)   # fetch what is missing
-fields  = IABM.read_assimilated_environment(env)      # what a run reads
+status  = GeoIBM.environmental_input_status(env)        # what is already there
+result  = GeoIBM.assimilate_environmental_inputs(env)   # fetch what is missing
+fields  = GeoIBM.read_assimilated_environment(env)      # what a run reads
 ```
 
 It is idempotent: what is already assimilated is skipped, so a second run does no downloading.
@@ -286,7 +286,7 @@ or a whole schedule as `--intermolt_days_schedule=60,75,90`.
 ## API
 
 ```julia
-using IABM
+using GeoIBM
 
 params = IBMParameters(
     fishery = FisheryParams(fishing_probability_daily = 0.005),

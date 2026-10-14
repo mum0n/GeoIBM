@@ -24,7 +24,7 @@ using Printf
 using Random
 using Statistics
 
-using IABM
+using GeoIBM
 
 function parse_macro_args(args::Vector{String})
     config = Dict{Symbol, Any}(

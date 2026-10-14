@@ -31,18 +31,18 @@ using Statistics
 using DataFrames
 using CairoMakie
 
-# Activate environment and load IABM
-using IABM
+# Activate environment and load GeoIBM
+using GeoIBM
 
 """
     main()
 
 Entry point for the organism IBM CLI simulation execution.
-Delegates directly to `IABM.run_ibm_cli(ARGS)` to guarantee canonical
+Delegates directly to `GeoIBM.run_ibm_cli(ARGS)` to guarantee canonical
 argument parsing, parameter discovery, and dashboard dispatch.
 """
 function main()
-    return IABM.run_ibm_cli(ARGS)
+    return GeoIBM.run_ibm_cli(ARGS)
 end
 
 # If invoked as a standalone script from terminal, execute main()
