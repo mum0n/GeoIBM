@@ -689,10 +689,10 @@ fields using real physical datasets accessed through `GeoData`.
    geographic coordinates.
 2. Seabed Bathymetry:
    If `depth_map` is not provided, queries ERDDAP/ETOPO via
-   `GeoData.fetch_erddap_bathymetry` and builds continuous interpolator
+   `GeoDataSources.fetch_erddap_bathymetry` and builds continuous interpolator
    `GeoData.get_bathymetry_interpolator`. Depth is extracted as `max(0.0, -elevation)`.
 3. Seabed Bottom Temperature:
-   Queries climatological hydrography via `GeoData.fetch_boundary_hydrography_geodata`
+   Queries climatological hydrography via `GeoDataSources.fetch_boundary_hydrography_geodata`
    (e.g., WOA23 or GLORYS12v1) and samples temperature at seabed depth `z`.
 4. Habitat Suitability Index (HSI):
    Evaluates `calculate_habitat_suitability(temperature, depth)` across the grid.
@@ -730,12 +730,16 @@ function build_geodata_environmental_fields(
             "depth_map dimensions $(size(depth_map)) do not match grid $(grid)")
         abs.(Float64.(copy(depth_map)))
     else
-        bathy_ds = GeoData.fetch_erddap_bathymetry(
+        bathy_ds = GeoDataSources.fetch_erddap_bathymetry(
             lon_range = lon_range,
             lat_range = lat_range,
             dataset_id = env_params.bathymetry_source == "etopo2022" ?
                 "ETOPO_2022_v1_15s" : env_params.bathymetry_source,
-            output_path = joinpath(env_params.geodata_input_dir, "bathymetry.zarr"),
+            # The store, not a run-local cache. `geodata_input_dir` stays honoured for a
+            # configuration written before the store existed; when `geodata_store_dir` is set
+            # it wins, and assimilation and ingestion then agree by construction.
+            output_path = joinpath(IABM.environmental_store_dir(env_params),
+                                   "bathymetry.zarr"),
             verbose = verbose
         )
         bathy_itp = GeoData.get_bathymetry_interpolator(bathy_ds)
@@ -751,11 +755,11 @@ function build_geodata_environmental_fields(
     pelagic_z = -abs(Float64(env_params.pelagic_depth))
 
     # Fetch initial/specified month hydrography
-    hydro = GeoData.fetch_boundary_hydrography_geodata(
+    hydro = GeoDataSources.fetch_boundary_hydrography_geodata(
         temp_src;
         lon_range = lon_range,
         lat_range = lat_range,
-        input_dir = env_params.geodata_input_dir,
+        input_dir = IABM.environmental_store_dir(env_params),
         month = env_params.temperature_month,
         verbose = verbose
     )
@@ -776,11 +780,11 @@ function build_geodata_environmental_fields(
     monthly_bottom = Vector{Matrix{Float64}}(undef, 12)
     monthly_surface = Vector{Matrix{Float64}}(undef, 12)
     for m in 1:12
-        m_hydro = GeoData.fetch_boundary_hydrography_geodata(
+        m_hydro = GeoDataSources.fetch_boundary_hydrography_geodata(
             temp_src;
             lon_range = lon_range,
             lat_range = lat_range,
-            input_dir = env_params.geodata_input_dir,
+            input_dir = IABM.environmental_store_dir(env_params),
             month = m,
             verbose = false
         )

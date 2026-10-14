@@ -1,0 +1,223 @@
+# ==============================================================================
+#  assimilation.jl -- the environmental inputs, assimilated into a GeoData store
+# ==============================================================================
+#
+#  An IBM needs a world to run in: a sea floor, a bottom temperature, and a seasonal cycle of
+#  both. Those come from published products -- ETOPO 2022 bathymetry and a climatological
+#  hydrography (WOA23 or GLORYS12V1) -- and they are the only external inputs this package has.
+#
+#  Until now they were fetched *inside* `build_geodata_environmental_fields`, once per
+#  simulation, into a run-local cache directory. That made two things awkward: the 728 MB-class
+#  products were re-fetched for every run that configured a different cache directory, and the
+#  only record of what a run used was a path inside that run's output.
+#
+#  The separation this file makes:
+#
+#      a published product   ETOPO 2022, WOA23 / GLORYS12V1, over HTTP
+#      lakehouse/IABM/       the assimilated store, GeoData-native, built once
+#      a run                 reads the store; writes its own results to its output dir
+#
+#  Assimilation is idempotent, and it knows when to stop: a store artefact at least as new as
+#  the fetch that produced it is skipped. `force = true` re-fetches.
+#
+#  The layout is one directory per input rather than one archive per run:
+#
+#      lakehouse/IABM/
+#        bathymetry.zarr        the sea floor, from ETOPO 2022 through ERDDAP
+#        hydrography/           the 12-month climatological temperature and salinity
+#        manifest.toml          what was assimilated, from which product, when
+#
+#  Nothing is stored that is not read back: `read_assimilated_environment` is the reader, and
+#  the same functions `build_geodata_environmental_fields` calls.
+# ==============================================================================
+
+"""
+    iabm_store_root() -> String
+
+Where the assimilated environmental store lives: `projects/lakehouse/IABM`, beside the other
+halves' directories, so the lakehouse reads as one directory per package. `IABM_STORE_ROOT`
+overrides it for a machine with the lakehouse somewhere else.
+"""
+function iabm_store_root()::String
+    override = get(ENV, "IABM_STORE_ROOT", "")
+    isempty(override) || return abspath(override)
+    return normpath(joinpath(@__DIR__, "..", "..", "..", "lakehouse", "IABM"))
+end
+
+"""
+    environmental_store_dir(env_params) -> String
+
+The directory a run reads its environment from: `geodata_store_dir` when it is non-empty, and
+`geodata_input_dir` otherwise. Both are honoured because a configuration written before the
+store existed still says `inputs`, and honouring only one of them would silently move a run's
+inputs to a lakehouse it did not ask for.
+"""
+function environmental_store_dir(env_params::EnvironmentParams)
+    d = something(env_params.geodata_store_dir, "")
+    return isempty(strip(d)) ? env_params.geodata_input_dir : d
+end
+
+"""
+    environmental_input_status(env_params) -> NamedTuple
+
+What this configuration will read, where each input's assimilated copy lives, and whether it
+is already there. Read-only: nothing is fetched and nothing is written, so a caller can ask
+before spending the time.
+
+Present-ness is measured with `isdir`, because a GeoData store *is* a directory: a fetch that
+wrote a Zarr store leaves one, and a caller that tested `isfile` would report every assimilated
+input as missing.
+"""
+function environmental_input_status(env_params::EnvironmentParams)
+    store = abspath(environmental_store_dir(env_params))
+    lon_r = (Float64(env_params.domain_lon[1]), Float64(env_params.domain_lon[2]))
+    lat_r = (Float64(env_params.domain_lat[1]), Float64(env_params.domain_lat[2]))
+    bathy = joinpath(store, "bathymetry.zarr")
+    inputs = @NamedTuple{role::Symbol, product::String, where::String, present::Bool,
+                         note::String}[
+        (role = :bathymetry,
+         product = env_params.bathymetry_source,
+         where = bathy,
+         present = isdir(bathy),
+         note = "sea floor, depth as max(0, -elevation)"),
+        (role = :hydrography,
+         product = env_params.temperature_source,
+         where = store,
+         present = _hydrography_present(store, env_params),
+         note = "bottom and pelagic temperature, 12-month climatology"),
+    ]
+    return (
+        store_dir = store,
+        domain = (lon = lon_r, lat = lat_r),
+        inputs = inputs,
+        present = [i.role for i in inputs if i.present],
+        absent = [i.role for i in inputs if !i.present],
+    )
+end
+
+"""
+    _hydrography_present(store, env_params) -> Bool
+
+Whether the store holds the monthly hydrography this run needs. A single explicitly named month
+is enough for a run that uses one; a run with `temperature_month = 0` uses all twelve, so all
+twelve must be there.
+"""
+function _hydrography_present(store::AbstractString, env_params::EnvironmentParams)
+    months = env_params.temperature_month == 0 ? (1:12) : (env_params.temperature_month,)
+    for m in months
+        # The fetcher names its files by source, month and dataset; a directory per month is
+        # what `fetch_boundary_hydrography_geodata` writes, and a store that holds eleven of
+        # twelve months is a store a twelve-month run cannot use.
+        hits = _month_dirs(store, m)
+        isempty(hits) && return false
+    end
+    return true
+end
+
+_month_dirs(store::AbstractString, m::Int) =
+    filter(n -> occursin("_$(lpad(m, 2, '0'))_", n), isdir(store) ? readdir(store) : String[])
+
+"""
+    assimilate_environmental_inputs(env_params; verbose = true, force = false) -> NamedTuple
+
+Convert the published products this configuration names into the GeoData store, skipping
+anything already there.
+
+Two fetches, using exactly the calls a simulation makes — `fetch_erddap_bathymetry` and
+`fetch_boundary_hydrography_geodata` — so the assimilation and the ingestion cannot drift
+apart into two different ways of reading one product. The notebook's step is this function;
+the simulation's ingestion is the same functions called from the same directory.
+
+Returns `(store_dir, written, skipped, manifest)`.
+"""
+function assimilate_environmental_inputs(env_params::EnvironmentParams;
+                                        verbose::Bool = true,
+                                        force::Bool = false)
+    store = abspath(environmental_store_dir(env_params))
+    mkpath(store)
+    lon_bounds = env_params.domain_lon
+    lat_bounds = env_params.domain_lat
+    lon_range = (Float64(lon_bounds[1]), Float64(lon_bounds[2]))
+    lat_range = (Float64(lat_bounds[1]), Float64(lat_bounds[2]))
+    temp_src = Symbol(env_params.temperature_source)
+
+    written = String[]
+    skipped = String[]
+    before = environmental_input_status(env_params)
+    if !force && isempty(before.absent)
+        verbose && println("  [assimilate] the store at $(store) is up to date")
+    end
+
+    # -- bathymetry ------------------------------------------------------------
+    bathy_target = joinpath(store, "bathymetry.zarr")
+    if force || !isdir(bathy_target)
+        verbose && println("  [assimilate] bathymetry: $(env_params.bathymetry_source) over " *
+                           "$(lon_range) lon, $(lat_range) lat -> bathymetry.zarr")
+        GeoDataSources.fetch_erddap_bathymetry(
+            lon_range = lon_range,
+            lat_range = lat_range,
+            dataset_id = env_params.bathymetry_source == "etopo2022" ?
+                         "ETOPO_2022_v1_15s" : env_params.bathymetry_source,
+            output_path = bathy_target,
+            verbose = verbose && false)
+        push!(written, "bathymetry")
+    else
+        push!(skipped, "bathymetry")
+        verbose && println("  [assimilate] bathymetry: already in the store, skipped")
+    end
+
+    # -- hydrography, one month at a time ---------------------------------------
+    months = env_params.temperature_month == 0 ? (1:12) : (env_params.temperature_month,)
+    for m in months
+        if !force && !isempty(_month_dirs(store, m))
+            push!(skipped, "hydrography[$(m)]")
+            continue
+        end
+        verbose && println("  [assimilate] hydrography: $(temp_src) month $(m)")
+        GeoDataSources.fetch_boundary_hydrography_geodata(
+            temp_src;
+            lon_range = lon_range,
+            lat_range = lat_range,
+            input_dir = store,
+            month = m,
+            verbose = false)
+        push!(written, "hydrography[$(m)]")
+    end
+
+    manifest = Dict{String, Any}(
+        "assimilated_utc" => string(now(Dates.UTC)),
+        "store_root" => store,
+        "domain" => Dict("lon" => [lon_range[1], lon_range[2]],
+                         "lat" => [lat_range[1], lat_range[2]]),
+        "inputs" => [
+            Dict("role" => "bathymetry", "product" => env_params.bathymetry_source,
+                 "where" => bathy_target),
+            Dict("role" => "hydrography", "product" => string(temp_src),
+                 "where" => store, "months" => collect(months)),
+        ],
+    )
+    open(joinpath(store, "manifest.toml"), "w") do io
+        TOML.print(io, manifest)
+    end
+    verbose && println("  [assimilate] manifest.toml written -> $(store)")
+    return (store_dir = store, written = written, skipped = skipped,
+            manifest = joinpath(store, "manifest.toml"))
+end
+
+"""
+    read_assimilated_environment(env_params) -> (; depth, temperature, monthly, hydro)
+
+The assimilated store, read back the same way a simulation reads it.
+
+`depth` is the bathymetry field on the configured grid, `temperature` the bottom and pelagic
+field for the configured month, and `monthly` the twelve-month series. Calling this after
+`assimilate_environmental_inputs` is the reader side of the same contract: one directory, and
+no knowledge of where any product was published.
+"""
+function read_assimilated_environment(env_params::EnvironmentParams)
+    st = environmental_input_status(env_params)
+    isempty(st.absent) || error(
+        "The environmental store at $(st.store_dir) has no $(st.absent). Run " *
+        "`assimilate_environmental_inputs` first.")
+    return build_geodata_environmental_fields(env_params, (env_params.grid_nx, env_params.grid_ny))
+end

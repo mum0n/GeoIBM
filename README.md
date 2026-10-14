@@ -58,16 +58,16 @@ Two pillars:
    each one, and `configs/snowcrab.toml` is the species overlay.
 
 ```
-model_agent/
+IABM/
 ├── Project.toml
 ├── configs/
 │   ├── default.toml          # every declared parameter, at its struct default
 │   └── snowcrab.toml         # snow crab overlay: biology plus operating scale
 ├── docs/
-│   ├── model_agent.md        # detailed reference
+│   ├── IABM.md        # detailed reference
 │   └── snowcrab_ibm_research_paper.md
 ├── src/
-│   ├── model_agent.jl        # module, includes, exports
+│   ├── IABM.jl        # module, includes, exports
 │   ├── types.jl              # Organism, the twelve parameter structs, config plumbing
 │   ├── species.jl            # the SpeciesBehavior implementation and stage tables
 │   ├── organism_dynamics.jl  # allometry, bioenergetics, molting, mortality, cohorts
@@ -76,12 +76,35 @@ model_agent/
 │   ├── cli.jl                # argument parsing, run reports, orchestration
 │   ├── visualization.jl      # CairoMakie figures and animations
 │   └── gui.jl                # GLMakie interactive dashboard
+├── notebooks/
+│   └── workflow.jl            # Pluto: assimilate the store, configure, run, analyse
 ├── scripts/
 │   ├── organism_ibm.jl              # simulation CLI
 │   ├── organism_orchestrator.jl     # calibration driver
 │   └── fit_macro_models.jl          # post-hoc macro model fitting
 └── test/runtests.jl
 ```
+
+## The environmental store
+
+An IBM needs a world: a sea floor and a thermal cycle. Those come from published products —
+ETOPO 2022 bathymetry and WOA23 (or GLORYS12V1) hydrography — and they are assimilated once
+into a GeoData store beside the other halves':
+
+| artefact | product | where |
+|---|---|---|
+| `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `../lakehouse/IABM/` |
+| `woa23_temperature_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/IABM/` |
+| `woa23_salinity_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/IABM/` |
+
+```julia
+status  = IABM.environmental_input_status(env)        # what is already there
+result  = IABM.assimilate_environmental_inputs(env)   # fetch what is missing
+fields  = IABM.read_assimilated_environment(env)      # what a run reads
+```
+
+It is idempotent: what is already assimilated is skipped, so a second run does no downloading.
+`notebooks/workflow.jl` starts with this step and explains what each assumption costs.
 
 | File | Responsibility |
 |---|---|
@@ -263,7 +286,7 @@ or a whole schedule as `--intermolt_days_schedule=60,75,90`.
 ## API
 
 ```julia
-using model_agent
+using IABM
 
 params = IBMParameters(
     fishery = FisheryParams(fishing_probability_daily = 0.005),

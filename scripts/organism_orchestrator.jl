@@ -23,9 +23,7 @@ multi-attribute biological and ecological criteria are achieved:
 ================================================================================
 """
 
-using DrWatson
-@quickactivate "model_agent"
-using model_agent
+using IABM
 
 using Printf
 using Random
@@ -117,7 +115,7 @@ function build_parameter_grid(vary_dict::Dict{Symbol, Vector{Float64}})
     val_arrays = [vary_dict[k] for k in keys_vec]
 
     combinations = [Dict{Symbol, Float64}() for _ in 1:prod(length.(val_arrays))]
-    
+
     indices = CartesianIndices(Tuple(length.(val_arrays)))
     for (comb_idx, c_idx) in enumerate(indices)
         d = Dict{Symbol, Float64}()
@@ -515,14 +513,14 @@ function main_orchestrator()
         println("       * Steady Size Structure             : ", crit.is_size_steady ? "PASSED" : "FAILED", " (Drift = $(round(crit.size_drift * 100.0, digits=1))%)")
         println("       * Maturity Ogive Fidelity           : ", crit.is_maturity_realistic ? "PASSED" : "FAILED", " (RMSE = $(round(crit.maturity_rmse, digits=3)))")
         println("       * Growth Schedule Fidelity          : ", crit.is_growth_realistic ? "PASSED" : "FAILED", " (RMSE = $(round(crit.growth_rmse, digits=2)) mm)")
-    
+
         # 4. Save best configuration to file
         mkpath(cli_opts[:output_dir])
         save_path = isabspath(cli_opts[:save_best]) ?
             cli_opts[:save_best] : joinpath(cli_opts[:output_dir], cli_opts[:save_best])
         save_ibm_configuration(save_path, best_result.merged_config)
         println("\n Saved calibrated configuration file to: $(save_path)")
-    
+
         # 5. Export diagnostic figures if requested
         if cli_opts[:plot_best]
             println(" Exporting diagnostic figures for winning configuration...")

@@ -1,7 +1,7 @@
 """
     src/leaflet_dashboard.jl
 
-Interactive Leaflet-based Web Dashboard for model_agent.
+Interactive Leaflet-based Web Dashboard for IABM.
 Embeds real-time geographic maps, bathymetry, dynamic bottom & surface temperature
 layers, dynamic HSI fields, moving organism agent positions, and user-interactive
 controls (location bounding box selection, time window sliders, transport run/pause,

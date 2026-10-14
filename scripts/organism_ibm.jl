@@ -31,20 +31,18 @@ using Statistics
 using DataFrames
 using CairoMakie
 
-# Activate environment and load model_agent
-using DrWatson
-@quickactivate "model_agent"
-using model_agent
+# Activate environment and load IABM
+using IABM
 
 """
     main()
 
 Entry point for the organism IBM CLI simulation execution.
-Delegates directly to `model_agent.run_ibm_cli(ARGS)` to guarantee canonical
+Delegates directly to `IABM.run_ibm_cli(ARGS)` to guarantee canonical
 argument parsing, parameter discovery, and dashboard dispatch.
 """
 function main()
-    return model_agent.run_ibm_cli(ARGS)
+    return IABM.run_ibm_cli(ARGS)
 end
 
 # If invoked as a standalone script from terminal, execute main()

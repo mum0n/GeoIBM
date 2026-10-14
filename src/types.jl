@@ -592,6 +592,12 @@ Base.@kwdef struct EnvironmentParams
     temperature_month::Int = 0
     bathymetry_source::String = "etopo2022"
     geodata_input_dir::String = "inputs"
+    # The assimilated environmental store: the run reads its bathymetry and hydrography from
+    # here, and `assimilate_environmental_inputs` writes them here. Relative to the workspace
+    # so it resolves the same way from a notebook and from the CLI. An empty string means
+    # `geodata_input_dir`, which is a run-local cache and not a store shared with the other
+    # halves.
+    geodata_store_dir::String = "../lakehouse/IABM"
     # Density-dependent crowding. Total benthic abundance is
     # `individuated + aggregate`, and the mortality feedback is
     # `1 + (N / K)^exponent`.

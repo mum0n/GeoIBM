@@ -288,7 +288,7 @@ function display_cli_help(io::IO = stdout)
   ORGANISM INDIVIDUAL-BASED MODEL (IBM) - COMMAND LINE INTERFACE
 ================================================================================
 Usage:
-  model_agent [OPTIONS]
+  IABM [OPTIONS]
   julia scripts/organism_ibm.jl [OPTIONS]
 
 Every parameter accepts exactly one name, matching the field names declared in

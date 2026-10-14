@@ -24,9 +24,7 @@ using Printf
 using Random
 using Statistics
 
-using DrWatson
-@quickactivate "model_agent"
-using model_agent
+using IABM
 
 function parse_macro_args(args::Vector{String})
     config = Dict{Symbol, Any}(

@@ -1,5 +1,5 @@
 """
-Test suite for the model_agent package.
+Test suite for the IABM package.
 """
 
 using Test
@@ -12,10 +12,10 @@ using TOML
 
 # Activate package
 using DrWatson
-@quickactivate "model_agent"
-using model_agent
+@quickactivate "IABM"
+using IABM
 
-@testset "model_agent Tests" begin
+@testset "IABM Tests" begin
 
     @testset "Empirical Bounds and Allometry" begin
         # Monotonicity of lower bounds across stages
@@ -1105,8 +1105,8 @@ fem4 = length(ps.stage_size_range_stage1) +
         @test min_intermolt_days(b, adult, 9) == min_intermolt_days(b, 9)
         @test required_degree_days(b, juvenile, 4) == required_degree_days(b, 4)
         @test required_degree_days(b, adult, 9) == required_degree_days(b, 9)
-        @test model_agent.life_stage_index(juvenile) === nothing
-        @test model_agent.life_stage_index(egg) == 0
+        @test IABM.life_stage_index(juvenile) === nothing
+        @test IABM.life_stage_index(egg) == 0
     end
 
     @testset "Every Declared Parameter Is Read" begin
@@ -2685,8 +2685,8 @@ living = collect(allagents(state.model))
         # The panel is a kernel density estimate on a linear axis. The binned
         # histogram that once stood in for it is gone, so assert it stays gone: it
         # was a divergent second way to compute the same curve.
-        @test !isdefined(model_agent, :size_frequency)
-        @test !isdefined(model_agent, :GUI_SIZE_BIN_WIDTH_MM)
+        @test !isdefined(IABM, :size_frequency)
+        @test !isdefined(IABM, :GUI_SIZE_BIN_WIDTH_MM)
         # A shared bandwidth, or the small samples get smoothed far more finely than
         # the large ones and draw as spikes beside them.
         @test SIZE_DENSITY_BANDWIDTH_MM > 0
@@ -3224,8 +3224,8 @@ living = collect(allagents(state.model))
     @testset "Public surface and configuration plumbing" begin
         # Every exported name must resolve. The module once exported six
         # `FECUNDITY_*` names declared as `DEFAULT_FECUNDITY_*`, so `using
-        # model_agent` gave you nothing to import under the exported name.
-        undefined_exports = filter(n -> !isdefined(model_agent, n), names(model_agent))
+        # IABM` gave you nothing to import under the exported name.
+        undefined_exports = filter(n -> !isdefined(IABM, n), names(IABM))
         @test isempty(undefined_exports)
 
         # --- Configuration surface is derived, not hand-maintained ---
@@ -3359,7 +3359,7 @@ living = collect(allagents(state.model))
         base = IBMParameters()
         juv = base.organism.juvenile_max_stage
         agg = fill(0.0, 24)
-        for s in model_agent.FIRST_COHORT_STAGE:(juv - 1)
+        for s in IABM.FIRST_COHORT_STAGE:(juv - 1)
             agg[s+1] = 100.0
         end
         fem = fill(0.0, 24)
@@ -3378,9 +3378,9 @@ living = collect(allagents(state.model))
         orgs = collect(allagents(m))
         pop = Agents.abmproperties(m)[:aggregate_populations]
 @test sort(unique([g.stage for g in pop.groups])) ==
-                collect(model_agent.FIRST_COHORT_STAGE:(p.organism.juvenile_max_stage - 1))
+                collect(IABM.FIRST_COHORT_STAGE:(p.organism.juvenile_max_stage - 1))
         @test length(pop.groups) ==
-                p.organism.juvenile_max_stage - model_agent.FIRST_COHORT_STAGE
+                p.organism.juvenile_max_stage - IABM.FIRST_COHORT_STAGE
 
         # Every benthic stage is represented, for each sex, within its ceiling.
         # Recruits are individuated into `juvenile_max_stage`, so that is where

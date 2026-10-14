@@ -58,7 +58,7 @@ days                    = 7300     # Total simulated duration in days
 # A 1000 x 1000 grid at one cell per metre is a 1 km x 1 km footprint, the scale of
 # a single snow crab survey stratum. It costs more per step than the baseline grid,
 # mostly through the two environmental fields that touch every cell each day; see
-# the performance notes in `docs/model_agent.md` for what that costs and what has
+# the performance notes in `docs/IABM.md` for what that costs and what has
 # been done about it.
 grid_nx                 = 1000    # Grid width in cells
 grid_ny                 = 1000    # Grid height in cells
