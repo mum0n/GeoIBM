@@ -113,6 +113,12 @@ function default_ibm_configuration()
     config[:save_file] = "simulation_results.csv"
     config[:animation_file] = "organism_animation.mp4"
 
+    # Default n_agents is the sum of the initial sex cohort vectors.
+    config[:n_agents] = round(
+        Int,
+        sum(config[:initial_female_cohort]) + sum(config[:initial_male_cohort])
+    )
+
     sync_grid_dimensions!(config)
     return config
 end
@@ -292,6 +298,16 @@ function load_ibm_configuration(
     end
 
     sync_grid_dimensions!(flat; explicit = file_keys)
+
+    # If n_agents was not explicitly set in the loaded file, update or initialize it
+    # from the resolved initial cohort vectors.
+    if !(:n_agents in file_keys) && haskey(flat, :initial_female_cohort) &&
+       haskey(flat, :initial_male_cohort)
+        flat[:n_agents] = round(
+            Int,
+            sum(flat[:initial_female_cohort]) + sum(flat[:initial_male_cohort])
+        )
+    end
 
     # Report keys that will have no effect. Silently dropping them is how a
     # misspelled or renamed key survived in a shipped configuration file: the run

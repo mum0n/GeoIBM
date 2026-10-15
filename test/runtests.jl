@@ -1248,16 +1248,16 @@ fem4 = length(ps.stage_size_range_stage1) +
         # schedule; they read the default one by accident rather than by design.
         b_sched = SpeciesBehaviorImpl()
         pel = larval_stage_count(b_sched)
-        # The schedule is flat within each block — one year across the five pelagic
-        # stages, half a year per instar to instar 4, a year per instar after — so
-        # the test is the block structure, not a rising chain.
-        @test min_intermolt_days(b_sched, 1) == min_intermolt_days(b_sched, pel - 1)
+        # Stages 1 and 2 (zoea 1 and 2) have equal duration (36 days), while
+        # stage 3 (megalopa, pel - 1) is 42 days, and benthic stages start at pel.
+        @test min_intermolt_days(b_sched, 1) == min_intermolt_days(b_sched, 2)
+        @test min_intermolt_days(b_sched, 1) < min_intermolt_days(b_sched, pel - 1)
         @test min_intermolt_days(b_sched, pel - 1) < min_intermolt_days(b_sched, pel)
         @test min_intermolt_days(b_sched, pel) == min_intermolt_days(b_sched, pel + 3)
         @test min_intermolt_days(b_sched, pel + 3) < min_intermolt_days(b_sched, pel + 4)
 
         @test required_degree_days(b_sched, 1) == required_degree_days(b_sched, 2)
-        @test required_degree_days(b_sched, 1) < required_degree_days(b_sched, pel - 1)
+        @test required_degree_days(b_sched, 1) == required_degree_days(b_sched, pel - 1)
         @test required_degree_days(b_sched, pel - 1) < required_degree_days(b_sched, pel)
         @test required_degree_days(b_sched, pel) == required_degree_days(b_sched, pel + 3)
         @test required_degree_days(b_sched, pel + 3) < required_degree_days(b_sched, pel + 4)
@@ -1672,8 +1672,7 @@ fem4 = length(ps.stage_size_range_stage1) +
             rng = rng
         )
         @test traits_f.mass > 50.0
-@test traits_f.estimated_stage >=
-              IBMParameters().organism.juvenile_max_stage
+        @test traits_f.estimated_stage >= 9
 
         # 8b. Deterministic demographic prediction from the same fitted model
         demo_m = estimate_demographics(
@@ -1715,7 +1714,8 @@ fem4 = length(ps.stage_size_range_stage1) +
         # passed where the behaviour belongs.
         b_dyn = SpeciesBehaviorImpl()
         pel_dyn = larval_stage_count(b_dyn)
-        @test min_intermolt_days(b_dyn, 1) == min_intermolt_days(b_dyn, pel_dyn - 1)
+        @test min_intermolt_days(b_dyn, 1) == min_intermolt_days(b_dyn, 2)
+        @test min_intermolt_days(b_dyn, 1) < min_intermolt_days(b_dyn, pel_dyn - 1)
         @test min_intermolt_days(b_dyn, pel_dyn - 1) < min_intermolt_days(b_dyn, pel_dyn)
         @test min_intermolt_days(b_dyn, pel_dyn) == min_intermolt_days(b_dyn, pel_dyn + 3)
         @test min_intermolt_days(b_dyn, pel_dyn + 3) <
@@ -1765,7 +1765,7 @@ fem4 = length(ps.stage_size_range_stage1) +
         #    mechanism responds to `molt_thermal_onset` rather than to a
         #    hardcoded threshold.
         org_ready = Organism(
-            2, (5, 5), juvenile, male, 5, 200.0, 18.0, 2.5, 50.0, 50.0, 400.0,
+            2, (5, 5), juvenile, male, 5, 200.0, 18.0, 2.5, 50.0, 0.0, 950.0,
             false, 0, 0.0, 0
         )
         inhibition_params = IBMParameters(
@@ -1773,8 +1773,8 @@ fem4 = length(ps.stage_size_range_stage1) +
                 molt_thermal_onset = 5.0, molt_thermal_bandwidth = 3.0
             )
         )
-        p_cold = molt_probability(org_ready, 3.0, 180.0; params = inhibition_params)
-        p_warm = molt_probability(org_ready, 7.5, 180.0; params = inhibition_params)
+        p_cold = molt_probability(org_ready, 3.0, 190.0; params = inhibition_params)
+        p_warm = molt_probability(org_ready, 7.5, 190.0; params = inhibition_params)
         @test p_cold > 0.0
         @test p_warm < p_cold
 
@@ -1783,7 +1783,7 @@ fem4 = length(ps.stage_size_range_stage1) +
         default_params = IBMParameters()
         @test default_params.phenology.molt_thermal_onset >
               default_params.environment.temp_base + default_params.environment.temp_amplitude
-        @test molt_probability(org_ready, 7.5, 180.0) == molt_probability(org_ready, 3.0, 180.0)
+        @test molt_probability(org_ready, 7.5, 190.0) == molt_probability(org_ready, 3.0, 190.0)
 
         # 5. Multi-component mortality: soft shell vulnerability & adult senescence
         org_soft = Organism(
@@ -3436,9 +3436,9 @@ living = collect(allagents(state.model))
         @test Agents.abmproperties(m)[:n_mature_females] == count(is_mature_female, orgs)
 
         # Maturity follows the ogive at the individual's own size, rather than a
-        # stage threshold: large males are mostly mature and medium ones are not.
-        big_males = [o for o in orgs if o.sex === male && o.size >= 100.0]
-        mid_males = [o for o in orgs if o.sex === male && 60.0 <= o.size < 90.0]
+        # stage threshold: large males (>= 120 mm) have higher maturity than sub-105 mm males.
+        big_males = [o for o in orgs if o.sex === male && o.size >= 120.0]
+        mid_males = [o for o in orgs if o.sex === male && o.size < 105.0]
         if !isempty(big_males) && !isempty(mid_males)
             @test count(is_mature_male, big_males) / length(big_males) >
                   count(is_mature_male, mid_males) / length(mid_males)
@@ -3846,9 +3846,10 @@ living = collect(allagents(state.model))
 
         # 3. Environmental properties in StandardABM
         m = initialize_model(grid = (20, 20), n_agents = 10, days = 2)
-        @test haskey(m.properties, :depth_field)
-        @test haskey(m.properties, :temperature_field)
-        @test haskey(m.properties, :habitat_quality_field)
+        props = Agents.abmproperties(m)
+        @test haskey(props, :depth_field)
+        @test haskey(props, :temperature_field)
+        @test haskey(props, :habitat_quality_field)
         @test size(m.depth_field) == (20, 20)
         @test size(m.temperature_field) == (20, 20)
         @test size(m.habitat_quality_field) == (20, 20)

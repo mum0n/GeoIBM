@@ -666,7 +666,11 @@ first or last entry so that terminal stages reuse the final schedule value.
 """
 function stage_schedule_lookup(schedule::AbstractVector, stage::Integer)
     isempty(schedule) && error("stage schedule must not be empty")
-    idx = clamp(Int(stage), 0, length(schedule) - 1) + 1
+    stg = Int(stage)
+    if stg < 0
+        throw(DomainError(stg, "Developmental stage index cannot be negative"))
+    end
+    idx = min(stg, length(schedule) - 1) + 1
     return Float64(schedule[idx])
 end
 

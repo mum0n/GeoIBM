@@ -51,9 +51,8 @@ use_reproduction      = true    # Mating, brooding and egg extrusion
 # -----------------------------------------------------------------------------
 [simulation]
 dt                      = 1.0     # Time step in days
-seed                    = 42      # RNG seed; a run is reproducible given this
-# >>> snow crab override
-days                    = 7300     # Total simulated duration in days
+seed                    = 1234    # RNG seed; a run is reproducible given this
+days                    = 730     # Total simulated duration in days
 # >>> snow crab override
 # A 1000 x 1000 grid at one cell per metre is a 1 km x 1 km footprint, the scale of
 # a single snow crab survey stratum. It costs more per step than the baseline grid,
@@ -116,6 +115,7 @@ temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
 temperature_month     = 0          # Climatological month (0 = annual)
 bathymetry_source     = "etopo2022"# Bathymetric dataset (etopo2022, erddap)
 geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
+geodata_store_dir     = "../lakehouse/GeoIBM" # Assimilated environmental storage directory
 # --- Food and habitat ---
 food_max                        = 10.0    # Maximum local benthic food density
 food_replenishment_rate         = 0.1     # Daily replenishment increment per cell

@@ -1514,6 +1514,13 @@ function optimize_blocks(
         improved = false
         for (block, (lo, hi)) in zip(blocks, block_bounds)
             isempty(block) && continue
+            init_u = [
+                begin
+                    span = hi[k] - lo[k]
+                    eps_k = max(1e-6, 1e-4 * span)
+                    min(max(x[b_idx], lo[k] + eps_k), hi[k] - eps_k)
+                end for (k, b_idx) in enumerate(block)
+            ]
             attempt = _attempt_optimize() do
                 optimize(
                     u -> begin
@@ -1523,7 +1530,7 @@ function optimize_blocks(
                     end,
                     lo,
                     hi,
-                    x[block],
+                    init_u,
                     Fminbox(NelderMead()),
                     options;
                     kwargs...
@@ -1539,7 +1546,7 @@ function optimize_blocks(
             if isfinite(value) && value < best_f - tol * (abs(best_f) + tol)
                 candidate = collect(Float64, Optim.minimizer(attempt.result))
                 if length(candidate) == length(block)
-                    x[block] .= candidate
+                    x[block] .= [min(max(candidate[k], lo[k]), hi[k]) for k in 1:length(candidate)]
                     best_f = value
                     improved = true
                 end

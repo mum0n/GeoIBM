@@ -748,7 +748,7 @@ Base.@kwdef struct OrganismParams
     stage_size_sample_b::Float64 = 2.5
     # Shell age is inferred as `(age_days - offset * (stage - first)) / days_per_year`.
     shell_age_stage_offset::Float64 = 180.0
-    shell_age_first_stage::Int = 4
+    shell_age_first_stage::Int = 6
     # Newmass-free shell condition index breakpoints, in days since ecdysis.
     shell_condition_days::Vector{Float64} = [30.0, 365.0, 730.0, 1277.5]
     # Wet mass and carapace size of a single egg.

@@ -586,7 +586,11 @@ function calculate_energy_change(
     # Net energy assimilation. A fraction `specific_dynamic_action` of the
     # assimilated intake is spent on processing, leaving the rest for growth.
     assim_eff = params.environment.assimilation_efficiency
-    usable_fraction = clamp(1.0 - org.specific_dynamic_action, 0.0, 1.0)
+    sda = org.specific_dynamic_action
+    if sda < 0.0 || sda > 1.0
+        error("specific_dynamic_action must be within [0, 1], received: $(sda)")
+    end
+    usable_fraction = 1.0 - sda
     net_assimilation = (actual_intake * assim_eff * usable_fraction) - maintenance_cost
 
     return (net_assimilation, actual_intake)

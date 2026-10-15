@@ -27,5 +27,5 @@ GeoDataSources = {path = "../GeoDataSources"}
 
 [compat]
 CairoMakie = "0.15"
-Optim = "2.3.2"
+Optim = "1.10, 1.11, 1.12, 1.13, 2"
 julia = "1.11.1"

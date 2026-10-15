@@ -100,6 +100,7 @@ temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
 temperature_month     = 0          # Climatological month (0 = annual)
 bathymetry_source     = "etopo2022"# Bathymetric dataset (etopo2022, erddap)
 geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
+geodata_store_dir     = "../lakehouse/GeoIBM" # Assimilated environmental storage directory
 # --- Food and habitat ---
 food_max                        = 10.0    # Maximum local benthic food density
 food_replenishment_rate         = 0.1     # Daily replenishment increment per cell
