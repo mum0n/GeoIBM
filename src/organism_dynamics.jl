@@ -1451,20 +1451,21 @@ where \$w_T(T) = \\frac{1}{2}\\left(1 + \\cos\\left(\\pi \\frac{T - T_{50}}{T_{\
 smoothly tapers the probability to zero at \$T_{\\text{zero}}\$ (default 10.0 °C).
 
 # Bathymetric Depth Suitability \$S_z(z)\$
-A Gaussian response centered at optimal depth \$z_{\\text{opt}}\$ (150 m) with smooth
-cosine window tapers at shallow (\$z_{\\min} = 20\$ m) and deep (\$z_{\\max} = 400\$ m) limits:
+A Gaussian response centered around optimal depth \$z_{\\text{opt}}\$ (140 m, \$\\sigma_z = 90\$ m)
+with smooth cosine boundary window tapers at shallow (\$z_{\\min} = 20\$ m) and deep (\$z_{\\max} = 400\$ m)
+limits:
 ```math
-S_z(z) = \\exp\\left(-\\frac{1}{2}\\left(\\frac{z - z_{\\text{opt}}}{\\sigma_z}\\right)^2\\right) \\cdot w_z(z)
+S_z(z) = \\exp\\left(-\\frac{1}{2}\\left(\\frac{z - z_{\\text{opt}}}{\\sigma_z}\\right)^2\\right) \\cdot w_{\\text{shallow}}(z) \\cdot w_{\\text{deep}}(z)
 ```
-where \$w_z(z)\$ strictly vanishes outside \$(z_{\\min}, z_{\\max})\$.
+where \$w_{\\text{shallow}}(z)\$ and \$w_{\\text{deep}}(z)\$ smoothly taper to zero at \$z_{\\min}\$ and \$z_{\\max}\$.
 
 # Arguments
 - `temperature`: Bottom water temperature in °C.
 - `depth`: Bathymetric seabed depth in meters (positive down).
 - `temp_half`: Temperature of 50% thermal suitability (default: 5.0 °C).
 - `temp_steepness`: Logistic slope parameter (default: 1.0).
-- `depth_opt`: Optimal modal depth (default: 150.0 m).
-- `depth_sigma`: Gaussian dispersion around modal depth (default: 50.0 m).
+- `depth_opt`: Optimal modal depth (default: 140.0 m).
+- `depth_sigma`: Gaussian dispersion around modal depth (default: 90.0 m).
 - `depth_min`: Shallow depth limit below which HSI is zero (default: 20.0 m).
 - `depth_max`: Deep depth limit beyond which HSI is zero (default: 400.0 m).
 - `temp_zero_threshold`: Temperature at which HSI tapers strictly to zero (default: 10.0 °C).
@@ -1477,8 +1478,8 @@ function calculate_habitat_suitability(
     depth::Real;
     temp_half::Real = 5.0,
     temp_steepness::Real = 1.0,
-    depth_opt::Real = 150.0,
-    depth_sigma::Real = 50.0,
+    depth_opt::Real = 140.0,
+    depth_sigma::Real = 90.0,
     depth_min::Real = 20.0,
     depth_max::Real = 400.0,
     temp_zero_threshold::Real = 10.0
@@ -1499,17 +1500,25 @@ function calculate_habitat_suitability(
         end
     end
 
-    # Bathymetric depth suitability S_z
+    # Bathymetric depth suitability S_z:
+    # A Gaussian response around optimal depth (140 m, σ = 90 m) with smooth boundary
+    # window tapers approaching zero at the shallow (depth_min = 20 m) and deep (depth_max = 400 m) boundaries.
     s_z = if z <= depth_min || z >= depth_max
         0.0
     else
         g_raw = exp(-0.5 * ((z - depth_opt) / depth_sigma)^2)
-        w_z = if z < depth_opt
-            0.5 * (1.0 - cos(π * (z - depth_min) / (depth_opt - depth_min)))
+        taper_width = min(40.0, depth_opt - depth_min)
+        w_shallow = if z < (depth_min + taper_width)
+            0.5 * (1.0 - cos(π * (z - depth_min) / taper_width))
         else
-            0.5 * (1.0 + cos(π * (z - depth_opt) / (depth_max - depth_opt)))
+            1.0
         end
-        g_raw * w_z
+        w_deep = if z > (depth_max - taper_width)
+            0.5 * (1.0 + cos(π * (z - (depth_max - taper_width)) / taper_width))
+        else
+            1.0
+        end
+        g_raw * w_shallow * w_deep
     end
 
     val = s_t * s_z

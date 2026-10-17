@@ -577,8 +577,8 @@ Base.@kwdef struct CriteriaParams
 end
 
 Base.@kwdef struct EnvironmentParams
-    temp_base::Float64 = 5.0
-    temp_amplitude::Float64 = 4.0
+    temp_offset::Float64 = 0.0
+    temp_multiplier::Float64 = 1.0
     temp_noise_sd::Float64 = 0.5
     temp_base_degreedays::Float64 = -1.5
     food_max::Float64 = 10.0
@@ -616,34 +616,10 @@ Base.@kwdef struct EnvironmentParams
     benthic_carrying_capacity::Float64 = 12_000.0
     half_saturation_food::Float64 = 2.0
     assimilation_efficiency::Float64 = 0.75
+    habitat_offset::Float64 = 0.0
+    habitat_multiplier::Float64 = 1.0
     habitat_quality_mean::Float64 = 0.5
     habitat_quality_sd::Float64 = 0.1
-    # --- Spatial structure in the habitat suitability index ---
-    #
-    # The HSI field was pure i.i.d. Gaussian noise about `habitat_quality_mean`:
-    # independent per cell, with no correlation between neighbours. That has two
-    # consequences. It is not a habitat at all — there is nowhere good to live, so
-    # the taxis in `organism_disperse!` and the food field it is layered onto have
-    # nothing to track — and on a 1000x1000 grid it renders as visual static that
-    # reads as a broken heatmap rather than a landscape.
-    #
-    # These add `habitat_peaks` Gaussian bumps of `habitat_peak_height` on top of
-    # the noise, at uniformly random positions, so the field has coherent good
-    # habitat that animals can aggregate in and disperse between.
-    #
-    # The width is a *fraction of the domain*, not a cell count, because the grid
-    # runs from 10x10 in the tests to 1000x1000 in operation: a fixed cell width
-    # would be a continent on one and invisible on the other.
-    #
-    # `habitat_quality_mean` defaults to 0.5, not 1.0. The field is clipped to
-    # [0, 1] and HSI enters `organism_disperse!` as a relative weight in a softmax,
-    # so a mean of 1.0 saturated the index: roughly half the cells pinned at 1.0,
-    # every peak clipped away above the ceiling, and neighbour correlation of 0.14
-    # instead of 0.54. The default therefore leaves headroom in both directions,
-    # without which `habitat_peaks` is inert.
-    habitat_peaks::Int = 3
-    habitat_peak_height::Float64 = 0.3
-    habitat_peak_width_fraction::Float64 = 0.15
     # --- Habitat taxis ---
     # `organism_disperse!` scores each candidate cell by how well it matches the
     # organism's preferred temperature and its food density relative to the grid
@@ -670,6 +646,16 @@ Base.@kwdef struct EnvironmentParams
     # Exponent of the density-dependent mortality feedback. A value above 1 makes
     # the response accelerate past carrying capacity instead of remaining linear.
     benthic_carrying_capacity_exponent::Float64 = 2.0
+end
+
+# Backward compatibility accessors for renamed temperature controls
+function Base.getproperty(env::EnvironmentParams, sym::Symbol)
+    if sym === :temp_base
+        return getfield(env, :temp_offset)
+    elseif sym === :temp_amplitude
+        return getfield(env, :temp_multiplier)
+    end
+    return getfield(env, sym)
 end
 
 Base.@kwdef struct OrganismParams
@@ -1248,7 +1234,11 @@ function IBMParameters(; kwargs...)
 
     for (k, v) in kwargs
         sym = Symbol(k)
-        if sym in fieldnames(ProcessToggles)
+        if sym === :temp_base
+            environment_kwargs[:temp_offset] = v
+        elseif sym === :temp_amplitude
+            environment_kwargs[:temp_multiplier] = v
+        elseif sym in fieldnames(ProcessToggles)
             toggles_kwargs[sym] = v
         elseif sym in fieldnames(SimulationParams)
             simulation_kwargs[sym] = v
@@ -1335,11 +1325,15 @@ const IBM_FIELD_OWNER = let owner = Dict{Symbol, Symbol}()
             haskey(owner, f) || (owner[f] = section)
         end
     end
+    owner[:temp_base] = :environment
+    owner[:temp_amplitude] = :environment
     owner
 end
 
 function Base.getproperty(p::IBMParameters, sym::Symbol)
-    owner = get(IBM_FIELD_OWNER, sym, nothing)
+    actual_sym = sym === :temp_base ? :temp_offset :
+                 sym === :temp_amplitude ? :temp_multiplier : sym
+    owner = get(IBM_FIELD_OWNER, actual_sym, nothing)
     owner === nothing && return getfield(p, sym)
-    return getfield(getfield(p, owner), sym)
+    return getfield(getfield(p, owner), actual_sym)
 end

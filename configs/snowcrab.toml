@@ -101,19 +101,18 @@ initial_degree_days_max        = 300.0
 # -----------------------------------------------------------------------------
 [environment]
 # --- Thermal regime ---
-temp_base             = 5.0        # Annual baseline temperature (deg C)
-temp_amplitude        = 4.0        # Seasonal oscillation amplitude (deg C)
+temp_offset           = 0.0        # Baseline temperature offset (deg C)
+temp_multiplier       = 1.0        # Seasonal cycle amplitude multiplier (default: 1.0)
 temp_noise_sd         = 0.5        # Spatial thermal stochasticity (SD)
 temp_base_degreedays  = -1.5       # Extra degree-days contributed by temperature
 # --- GeoData Real Habitat Integration ---
-use_geodata           = false      # Query GeoData for real bathymetry and hydrography
+use_geodata           = true      # Query GeoData for real bathymetry and hydrography
 domain_lon            = [-65.0, -63.0] # Longitudinal bounds [min_lon, max_lon]
 domain_lat            = [43.0, 45.0]   # Latitudinal bounds [min_lat, max_lat]
 time_range            = ["1993-01-01", "1993-12-31"] # Simulation temporal window
 pelagic_depth         = 15.0       # Mean water column depth for planktonic stages (m)
 temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
-temperature_month     = 0          # Climatological month (0 = annual)
-bathymetry_source     = "etopo2022"# Bathymetric dataset (etopo2022, erddap)
+bathymetry_source     = "nwa_bathymetry" # Bathymetric dataset (nwa_bathymetry, etopo2022, erddap)
 geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
 geodata_store_dir     = "../lakehouse/GeoIBM" # Assimilated environmental storage directory
 # --- Food and habitat ---
@@ -138,22 +137,8 @@ half_saturation_food            = 2.0     # Half-saturation constant for intake
 assimilation_efficiency         = 0.75    # Food to energy conversion efficiency
 habitat_quality_mean            = 0.5     # Mean habitat quality on [0, 1]
 habitat_quality_sd              = 0.1     # Spatial habitat quality stochasticity
-# --- Spatial structure in the habitat suitability index ---
-# The HSI field is a Gaussian noise floor about `habitat_quality_mean` carrying
-# `habitat_peaks` additive Gaussian bumps at random positions. The noise alone
-# has no spatial correlation, so it leaves nowhere better to live than anywhere
-# else and renders as static on a large grid; the peaks give the taxis coherent
-# habitat to aggregate in.
-# The width is a fraction of the domain, not a cell count, so the structure looks
-# the same at 10x10 and at 1000x1000. Set `habitat_peaks = 0` for pure noise.
-#
-# `habitat_quality_mean` is 0.5 rather than 1.0 on purpose. The field is clipped to
-# [0, 1] and HSI enters dispersal as a relative weight in a softmax, so a mean of
-# 1.0 saturated the index and clipped every peak away: neighbour correlation 0.14
-# instead of 0.54. The default leaves headroom in both directions.
-habitat_peaks                   = 3       # Number of Gaussian habitat peaks
-habitat_peak_height             = 0.3     # Added HSI at a peak centre, before clipping to [0, 1]
-habitat_peak_width_fraction     = 0.15    # Peak sigma as a fraction of the grid width
+habitat_offset                  = 0.0     # Mean suitability offset (added to climatological HSI, or base mean if synthetic)
+habitat_multiplier              = 1.0     # Suitability amplitude/noise multiplier
 # --- Habitat-directed movement ---
 # Dispersal scores each candidate cell by thermal suitability and food density,
 # then samples a heading from a softmax of those scores. The thermal optimum and

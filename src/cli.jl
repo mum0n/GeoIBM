@@ -225,12 +225,9 @@ function parse_cli_args(args::AbstractVector)
         # an unknown name is reported rather than silently dropped.
         if k_str == "help"
             config[:help] = true
-        elseif k_str == "gui"
+        elseif k_str in ("gui", "gui_simple", "gui-simple")
             config[:gui] = (lowercase(v_str) != "false")
-        elseif k_str == "gui_simple"
-            config[:gui_simple] = (lowercase(v_str) != "false")
-        elseif k_str in ("gui_compare", "gui-compare", "compare")
-            config[:gui_compare] = (lowercase(v_str) != "false")
+            config[:gui_simple] = config[:gui]
         elseif k_str == "config"
             # Already consumed by the pre-scan that located the configuration
             # files; it is recorded on the config dict rather than set here.
@@ -297,9 +294,7 @@ alternative spellings: an unrecognized name is reported and ignored.
 
 Flags:
   --config=<Path>            Configuration file (TOML format)
-  --gui=<Bool>               Launch the interactive Leaflet spatial dashboard (default GUI)
-  --gui_compare=<Bool>       Launch the dual-column Leaflet scenario comparison dashboard
-  --gui_simple=<Bool>        Launch the simple real-time GLMakie dashboard
+  --gui=<Bool>               Launch the interactive real-time GLMakie dashboard
   --help                     Show this help message
 
 Common parameters (see configs/default.toml for the full list):
@@ -309,8 +304,10 @@ Common parameters (see configs/default.toml for the full list):
   --grid_ny=<Int>                          Spatial grid height (default: 100)
   --dt=<Float>                             Simulation time step in days (default: 1.0)
   --seed=<Int>                             Random seed (default: 1234)
-  --temp_base=<Float>                      Mean bottom water temperature (default: 5.0)
-  --temp_amplitude=<Float>                 Annual temperature amplitude (default: 4.0)
+  --temp_offset=<Float>                    Baseline bottom temperature offset (default: 0.0)
+  --temp_multiplier=<Float>                Seasonal temperature multiplier (default: 1.0)
+  --temp_base=<Float>                      Legacy alias for --temp_offset
+  --temp_amplitude=<Float>                 Legacy alias for --temp_multiplier
   --benthic_carrying_capacity=<Float>      Total benthic capacity for the whole model,
                                            not per cell (default: 12000.0)
   --frequency_days=<Float>                 Output sampling interval (default: 365.0)
@@ -482,9 +479,9 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
         return 0
     end
 
-    if config[:gui_simple]
+    if get(config, :gui, false) || get(config, :gui_simple, false)
         println("="^80)
-        println(" Launching Organism IBM Simple GUI Dashboard (GLMakie)...")
+        println(" Launching Organism IBM GUI Dashboard (GLMakie)...")
         println("="^80)
         fig, state = launch_organism_gui(
             config;
@@ -499,32 +496,6 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
         return 0
     end
 
-    if get(config, :gui_compare, false)
-        println("="^80)
-        println(" Launching Organism IBM Dual-Column Leaflet Comparison Dashboard...")
-        println("="^80)
-        launch_leaflet_comparison_dashboard(
-            config;
-            display_window = true,
-            n_agents = get(config, :n_agents, nothing),
-            output_html = joinpath(config[:output_dir], "dashboard_compare.html")
-        )
-        return 0
-    end
-
-    if get(config, :gui, false)
-        println("="^80)
-        println(" Launching Organism IBM Interactive Leaflet Spatial Dashboard...")
-        println("="^80)
-        launch_leaflet_dashboard(
-            config;
-            display_window = true,
-            n_agents = get(config, :n_agents, nothing),
-            output_html = joinpath(config[:output_dir], "dashboard.html")
-        )
-        return 0
-    end
-
     println("="^80)
     println(" Initializing Organism IBM Simulation...")
     println(" Configuration:")
@@ -535,11 +506,11 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
     @printf("   - Agents          : %d\n", n_init)
     @printf("   - Days            : %d (%.2f years)\n", config[:days], config[:days] / 365.0)
     @printf("   - Grid Size       : %d x %d\n", config[:grid][1], config[:grid][2])
-    t_base = get(config, :temp_base, 5.0)
-    t_amp = get(config, :temp_amplitude, 4.0)
+    t_offset = get(config, :temp_offset, get(config, :temp_base, 0.0))
+    t_mult = get(config, :temp_multiplier, get(config, :temp_amplitude, 1.0))
     f_prob = get(config, :fishing_probability_daily, 0.0)
     carrying_cap = get(config, :benthic_carrying_capacity, 300.0)
-    @printf("   - Temperature     : %.1f ± %.1f °C\n", t_base, t_amp)
+    @printf("   - Temperature     : offset %+.1f °C, multiplier %.2f×\n", t_offset, t_mult)
     @printf("   - Harvest Prob    : %.4f daily\n", f_prob)
     @printf("   - Carrying Cap    : %.1f organisms (model total)\n", carrying_cap)
     @printf("   - Random Seed     : %d\n", config[:seed])

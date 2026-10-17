@@ -19,8 +19,7 @@ Common options:
     --seed <Int>        Random number generator seed (default: 1234)
     --plot <Bool>       Generate and save visualization plots
     --animate <Bool>    Generate and record a spatial animation
-    --gui <Bool>        Launch interactive Leaflet spatial dashboard (default GUI)
-    --gui_simple <Bool> Launch simple real-time GLMakie GUI dashboard
+    --gui <Bool>        Launch interactive real-time GLMakie GUI dashboard
     --output_dir <Path> Directory to save generated figures (default: outputs)
     --help              Print this help message
 """

@@ -92,10 +92,26 @@ ETOPO 2022 bathymetry and WOA23 (or GLORYS12V1) hydrography — and they are ass
 into a GeoData store beside the other halves':
 
 | artefact | product | where |
+| artefact | product | where |
 |---|---|---|
-| `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `../lakehouse/GeoIBM/` |
-| `woa23_temperature_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/GeoIBM/` |
-| `woa23_salinity_<mm>_0.25deg.zarr` | WOA23, keyless | `../lakehouse/GeoIBM/` |
+| `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `lakehouse_dir("GeoIBM")` |
+| `woa23_temperature_<mm>_0.25deg.zarr` | WOA23, keyless | `lakehouse_dir("GeoIBM")` |
+| `woa23_salinity_<mm>_0.25deg.zarr` | WOA23, keyless | `lakehouse_dir("GeoIBM")` |
+
+### Lakehouse Location Configuration
+
+`GeoIBM` resolves the shared data lakehouse via `GeoData.lakehouse_dir("GeoIBM")`.
+The lakehouse root is determined by the following precedence:
+* `ENV["GEOIBM_STORE_ROOT"]` or `ENV["GEODATA_LAKEHOUSE"]`.
+* `LocalPreferences.toml` (`[GeoData] lakehouse_dir`).
+* `~/.geodata/storage.toml` (`[storage] store_root`).
+* Proximity fallback (`projects/lakehouse/GeoIBM`).
+
+To configure the lakehouse persistently for your environment:
+```julia
+using GeoData
+GeoData.set_lakehouse_dir!("/path/to/shared/lakehouse")
+```
 
 ```julia
 status  = GeoIBM.environmental_input_status(env)        # what is already there
@@ -104,7 +120,7 @@ fields  = GeoIBM.read_assimilated_environment(env)      # what a run reads
 ```
 
 It is idempotent: what is already assimilated is skipped, so a second run does no downloading.
-`notebooks/workflow.jl` starts with this step and explains what each assumption costs.
+`notebooks/GeoIBMNotes.jl` starts with this step and explains what each assumption costs.
 
 | File | Responsibility |
 |---|---|

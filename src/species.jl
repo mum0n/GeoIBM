@@ -854,11 +854,10 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
                         org.sperm_clutches -= 1
                     end
 
-                    # Parity comes from shell age. It used to read
-                    # `org.sperm_clutches == 0`, which is false for every extruding
-                    # female: a successful mating deposits stores, this call spends one,
-                    # and the count therefore never reached zero. Every female was
-                    # scored multiparous and the primiparous fecundity form was dead.
+                    # Parity is determined from post-ecdysis shell age. Primiparous
+                    # females have molted into maturity recently (shell age below the
+                    # maximum primiparous threshold), whereas multiparous females have
+                    # maintained their carapace across subsequent reproductive cycles.
                     local_shell_age = shell_age_years(org, model.params)
                     egg_estimate = fecundity(
                         org.behavior,

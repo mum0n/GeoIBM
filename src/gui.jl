@@ -104,11 +104,10 @@ stages were never populated.
 """
 const GUI_EARLY_STAGES = FIRST_COHORT_STAGE:3
 
-# `GUI_EARLY_LABELS`, `GUI_EARLY_COLOURS` and `GUI_EARLY_DASHES` used to sit here,
-# carrying one name, shade and dash pattern per early stage. All three are dead:
-# names now come from `OrganismParams.stage_labels` in the configuration file via
-# cohort_stage_label, so the figure cannot drift from the file, and the undifferentiated
-# series that were grey are now drawn as 50/50 sex pairs.
+# Early stage labels, line palettes, and dash patterns are retrieved dynamically
+# from `OrganismParams.stage_labels` via `cohort_stage_label` to ensure exact
+# correspondence with active TOML parameter files. Undifferentiated aggregate cohorts
+# are visualized with balanced sex allocation.
 
 """
     RESCAN_IMMUTABLE
@@ -278,20 +277,197 @@ two-vector form is not a conversion it accepts.
 function stem!(ax, xs::AbstractVector{<:Real}, ys; color = :black, markersize = 7,
     linewidth = 2.0, label = nothing)
     xs32 = Float32.(xs)
-    segs = lift(ys) do v
+    if ys isa Observable
+        segs = lift(ys) do v
+            pts = Point2f[]
+            for i in eachindex(xs32)
+                push!(pts, Point2f(xs32[i], 0.0f0))
+                push!(pts, Point2f(xs32[i], Float32(v[i])))
+            end
+            pts
+        end
+        tops = lift(ys) do v
+            [Point2f(xs32[i], Float32(v[i])) for i in eachindex(xs32)]
+        end
+        linesegments!(ax, segs; color = color, linewidth = linewidth, label = label)
+        scatter!(ax, tops; color = color, markersize = markersize)
+    else
         pts = Point2f[]
+        tops = Point2f[]
         for i in eachindex(xs32)
             push!(pts, Point2f(xs32[i], 0.0f0))
-            push!(pts, Point2f(xs32[i], Float32(v[i])))
+            push!(pts, Point2f(xs32[i], Float32(ys[i])))
+            push!(tops, Point2f(xs32[i], Float32(ys[i])))
         end
-        pts
+        linesegments!(ax, pts; color = color, linewidth = linewidth, label = label)
+        scatter!(ax, tops; color = color, markersize = markersize)
     end
-    tops = lift(ys) do v
-        [Point2f(xs32[i], Float32(v[i])) for i in eachindex(xs32)]
+end
+
+# ------------------------------------------------------------------------------
+# Shared Dashboard Panel Setup Kernels (Common across GUI and Notebooks)
+# ------------------------------------------------------------------------------
+
+"""
+    setup_spatial_panel!(ax, env_field, xs, ys, sizes, colors)
+
+Populate spatial thermal environment heatmap with `:thermal` colormap and
+superimposed demographic agent particles. Accepts either Observables or Arrays.
+"""
+function setup_spatial_panel!(
+    ax,
+    env_field,
+    xs,
+    ys,
+    sizes,
+    colors;
+    colormap = :thermal,
+    colorrange = nothing
+)
+    cr = if colorrange !== nothing
+        colorrange
+    elseif env_field isa AbstractArray
+        valid_vals = filter(!isnan, env_field)
+        if isempty(valid_vals)
+            (0.0, 1.0)
+        else
+            ext = extrema(valid_vals)
+            ext[1] == ext[2] ? (ext[1] - 1.0, ext[2] + 1.0) : ext
+        end
+    else
+        nothing
     end
-    GLMakie.linesegments!(ax, segs;
-        color = color, linewidth = linewidth, label = label)
-    GLMakie.scatter!(ax, tops; color = color, markersize = markersize)
+
+    hm = if cr !== nothing
+        heatmap!(ax, env_field; colormap = colormap, colorrange = cr)
+    else
+        heatmap!(ax, env_field; colormap = colormap)
+    end
+
+    scatter!(
+        ax, xs, ys;
+        markersize = sizes,
+        color = colors,
+        strokewidth = 0.5,
+        strokecolor = :black
+    )
+    return hm
+end
+
+
+"""
+    setup_abundance_panel!(ax, ts_total, ts_females, ts_males, ts_legal)
+
+Populate log10 abundance trajectories for Total, Mature Females, Mature Males,
+and Legal Fishable Males. Accepts either Observables or Arrays.
+"""
+function setup_abundance_panel!(ax, ts_total, ts_females, ts_males, ts_legal)
+    lines!(ax, ts_total, label = "Total Organisms", color = :royalblue, linewidth = 2.0)
+    lines!(ax, ts_females, label = "Mature Females", color = :crimson, linewidth = 1.8)
+    lines!(ax, ts_males, label = "Mature Males", color = :seagreen, linewidth = 1.8)
+    lines!(ax, ts_legal, label = "Legal Fishable Males", color = :purple, linewidth = 2.0)
+    axislegend(ax, position = :lt, labelsize = 10, framevisible = false,
+               backgroundcolor = :transparent, patchsize = (15, 10))
+end
+
+"""
+    setup_stages_panel!(ax, half_w, base_agg, base_agent, n_male_st, n_fem_st,
+                        egg_y, agg_y, male_y, female_y)
+
+Populate grouped stage abundance forest marks (`stem!`), splitting brooded egg
+and early aggregate cohort stages 50/50 and individuated stages by sex.
+"""
+function setup_stages_panel!(ax, half_w, base_agg, base_agent, n_male_st, n_fem_st,
+                             egg_y, agg_y, male_y, female_y)
+    stem!(ax, [1.0 - half_w], egg_y; color = :royalblue, label = "Males")
+    stem!(ax, [1.0 + half_w], egg_y; color = :crimson, label = "Females")
+    stem!(ax, base_agg .- half_w, agg_y; color = :royalblue, label = nothing)
+    stem!(ax, base_agg .+ half_w, agg_y; color = :crimson, label = nothing)
+    stem!(ax, base_agent[1:n_male_st] .- half_w, male_y; color = :royalblue, label = nothing)
+    stem!(ax, base_agent[1:n_fem_st] .+ half_w, female_y; color = :crimson, label = nothing)
+    axislegend(ax, position = :rt, labelsize = 8, framevisible = false,
+               backgroundcolor = :transparent, patchsize = (15, 10))
+end
+
+"""
+    setup_size_density_panel!(ax, imm_m, mat_m, imm_f, mat_f, legal_size; peak = nothing)
+
+Populate normalized size probability densities for immature/mature males and females
+alongside the legal size reference line.
+"""
+function setup_size_density_panel!(ax, imm_m, mat_m, imm_f, mat_f, legal_size; peak = nothing)
+    lines!(ax, imm_m; color = :royalblue, linewidth = 1.5, linestyle = :dash, label = "Immature Males")
+    lines!(ax, mat_m; color = :slategrey, linewidth = 2.2, label = "Mature Males")
+    lines!(ax, imm_f; color = :crimson, linewidth = 1.5, linestyle = :dash, label = "Immature Females")
+    lines!(ax, mat_f; color = :darkorange, linewidth = 2.2, label = "Mature Females")
+    
+    if peak !== nothing
+        vlines!(ax, legal_size, 0.0f0, peak;
+                color = :purple, linewidth = 1.5, linestyle = :dot, label = "Legal size (male)")
+    else
+        vlines!(ax, [legal_size];
+                color = :purple, linewidth = 1.5, linestyle = :dot, label = "Legal size (male)")
+    end
+    axislegend(ax, position = :lt, labelsize = 9, framevisible = false,
+               backgroundcolor = :transparent, patchsize = (15, 10))
+end
+
+"""
+    setup_ogive_panel!(ax, legal_size, realized_males, realized_females)
+
+Populate theoretical maturity curves, selectivity retention, and realized binned observations.
+"""
+function setup_ogive_panel!(ax, legal_size, realized_males, realized_females)
+    cw_ref = 20.0:1.0:140.0
+    lines!(ax, cw_ref, [maturity(0, log(c)) for c in cw_ref],
+           color = :black, linewidth = 2.0, label = "Theoretical Male")
+    lines!(ax, cw_ref, [maturity(1, log(c)) for c in cw_ref],
+           color = :grey40, linewidth = 2.0, linestyle = :dash, label = "Theoretical Female")
+    lines!(ax, cw_ref, [selectivity(c; s50 = legal_size) for c in cw_ref],
+           color = :purple, linewidth = 2.0, label = "Theoretical S(L)")
+    
+    scatter!(ax, realized_males, color = :royalblue, markersize = 8, label = "Realized Males")
+    scatter!(ax, realized_females, color = :crimson, markersize = 8, label = "Realized Females")
+    axislegend(ax, position = :lt, labelsize = 10, framevisible = false,
+               backgroundcolor = :transparent, patchsize = (15, 10))
+end
+
+"""
+    setup_macro_panel!(ax, ts_biomass, ts_catch, obs_pts, sch_pts, dd_pts, les_pts;
+                       label_obs = "Annual Surveyed Biomass", label_sch = "Schaefer Fit",
+                       label_dd = "Delay-Diff Fit", label_les = "Leslie Fit")
+
+Populate biomass and catch trajectories alongside macro-ecological surplus production,
+delay-difference, and Leslie model fits.
+"""
+function setup_macro_panel!(ax, ts_biomass, ts_catch, obs_pts, sch_pts, dd_pts, les_pts;
+                            label_obs = "Annual Surveyed Biomass",
+                            label_sch = "Schaefer Fit",
+                            label_dd = "Delay-Diff Fit",
+                            label_les = "Leslie Fit")
+    lines!(ax, ts_biomass, label = "Legal Fishable Biomass", color = :purple, linewidth = 2.2)
+    lines!(ax, ts_catch, label = "Annual Catch", color = :darkorange, linewidth = 1.8, linestyle = :dash)
+    scatter!(ax, obs_pts, color = :black, markersize = 9, label = label_obs)
+    lines!(ax, sch_pts, color = :royalblue, linewidth = 2.0, linestyle = :dash, label = label_sch)
+    lines!(ax, dd_pts, color = :seagreen, linewidth = 2.0, linestyle = :dashdot, label = label_dd)
+    lines!(ax, les_pts, color = :darkorange, linewidth = 2.2, label = label_les)
+    axislegend(ax, position = :lt, labelsize = 10, framevisible = false,
+               backgroundcolor = :transparent, patchsize = (15, 10))
+end
+
+"""
+    setup_stock_recruitment_panel!(ax, sr_pts, ricker_pts, bh_pts)
+
+Populate realized log10 spawner-recruit points and fitted Ricker and Beverton-Holt curves.
+"""
+function setup_stock_recruitment_panel!(ax, sr_pts, ricker_pts, bh_pts)
+    scatter!(ax, sr_pts, color = :seagreen, markersize = 7,
+             label = "Realized (males at recruitment stage)")
+    lines!(ax, ricker_pts, color = :crimson, linewidth = 2.2, label = "Ricker fit")
+    lines!(ax, bh_pts, color = :royalblue, linewidth = 2.2, linestyle = :dash,
+           label = "Beverton–Holt fit")
+    axislegend(ax, position = :lb, labelsize = 9, framevisible = false,
+               backgroundcolor = :transparent, patchsize = (15, 10))
 end
 
 """
@@ -491,6 +667,7 @@ Base.@kwdef mutable struct IBMGuiState
 
     # Spatial map observables
     obs_env_field::Observable{Matrix{Float64}}
+    obs_bg_layer::Observable{Symbol}
     obs_agent_x::Observable{Vector{Float32}}
     obs_agent_y::Observable{Vector{Float32}}
     obs_agent_sizes::Observable{Vector{Float32}}
@@ -688,7 +865,13 @@ function step_gui_simulation!(state::IBMGuiState, days::Float64)
     end
 
     # 1. Update Spatial Map Observables
-    env_field = copy(model.temperature_field)
+    current_layer = state.obs_bg_layer[]
+    mprops = abmproperties(model)
+    env_field = if current_layer === :habitat_quality && haskey(mprops, :habitat_quality_field)
+        copy(model.habitat_quality_field)
+    else
+        copy(model.temperature_field)
+    end
     state.obs_env_field[] = env_field
 
     living = collect(allagents(model))
@@ -1438,6 +1621,7 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
         current_time = Observable(0.0),
         status_text = Observable("Simulation Active | Running"),
         obs_env_field = Observable(copy(model.temperature_field)),
+        obs_bg_layer = Observable(:temperature),
         obs_agent_x = Observable(xs_init),
         obs_agent_y = Observable(ys_init),
         obs_agent_sizes = Observable(sz_init),
@@ -1589,6 +1773,21 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
     Label(transport_grid[6, 1:2], "Restore Year:", halign = :right)
     snap_menu = Menu(transport_grid[6, 3:4], options = state.snapshot_labels, width = 90)
 
+    Label(transport_grid[7, 1:2], "Map Layer:", halign = :right)
+    layer_menu = Menu(
+        transport_grid[7, 3:4],
+        options = ["Temperature", "Habitat Quality (HSI)"],
+        default = "Temperature",
+        width = 110
+    )
+    on(layer_menu.selection) do sel
+        if sel !== nothing
+            state.obs_bg_layer[] = sel == "Habitat Quality (HSI)" ?
+                                   :habitat_quality : :temperature
+            step_gui_simulation!(state, 0.0)
+        end
+    end
+
     on(snap_menu.selection) do sel
         if sel !== nothing
             m = match(r"Year (\d+)", sel)
@@ -1633,10 +1832,10 @@ state.n_legal_history = copy(snap.n_legal_history)
     # clamping there is what stops a typo producing a nonsense distribution
     # instead of an error.
     steering_controls = [
-        (label = "Base Temp (°C)", kw = :temp_base, start = params.environment.temp_base,
+        (label = "Temp Offset (°C)", kw = :temp_offset, start = params.environment.temp_offset,
             parser = Float64, validator = Float64, clamp01 = false),
-        (label = "Temp Amp (°C)", kw = :temp_amplitude,
-            start = params.environment.temp_amplitude,
+        (label = "Temp Multiplier", kw = :temp_multiplier,
+            start = params.environment.temp_multiplier,
             parser = Float64, validator = Float64, clamp01 = false),
         (label = "Food Max", kw = :food_max, start = params.environment.food_max,
             parser = Float64, validator = Float64, clamp01 = false),
@@ -1646,14 +1845,12 @@ state.n_legal_history = copy(snap.n_legal_history)
         (label = "Carrying Cap", kw = :benthic_carrying_capacity,
             start = params.environment.benthic_carrying_capacity,
             parser = Float64, validator = Float64, clamp01 = false),
-        (label = "Habitat Qual", kw = :habitat_quality_mean,
-            start = params.environment.habitat_quality_mean,
-            parser = Float64, validator = Float64, clamp01 = true),
-        (label = "Habitat Qual SD", kw = :habitat_quality_sd,
-            start = params.environment.habitat_quality_sd,
-            parser = Float64, validator = Float64, clamp01 = true),
-        (label = "HSI Peaks", kw = :habitat_peaks, start = params.environment.habitat_peaks,
-            parser = Int, validator = Int, clamp01 = false),
+        (label = "Habitat Offset", kw = :habitat_offset,
+            start = params.environment.habitat_offset,
+            parser = Float64, validator = Float64, clamp01 = false),
+        (label = "Habitat Multiplier", kw = :habitat_multiplier,
+            start = params.environment.habitat_multiplier,
+            parser = Float64, validator = Float64, clamp01 = false),
         (label = "Harvest Prob", kw = :fishing_probability_daily,
             start = params.fishery.fishing_probability_daily,
             parser = Float64, validator = Float64, clamp01 = false),
@@ -1771,61 +1968,29 @@ state.n_legal_history = copy(snap.n_legal_history)
         left_content[1:6, 1],
         title = "Spatial Habitat & Organism Distribution",
         xlabel = "Grid X",
-        ylabel = "Grid Y",
-        # No `aspect = AxisAspect(1)`.
-        #
-        # The aspect lock is what stopped the three left-hand panels sharing a
-        # width. It makes the map plot square, and since its cell is 460 wide and
-        # 460 tall the plot came out 340 px with the difference absorbed by the axis
-        # labels — so the map measured 340 px wide against 460 px for the two panels
-        # below it. Drawing the map to its cell instead makes all three exactly the
-        # cell's width.
-        #
-        # Nothing is distorted for this to be free: the domain is square for the
-        # operating configuration (`grid_nx == grid_ny == 1000`), so filling a square
-        # cell is the correct aspect anyway. It would only differ for a deliberately
-        # non-square domain, where the grid reads as the rectangle it is rather than
-        # being stretched.
+        ylabel = "Grid Y"
     )
-    GLMakie.heatmap!(ax_map, state.obs_env_field, colormap = :thermal)
-    GLMakie.scatter!(
-        ax_map,
-        state.obs_agent_x,
-        state.obs_agent_y,
-        markersize = state.obs_agent_sizes,
-        color = state.obs_agent_colors,
-        strokewidth = 0.5,
-        strokecolor = :black
+    setup_spatial_panel!(
+        ax_map, state.obs_env_field, state.obs_agent_x, state.obs_agent_y,
+        state.obs_agent_sizes, state.obs_agent_colors
     )
 
-    # The macro-model fits are in number, so the panel states the conversion it
-    # applied to put them in kg. That conversion line, and the goodness-of-fit
-    # summary computed on every re-fit, were rendered into the title as a subtitle.
-    # They were removed: the title then wrapped to two or three lines, the numbers
-    # competed with the panel they annotated, and the conversion is a property of
-    # the fit rather than of the figure. Both are still computed and still carried
-    # in `state.macro_conversion_text` / `state.macro_metrics_text`, so they are
-    # available without being drawn.
     ax_macro = Axis(
         left_content[7:9, 1],
         title = "Biomass, Catch & Macro-Models",
         xlabel = "Simulation Time (days)",
         ylabel = "Biomass (kg)"
     )
-    GLMakie.lines!(ax_macro, state.obs_ts_biomass, label = "Legal Fishable Biomass", color = :purple, linewidth = 2.2)
-    GLMakie.lines!(ax_macro, state.obs_ts_catch, label = "Annual Catch", color = :darkorange, linewidth = 1.8, linestyle = :dash)
-    GLMakie.scatter!(ax_macro, state.macro_obs_biomass, color = :black, markersize = 9, label = state.macro_label_observed[])
-    GLMakie.lines!(ax_macro, state.macro_sch_biomass, color = :royalblue, linewidth = 2.0, linestyle = :dash, label = state.macro_label_sch[])
-    GLMakie.lines!(ax_macro, state.macro_dd_biomass, color = :seagreen, linewidth = 2.0, linestyle = :dashdot, label = state.macro_label_dd[])
-    GLMakie.lines!(ax_macro, state.macro_les_biomass, color = :darkorange, linewidth = 2.2, label = state.macro_label_les[])
-    GLMakie.axislegend(ax_macro, position = :lt, labelsize = 10, framevisible = false, backgroundcolor = :transparent, patchsize = (15, 10))
+    setup_macro_panel!(
+        ax_macro, state.obs_ts_biomass, state.obs_ts_catch, state.macro_obs_biomass,
+        state.macro_sch_biomass, state.macro_dd_biomass, state.macro_les_biomass;
+        label_obs = state.macro_label_observed[],
+        label_sch = state.macro_label_sch[],
+        label_dd = state.macro_label_dd[],
+        label_les = state.macro_label_les[]
+    )
 
-    # The stock-recruit panel is wrapped in its own one-cell GridLayout so the fit
-    # annotation can be laid over the axis in the same cell. It is a `Label`, not a
-    # `text!` plot: this Makie version rejects `relative` on `Makie.Text`
-    # outright, and `text!` has no in-place text update, so a reactive `text!`
-    # would have to be re-created on every observation and leak a plot each time.
-sr_cell = left_content[10:12, 1] = GridLayout()
+    sr_cell = left_content[10:12, 1] = GridLayout()
     sr_cell.tellheight = true
     sr_cell.tellwidth = true
     ax_sr = Axis(
@@ -1834,29 +1999,12 @@ sr_cell = left_content[10:12, 1] = GridLayout()
         xlabel = "log10(Annual Eggs / 2)",
         ylabel = "log10(Males at Recruitment Stage)"
     )
-    GLMakie.scatter!(ax_sr, state.obs_sr_pts, color = :seagreen, markersize = 7, label = "Realized (males at recruitment stage)")
-    GLMakie.lines!(ax_sr, state.obs_sr_fit_curve, color = :crimson, linewidth = 2.2,
-        label = "Ricker fit")
-    GLMakie.lines!(ax_sr, state.obs_sr_fit_curve_bh, color = :royalblue, linewidth = 2.2,
-        linestyle = :dash, label = "Beverton–Holt fit")
-    # The fitted parameters go in the axis subtitle rather than the legend: they are
-    # the point of the panel, and a legend entry cannot carry `S_max` and `R²`
-    # legibly beside the observed points. Empty until the fit has three usable points.
-    #
-    # The fitted parameters sit in a `Label` laid over the axis in the top-left of
-    # the panel interior. It is a `Label` rather than a `text!` plot because this
-    # Makie build accepts no `text!` form at all — `text!(ax, x, y, s)`,
-    # `text!(ax, pts, s)` and `annotation!` all raise a bare `ArgumentError`, and
-    # `relative` is rejected on `Makie.Text` outright. `subtitle` would work but
-    # sits *outside* the plot area, above the axes, which is not where the reader
-    # is looking for the numbers that describe the curves inside it.
-    #
-    # `sr_cell` must be told to fill its slot: unsized, its own row collapses to
-    # 1 px in a 460 px cell and the panel renders as a strip of overlapping labels.
+    setup_stock_recruitment_panel!(
+        ax_sr, state.obs_sr_pts, state.obs_sr_fit_curve, state.obs_sr_fit_curve_bh
+    )
     GLMakie.Label(sr_cell[1, 1], state.obs_sr_fit_text;
         halign = :left, valign = :top, fontsize = 8, color = :black,
         tellwidth = false, tellheight = false)
-    GLMakie.axislegend(ax_sr, position = :lb, labelsize = 9, framevisible = false, backgroundcolor = :transparent, patchsize = (15, 10))
 
     # Right Column: Abundance (rows 1–3), Stage (rows 4–6), Size (rows 7–9), Ogive (rows 10–12)
     # --------------------------------------------------------------------------
@@ -1866,42 +2014,17 @@ sr_cell = left_content[10:12, 1] = GridLayout()
         xlabel = "Time (days)",
         ylabel = "log10(count)"
     )
-    GLMakie.lines!(ax_ts_n, state.obs_ts_total, label = "Total Organisms", color = :royalblue, linewidth = 2.0)
-    GLMakie.lines!(ax_ts_n, state.obs_ts_females, label = "Mature Females", color = :crimson, linewidth = 1.8)
-    GLMakie.lines!(ax_ts_n, state.obs_ts_males, label = "Mature Males", color = :seagreen, linewidth = 1.8)
-    GLMakie.lines!(ax_ts_n, state.obs_ts_legal, label = "Legal Fishable Males", color = :purple, linewidth = 2.0)
-    GLMakie.axislegend(ax_ts_n, position = :lt, labelsize = 10, framevisible = false, backgroundcolor = :transparent, patchsize = (15, 10))
+    setup_abundance_panel!(
+        ax_ts_n, state.obs_ts_total, state.obs_ts_females, state.obs_ts_males, state.obs_ts_legal
+    )
 
-    # Stage abundance as a grouped vertical bar chart, one category per stage from
-    # 0 to the highest stage any agent reaches.
-    #
-    # Sex is split only where it is actually distinguished. Stages below
-    # `juvenile_max_stage` are `AggregateGroup` cohorts, which carry no `sex` field,
-    # so those are a single undifferentiated bar. Agent stages get a male and a
-    # female bar side by side. Aggregating agents into one "Agents" bar — which is
-    # what this panel used to do — hid the stage structure entirely, and the stair
-    # line it used to draw connected counts that are not a series.
-    #
-    # The male and female ranges differ: agents reach stage 16 as males and 14 as
-    # females under the snow crab configuration, so the two terminal categories
-    # carry a male bar only. Note the species stage tables stop at 12 and 11 — those
-    # bound the Leslie projection, not the agents, which molt on past them.
-    # Cohort stages run 1 to `juvenile_max_stage - 1`: stage 0 is the brooded egg,
-    # which is not a cohort.
     n_agg = params.organism.juvenile_max_stage - 1
     n_male_st = params.organism.max_stage_male - params.organism.juvenile_max_stage + 1
     n_fem_st = params.organism.max_stage_female - params.organism.juvenile_max_stage + 1
     max_stage = params.organism.max_stage_male
 
-    # Stage `s` sits at category `s + 1`, and the names come from the configuration
-    # file's `stage_labels`, which lists stage 0 (the brooded egg) first. No
-    # separate "Egg" category is prepended: stage 0 *is* the egg, and prepending
-    # one as well would have counted it twice.
     larval_count = larval_stage_count(SpeciesBehaviorImpl())
     stage_labels = [cohort_stage_label(s, params, larval_count) for s in 0:max_stage]
-    # Category `c` is stage `c - 1`. The cohort stages are 1 to `n_agg`, so they fill
-    # categories 2 to `n_agg + 1`, and the first individuated stage
-    # (`juvenile_max_stage`) is category `n_agg + 2`.
     first_agent_cat = 2 + n_agg
     n_cats = length(stage_labels)
 
@@ -1911,24 +2034,10 @@ sr_cell = left_content[10:12, 1] = GridLayout()
         xlabel = "Stage",
         ylabel = "log10(number)",
         xticks = (collect(1:n_cats), stage_labels),
-        # Vertical, because the labels are words and there are eighteen of them in a
-        # panel this width; horizontal they overprint each other into a single
-        # unreadable strip.
         xticklabelrotation = pi / 2
     )
 
-    # Half a category either side, so the paired marks fill the slot without
-    # touching and never read as one stacked column.
     half_w = 0.21
-
-    # Stage abundance as a forest plot: a stem from the axis up to a marker per stage.
-    #
-    # Sex is split only where it actually exists. Stages below
-    # `juvenile_max_stage` are `AggregateGroup` cohorts, which carry no `sex` field,
-    # so their count is not sex-resolved; it is drawn as two half-size markers, one at
-    # each sex position, rather than a single total. That shows the reader the total
-    # is unresolved instead of implying it is all one sex. On the log10 axis a half
-    # count sits 0.301 below the whole, which is arithmetically what it is.
     obs_male_y = lift(state.obs_stage_male) do v
         Float64[log10_count(x) for x in v]
     end
@@ -1942,59 +2051,14 @@ sr_cell = left_content[10:12, 1] = GridLayout()
         Float64[log10_count(n / 2)]
     end
 
-    # Stage 0, the brooded egg, is split into a male and a female half here even
-    # though the eggs themselves carry no sex: individuation allocates 1:1, so this
-    # shows where the clutch is going rather than what it currently is. Each mark is
-    # at half the total, which on the log10 axis puts it 0.301 below the whole —
-    # arithmetically what a half is.
-    #
-    # The same 50/50 treatment is applied to every cohort stage, not just the eggs:
-    # `AggregateGroup` carries no `sex` field, so a cohort's members are unassigned
-    # until individuation, which splits them 1:1. Showing a single grey mark for a
-    # cohort made the panel read as though those stages were somehow sexless rather
-    # than merely unresolved, and the reader could not compare a cohort with the
-    # agents it is about to become. From stage 10 — the first individuated stage —
-    # the marks are the real counts and the two lines separate on their own.
     base_agg = Float64.(2:(1 + n_agg))
     base_agent = Float64.(first_agent_cat:(first_agent_cat + max(n_male_st, n_fem_st) - 1))
 
-    stem!(ax_stage, [1.0 - half_w], obs_egg_y; color = :royalblue, label = "Males")
-    stem!(ax_stage, [1.0 + half_w], obs_egg_y; color = :crimson, label = "Females")
-    # Cohort stages: half the cohort each side, at half the height.
-    stem!(ax_stage, base_agg .- half_w, obs_agg_y; color = :royalblue, label = nothing)
-    stem!(ax_stage, base_agg .+ half_w, obs_agg_y; color = :crimson, label = nothing)
-    # Individuated stages: the real per-sex counts.
-    stem!(ax_stage, base_agent[1:n_male_st] .- half_w, obs_male_y;
-        color = :royalblue, label = nothing)
-    stem!(ax_stage, base_agent[1:n_fem_st] .+ half_w, obs_female_y;
-        color = :crimson, label = nothing)
-    # Top right, not top left: the tall stems are all on the left — eggs and the
-    # pelagic stages run to log10 4 and above — so a top-left legend draws its
-    # glyphs over them.
-    #
-    # `label = nothing`, not `label = ""`, on the series that share a colour with a
-    # labelled one. An empty string is still a label: `axislegend` builds a row for
-    # it and draws the glyph with no text beside it, so the panel grew blank entries
-    # whose short horizontal lines read as stray marks in the plot.
-    GLMakie.axislegend(ax_stage, position = :rt, labelsize = 8, framevisible = false, backgroundcolor = :transparent, patchsize = (15, 10))
+    setup_stages_panel!(
+        ax_stage, half_w, base_agg, base_agent, n_male_st, n_fem_st,
+        obs_egg_y, obs_agg_y, obs_male_y, obs_female_y
+    )
 
-# Size frequency by maturity and sex.
-    #
-    # Four curves — immature and mature, for each sex — each a probability density
-    # integrating to one, on a linear axis. Normalising is what makes a linear axis
-    # usable here at all: the four groups differ by orders of magnitude in number, so
-    # a density in individuals per millimetre drew the mature curves as flat lines
-    # along the bottom, and a log axis then had to be used to rescue them. With
-    # every curve integrating to one, height reads as concentration and the shapes
-    # compare directly whatever the group sizes.
-    #
-    # The whole-sex curves this panel used to draw are gone: a whole-sex density
-    # mixes two populations, so its shape depends on the proportion mature as much as
-    # on size, which is exactly the comparison the panel exists to show.
-    #
-    # Maturity uses the agent's own `is_mature` flag, so immature and mature are a
-    # true partition of each sex — the four series between them account for every
-    # individual alive.
     ax_size = Axis(
         right_content[7:9, 1],
         title = "Size Frequency by Sex and Maturity",
@@ -2012,23 +2076,13 @@ sr_cell = left_content[10:12, 1] = GridLayout()
     obs_immature_f = kde(state.obs_cw_immature_female)
     obs_mature_f = kde(state.obs_cw_mature_female)
 
-    GLMakie.lines!(ax_size, obs_immature_m;
-        color = :royalblue, linewidth = 1.5, linestyle = :dash, label = "Immature Males")
-    GLMakie.lines!(ax_size, obs_mature_m;
-        color = :slategrey, linewidth = 2.2, label = "Mature Males")
-    GLMakie.lines!(ax_size, obs_immature_f;
-        color = :crimson, linewidth = 1.5, linestyle = :dash, label = "Immature Females")
-    GLMakie.lines!(ax_size, obs_mature_f;
-        color = :darkorange, linewidth = 2.2, label = "Mature Females")
-
-    # The legal-size reference spans the tallest curve, so it reads full height
-    # whatever the axis ends up scaled to. The lifted arguments are already the
-    # point vectors, not observables.
     peak = lift((a, b, c, d) -> maximum(p[2] for p in vcat(a, b, c, d)),
         obs_immature_m, obs_mature_m, obs_immature_f, obs_mature_f)
-    GLMakie.vlines!(ax_size, params.fishery.legal_size_male, 0.0f0, peak;
-        color = :purple, linewidth = 1.5, linestyle = :dot, label = "Legal size (male)")
-    GLMakie.axislegend(ax_size, position = :lt, labelsize = 9, framevisible = false, backgroundcolor = :transparent, patchsize = (15, 10))
+
+    setup_size_density_panel!(
+        ax_size, obs_immature_m, obs_mature_m, obs_immature_f, obs_mature_f,
+        params.fishery.legal_size_male; peak = peak
+    )
 
     ax_ogive = Axis(
         right_content[10:12, 1],
@@ -2037,13 +2091,10 @@ sr_cell = left_content[10:12, 1] = GridLayout()
         ylabel = "P(Mature) / Selectivity"
     )
     xlims!(ax_ogive, 0, 165)
-    cw_ref = 20.0:1.0:140.0
-    GLMakie.lines!(ax_ogive, cw_ref, [maturity(0, log(c)) for c in cw_ref], color = :black, linewidth = 2.0, label = "Theoretical Male")
-    GLMakie.lines!(ax_ogive, cw_ref, [maturity(1, log(c)) for c in cw_ref], color = :grey40, linewidth = 2.0, linestyle = :dash, label = "Theoretical Female")
-    GLMakie.lines!(ax_ogive, cw_ref, [selectivity(c; s50 = params.fishery.legal_size_male) for c in cw_ref], color = :purple, linewidth = 2.0, label = "Theoretical S(L)")
-    GLMakie.scatter!(ax_ogive, state.obs_ogive_male_pts, color = :royalblue, markersize = 8, label = "Realized Males")
-    GLMakie.scatter!(ax_ogive, state.obs_ogive_female_pts, color = :crimson, markersize = 8, label = "Realized Females")
-    GLMakie.axislegend(ax_ogive, position = :lt, labelsize = 10, framevisible = false, backgroundcolor = :transparent, patchsize = (15, 10))
+    setup_ogive_panel!(
+        ax_ogive, params.fishery.legal_size_male,
+        state.obs_ogive_male_pts, state.obs_ogive_female_pts
+    )
 
     # The 50/50 split, applied at the one level that sticks.
     #

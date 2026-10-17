@@ -8,13 +8,12 @@ Agents = "46ada45e-f475-11e8-01d0-f70cc89e6671"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
-DrWatson = "634d3b9d-ee7a-5ddf-bec9-22491ea816e1"
 GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 GeoData = "9b6fcbb8-86d6-11e9-1ce7-23a6bb139a78"
-GeoDataSources = "5d0d5f0e-2b6c-4a7e-9f3d-1c8b7a6e5d4f"
-KaimonGate = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Optim = "429524aa-4258-5aef-a3af-852621145aeb"
+PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
@@ -23,9 +22,10 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 GeoData = {path = "../GeoData"}
-GeoDataSources = {path = "../GeoDataSources"}
 
 [compat]
 CairoMakie = "0.15"
+Interpolations = "0.15.2"
 Optim = "1.10, 1.11, 1.12, 1.13, 2"
+PlutoUI = "0.7.83"
 julia = "1.11.1"

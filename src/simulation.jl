@@ -193,10 +193,11 @@ runtime_config_keys() = Set{Symbol}([
     :help,
     :gui,
     :gui_simple,
-    :gui_compare,
     :config_file,
     :species_config_file,
     :fishery_on,
+    :temp_base,
+    :temp_amplitude,
 ])
 
 """
@@ -307,6 +308,20 @@ function load_ibm_configuration(
             Int,
             sum(flat[:initial_female_cohort]) + sum(flat[:initial_male_cohort])
         )
+    end
+
+    # Normalize legacy thermal parameter names
+    if haskey(flat, :temp_base) && !haskey(flat, :temp_offset)
+        flat[:temp_offset] = flat[:temp_base]
+    end
+    if haskey(flat, :temp_amplitude) && !haskey(flat, :temp_multiplier)
+        flat[:temp_multiplier] = flat[:temp_amplitude]
+    end
+    if haskey(flat, :temp_offset) && !haskey(flat, :temp_base)
+        flat[:temp_base] = flat[:temp_offset]
+    end
+    if haskey(flat, :temp_multiplier) && !haskey(flat, :temp_amplitude)
+        flat[:temp_amplitude] = flat[:temp_multiplier]
     end
 
     # Report keys that will have no effect. Silently dropping them is how a
@@ -627,65 +642,27 @@ function initialize_model(config::AbstractDict; kwargs...)
         dt = dt,
         params = params,
         seed = seed,
-        # `n_agents` is the total the seeding vectors sum to, not a parameter of
-        # its own, so it is a keyword here rather than a key in the file. It is
-        # forwarded explicitly: merging it into `merged` alone left it unread, and
-        # every configuration-path caller asking for a population got none.
-        n_agents = get(merged, :n_agents, nothing)
+        n_agents = get(merged, :n_agents, nothing);
+        kwargs...
     )
 end
 
 """
-    build_habitat_quality_field(params, grid, rng)
+    build_habitat_quality_field(params::EnvironmentParams, grid::Tuple{Int, Int}, rng::AbstractRNG)
 
-Generate the initial habitat suitability index (HSI) field on `grid`.
+Generate the initial synthetic habitat suitability index (HSI) field on `grid`.
 
-The field is a clipped Gaussian noise floor about `habitat_quality_mean` carrying
-`habitat_peaks` additive Gaussian bumps at uniformly random positions. The noise
-alone has no spatial correlation, so it describes a landscape with nowhere better
-than anywhere else; the peaks supply coherent high-quality habitat for the taxis
-in `organism_disperse!` to aggregate in and disperse between.
-
-Peak widths are `habitat_peak_width_fraction` of the domain rather than a cell
-count, so the structure looks the same on a 10x10 test grid and a 1000x1000
-operating grid. Peak centres come from `rng`, so the layout is reproducible under
-a fixed seed.
-
-`habitat_peaks = 0` reproduces the previous pure-noise field exactly.
+In synthetic mode (`use_geodata == false`), `params.habitat_offset` acts as the mean
+suitability (defaulting to `params.habitat_quality_mean` when 0.0), and
+`params.habitat_multiplier` scales the standard deviation / amplitude of spatial noise:
+`clamp.(randn(rng, grid) .* (habitat_multiplier * habitat_quality_sd) .+ μ, 0.0, 1.0)`.
 """
 function build_habitat_quality_field(params::EnvironmentParams,
     grid::Tuple{Int, Int}, rng::AbstractRNG)
-    μ = params.habitat_quality_mean
-    σ = params.habitat_quality_sd
+    μ = params.habitat_offset != 0.0 ? params.habitat_offset : params.habitat_quality_mean
+    σ = params.habitat_multiplier * params.habitat_quality_sd
     field = clamp.(randn(rng, grid) .* σ .+ μ, 0.0, 1.0)
-
-    n_peaks = params.habitat_peaks
-    n_peaks > 0 || return field
-    width_frac = params.habitat_peak_width_fraction
-    width_frac > 0.0 || error(
-        "habitat_peak_width_fraction must be positive, got $(width_frac)")
-    height = params.habitat_peak_height
-
-    nx, ny = grid
-    # Fractional width to a per-axis Gaussian sigma, in cell units. `max(..., eps)`
-    # keeps a degenerate width from dividing by zero and blanking the field.
-    sigma_x = max(width_frac * nx, 1e-6)
-    sigma_y = max(width_frac * ny, 1e-6)
-
-    # Coordinate vectors, so each peak is a rank-1 outer product instead of a
-    # fresh allocation over the whole grid.
-    xs = collect(1:nx)
-    ys = collect(1:ny)
-
-    for _ in 1:n_peaks
-        cx = rand(rng, 1:nx)
-        cy = rand(rng, 1:ny)
-        gx = exp.(-0.5 .* ((xs .- cx) ./ sigma_x) .^ 2)
-        gy = exp.(-0.5 .* ((ys .- cy) ./ sigma_y) .^ 2)
-        field .+= Float64(height) .* (gx * transpose(gy))
-    end
-
-    return clamp.(field, 0.0, 1.0)
+    return field
 end
 
 """
@@ -704,12 +681,12 @@ fields using real physical datasets accessed through `GeoData`.
    Discretizes the spatial domain `(domain_lon, domain_lat)` into regular `nx` by `ny`
    geographic coordinates.
 2. Seabed Bathymetry:
-   If `depth_map` is not provided, queries ERDDAP/ETOPO via
-   `GeoDataSources.fetch_erddap_bathymetry` and builds continuous interpolator
-   `GeoData.get_bathymetry_interpolator`. Depth is extracted as `max(0.0, -elevation)`.
+   If `depth_map` is not provided, loads bathymetric datasets via `GeoData.geoload`
+   and builds continuous interpolator `GeoData.get_bathymetry_interpolator`.
+   Depth is extracted as `max(0.0, -elevation)`.
 3. Seabed Bottom Temperature:
-   Queries climatological hydrography via `GeoDataSources.fetch_boundary_hydrography_geodata`
-   (e.g., WOA23 or GLORYS12v1) and samples temperature at seabed depth `z`.
+   Queries climatological hydrography via `GeoData.geoload`
+   (e.g., from Zarr or NetCDF) and samples temperature at seabed depth `z`.
 4. Habitat Suitability Index (HSI):
    Evaluates `calculate_habitat_suitability(temperature, depth)` across the grid.
 
@@ -746,73 +723,183 @@ function build_geodata_environmental_fields(
             "depth_map dimensions $(size(depth_map)) do not match grid $(grid)")
         abs.(Float64.(copy(depth_map)))
     else
-        bathy_ds = GeoDataSources.fetch_erddap_bathymetry(
-            lon_range = lon_range,
-            lat_range = lat_range,
-            dataset_id = env_params.bathymetry_source == "etopo2022" ?
-                "ETOPO_2022_v1_15s" : env_params.bathymetry_source,
-            # The store, not a run-local cache. `geodata_input_dir` stays honoured for a
-            # configuration written before the store existed; when `geodata_store_dir` is set
-            # it wins, and assimilation and ingestion then agree by construction.
-            output_path = joinpath(GeoIBM.environmental_store_dir(env_params),
-                                   "bathymetry.zarr"),
-            verbose = verbose
-        )
+        # Search candidate paths in the designated store or central lakehouse
+        store_bathy = joinpath(GeoIBM.environmental_store_dir(env_params), "bathymetry.zarr")
+        is_nwa = occursin("nwa", lowercase(env_params.bathymetry_source))
+        candidate_paths = [
+            store_bathy,
+            GeoData.lakehouse_dir("GeoData", "bathymetry", "nwa_bathymetry.nc"),
+            GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc"),
+            GeoData.lakehouse_dir("GeoData", "nwa", "bathymetry.zarr")
+        ]
+        found_idx = findfirst(p -> ispath(p), candidate_paths)
+        bathy_ds = if found_idx !== nothing
+            candidate_file = candidate_paths[found_idx]
+            occursin(".nc", candidate_file) ?
+                GeoData.geoload(candidate_file; backend = :ncdatasets) :
+                GeoData.geoload(candidate_file)
+        elseif is_nwa
+            # Direct lakehouse fetch/load for nwa_bathymetry
+            GeoData.geoget(
+                "nwa_bathymetry";
+                cache_dir = GeoIBM.environmental_store_dir(env_params),
+                bounds = (lon_range, lat_range)
+            )
+        else
+            GeoData.geoget(
+                "erddap://ETOPO_2022_v1_15s";
+                cache_dir = GeoIBM.environmental_store_dir(env_params),
+                bounds = (lon_range, lat_range)
+            )
+        end
         bathy_itp = GeoData.get_bathymetry_interpolator(bathy_ds)
         d_mat = zeros(Float64, nx, ny)
         for j in 1:ny, i in 1:nx
-            d_mat[i, j] = max(0.0, -bathy_itp(lons[i], lats[j]))
+            val = bathy_itp(lons[i], lats[j])
+            d_mat[i, j] = isnan(val) ? 0.0 : max(0.0, -val)
         end
         d_mat
     end
 
     # 2. Bottom and upper water column (pelagic) temperature from hydrography
-    temp_src = Symbol(env_params.temperature_source)
     pelagic_z = -abs(Float64(env_params.pelagic_depth))
+    store_dir = GeoIBM.environmental_store_dir(env_params)
 
-    # Fetch initial/specified month hydrography
-    hydro = GeoDataSources.fetch_boundary_hydrography_geodata(
-        temp_src;
-        lon_range = lon_range,
-        lat_range = lat_range,
-        input_dir = GeoIBM.environmental_store_dir(env_params),
-        month = env_params.temperature_month,
-        verbose = verbose
-    )
-
-    temp_field = zeros(Float64, nx, ny)
-    surface_temp_field = zeros(Float64, nx, ny)
-    hsi_field = zeros(Float64, nx, ny)
-    for j in 1:ny, i in 1:nx
-        z = depth_field[i, j]
-        t_bottom = hydro.T(lons[i], lats[j], -z, 0.0)
-        t_surf = hydro.T(lons[i], lats[j], pelagic_z, 0.0)
-        temp_field[i, j] = t_bottom
-        surface_temp_field[i, j] = t_surf
-        hsi_field[i, j] = calculate_habitat_suitability(t_bottom, z)
+    # Locate hydrographic store (Zarr or NetCDF) in store_dir or lakehouse
+    hydro_candidates = [
+        joinpath(store_dir, "boundary_$(env_params.temperature_source).zarr"),
+        GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+                              "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
+        GeoData.lakehouse_dir("GeoData", "glorys",
+                              "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc"),
+        GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+                              "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc")
+    ]
+    h_idx = findfirst(p -> ispath(p), hydro_candidates)
+    hydro_ds = if h_idx !== nothing
+        hydro_path = hydro_candidates[h_idx]
+        occursin(".nc", hydro_path) ?
+            GeoData.geoload(hydro_path; backend = :ncdatasets) :
+            GeoData.geoload(hydro_path)
+    else
+        scheme = Symbol(env_params.temperature_source) === :woa23 ? "woa23://" : "copernicus://"
+        GeoData.geoget(
+            scheme;
+            cache_dir = store_dir,
+            bounds = (lon_range, lat_range),
+            month = env_params.temperature_month
+        )
     end
 
-    # Build 12-month seasonal hydrography sequence if dynamic climatology requested
+    h_lons_raw, _ = GeoData.axis(hydro_ds, :lon)
+    h_lats_raw, _ = GeoData.axis(hydro_ds, :lat)
+    h_deps_raw, _ = GeoData.axis(hydro_ds, :depth)
+
+    # Reconcile depth coordinate to negative-up if positive-down
+    z_coords = if !isempty(h_deps_raw) && minimum(h_deps_raw) > -0.5 * maximum(abs, h_deps_raw)
+        -Float64.(h_deps_raw)
+    else
+        Float64.(h_deps_raw)
+    end
+
+    p_lon = issorted(h_lons_raw) ? (1:length(h_lons_raw)) : sortperm(h_lons_raw)
+    p_lat = issorted(h_lats_raw) ? (1:length(h_lats_raw)) : sortperm(h_lats_raw)
+    p_z = issorted(z_coords) ? (1:length(z_coords)) : sortperm(z_coords)
+
+    h_lons = Float64.(h_lons_raw[p_lon])
+    h_lats = Float64.(h_lats_raw[p_lat])
+    h_z = Float64.(z_coords[p_z])
+
+    t_var_name = haskey(hydro_ds.variables, "thetao") ? "thetao" :
+                 (haskey(hydro_ds.variables, "t_an") ? "t_an" : "temperature")
+    t_data_raw = hydro_ds.variables[t_var_name].data
+
+    has_time = ndims(t_data_raw) == 4
+    nx_h, ny_h = length(h_lons), length(h_lats)
+
+    # Helper function to fill land cells with nearest valid marine cell
+    function fill_land_nearest!(field_2d::Matrix{Float64})
+        if !any(isnan, field_2d)
+            return field_2d
+        end
+        valid_indices = CartesianIndex{2}[]
+        valid_values = Float64[]
+        for ci in CartesianIndices(field_2d)
+            val = field_2d[ci]
+            if !isnan(val)
+                push!(valid_indices, ci)
+                push!(valid_values, val)
+            end
+        end
+        if isempty(valid_values)
+            field_2d .= 2.0
+            return field_2d
+        end
+        for ci in CartesianIndices(field_2d)
+            if isnan(field_2d[ci])
+                best_d2 = Inf
+                best_v = valid_values[1]
+                for k in eachindex(valid_indices)
+                    d2 = (ci[1] - valid_indices[k][1])^2 + (ci[2] - valid_indices[k][2])^2
+                    if d2 < best_d2
+                        best_d2 = d2
+                        best_v = valid_values[k]
+                    end
+                end
+                field_2d[ci] = best_v
+            end
+        end
+        return field_2d
+    end
+
     monthly_bottom = Vector{Matrix{Float64}}(undef, 12)
     monthly_surface = Vector{Matrix{Float64}}(undef, 12)
+
     for m in 1:12
-        m_hydro = GeoDataSources.fetch_boundary_hydrography_geodata(
-            temp_src;
-            lon_range = lon_range,
-            lat_range = lat_range,
-            input_dir = GeoIBM.environmental_store_dir(env_params),
-            month = m,
-            verbose = false
-        )
+        raw_slice = has_time ? t_data_raw[:, :, :, m] : t_data_raw
+        if size(raw_slice, 1) == length(h_lats_raw) && size(raw_slice, 2) == length(h_lons_raw)
+            raw_slice = permutedims(raw_slice, (2, 1, 3))
+        end
+        slice_sorted = Float64.(raw_slice[p_lon, p_lat, p_z])
+
+        b_2d = fill(NaN, nx_h, ny_h)
+        s_2d = fill(NaN, nx_h, ny_h)
+
+        for j in 1:ny_h, i in 1:nx_h
+            col = slice_sorted[i, j, :]
+            valid_k = findall(!isnan, col)
+            if !isempty(valid_k)
+                # In slice_sorted, z ascends from deep seafloor to surface
+                b_2d[i, j] = col[first(valid_k)]
+                s_2d[i, j] = col[last(valid_k)]
+            end
+        end
+
+        fill_land_nearest!(b_2d)
+        fill_land_nearest!(s_2d)
+
+        itp_b = LinearInterpolation((h_lons, h_lats), b_2d,
+                                    extrapolation_bc = Interpolations.Flat())
+        itp_s = LinearInterpolation((h_lons, h_lats), s_2d,
+                                    extrapolation_bc = Interpolations.Flat())
+
         b_mat = zeros(Float64, nx, ny)
         s_mat = zeros(Float64, nx, ny)
         for j in 1:ny, i in 1:nx
-            z = depth_field[i, j]
-            b_mat[i, j] = m_hydro.T(lons[i], lats[j], -z, 0.0)
-            s_mat[i, j] = m_hydro.T(lons[i], lats[j], pelagic_z, 0.0)
+            b_mat[i, j] = itp_b(lons[i], lats[j])
+            s_mat[i, j] = itp_s(lons[i], lats[j])
         end
         monthly_bottom[m] = b_mat
         monthly_surface[m] = s_mat
+    end
+
+    # Baseline/initial temperature field
+    target_m = env_params.temperature_month == 0 ? 1 : env_params.temperature_month
+    temp_field = copy(monthly_bottom[target_m])
+    surface_temp_field = copy(monthly_surface[target_m])
+    hsi_field = zeros(Float64, nx, ny)
+    for j in 1:ny, i in 1:nx
+        hsi_field[i, j] = calculate_habitat_suitability(temp_field[i, j], depth_field[i, j])
     end
 
     return (
@@ -909,7 +996,11 @@ function initialize_model(;
             initial_temp = geo_env.temperature
         end
         if initial_habitat === nothing
-            initial_habitat = geo_env.hsi
+            initial_habitat = clamp.(
+                geo_env.hsi .* params.environment.habitat_multiplier .+
+                params.environment.habitat_offset,
+                0.0, 1.0
+            )
         end
     end
 
@@ -935,6 +1026,25 @@ function initialize_model(;
         copy(initial_temp)
     end
 
+    mean_bottom = if params.environment.use_geodata && @isdefined(geo_env) &&
+                     geo_env.monthly_bottom !== nothing
+        mean(geo_env.monthly_bottom)
+    else
+        nothing
+    end
+    mean_surface = if params.environment.use_geodata && @isdefined(geo_env) &&
+                      geo_env.monthly_surface !== nothing
+        mean(geo_env.monthly_surface)
+    else
+        nothing
+    end
+    mean_hsi = if params.environment.use_geodata && @isdefined(geo_env) &&
+                  geo_env.hsi !== nothing
+        mean(geo_env.hsi)
+    else
+        nothing
+    end
+
     properties = Dict{Symbol, Any}(
         :current_time => 0.0,
         :temperature_field => initial_temp,
@@ -948,6 +1058,9 @@ function initialize_model(;
             geo_env.monthly_bottom : nothing,
         :monthly_surface => (params.environment.use_geodata && @isdefined(geo_env)) ?
             geo_env.monthly_surface : nothing,
+        :mean_bottom => mean_bottom,
+        :mean_surface => mean_surface,
+        :mean_hsi => mean_hsi,
         :dt => dt,
         :params => params,
         :total_eggs_spawned => 0,
@@ -1580,15 +1693,13 @@ function model_step!(model)
                            sim.days_per_year)
 
     env = model.params.environment
-    t_base = env.temp_base
-    t_amp = env.temp_amplitude
+    t_offset = env.temp_offset
+    t_mult = env.temp_multiplier
     t_sd = env.temp_noise_sd
 
     # The seasonal target is spatially uniform; the field's only structure is the
-    # white noise. Drawing the standard normals straight into the field and scaling
-    # in place gives the same values from the same RNG stream with one pass and no
-    # allocation.
-    seasonal_target = t_base + t_amp * sinusoidal_factor
+    # white noise. When use_geodata == false, t_offset acts as base mean and t_mult as amplitude.
+    seasonal_target = t_offset + t_mult * sinusoidal_factor
     temperature = model.temperature_field
     mprops = abmproperties(model)
     has_monthly = env.use_geodata &&
@@ -1608,18 +1719,30 @@ function model_step!(model)
         s1 = model.monthly_surface[m1]
         s2 = model.monthly_surface[m2]
 
+        mean_b = haskey(mprops, :mean_bottom) && model.mean_bottom !== nothing ?
+                 model.mean_bottom : b1
+        mean_s = haskey(mprops, :mean_surface) && model.mean_surface !== nothing ?
+                 model.mean_surface : s1
+
         surface_temp = model.surface_temperature_field
         if t_sd > 0.0
             randn!(abmrng(model), temperature)
-            @. surface_temp = (1.0 - frac) * s1 + frac * s2 + t_sd * temperature
-            @. temperature = (1.0 - frac) * b1 + frac * b2 + t_sd * temperature
+            @. surface_temp = (((1.0 - frac) * s1 + frac * s2) - mean_s) * t_mult +
+                              mean_s + t_offset + t_sd * temperature
+            @. temperature = (((1.0 - frac) * b1 + frac * b2) - mean_b) * t_mult +
+                             mean_b + t_offset + t_sd * temperature
         else
-            @. surface_temp = (1.0 - frac) * s1 + frac * s2
-            @. temperature = (1.0 - frac) * b1 + frac * b2
+            @. surface_temp = (((1.0 - frac) * s1 + frac * s2) - mean_s) * t_mult +
+                              mean_s + t_offset
+            @. temperature = (((1.0 - frac) * b1 + frac * b2) - mean_b) * t_mult +
+                             mean_b + t_offset
         end
         if haskey(mprops, :depth_field)
-            @. model.habitat_quality_field = calculate_habitat_suitability(
-                temperature, model.depth_field)
+            raw_hsi = calculate_habitat_suitability.(temperature, model.depth_field)
+            @. model.habitat_quality_field = clamp(
+                raw_hsi * env.habitat_multiplier + env.habitat_offset,
+                0.0, 1.0
+            )
         end
     elseif env.use_geodata && haskey(mprops, :baseline_temperature_field)
         base_field = model.baseline_temperature_field
@@ -1627,15 +1750,20 @@ function model_step!(model)
         surface_temp = get(mprops, :surface_temperature_field, temperature)
         if t_sd > 0.0
             randn!(abmrng(model), temperature)
-            @. surface_temp = base_surf + t_amp * sinusoidal_factor + t_sd * temperature
-            @. temperature = base_field + t_amp * sinusoidal_factor + t_sd * temperature
+            @. surface_temp = base_surf + t_mult * sinusoidal_factor + t_offset +
+                              t_sd * temperature
+            @. temperature = base_field + t_mult * sinusoidal_factor + t_offset +
+                              t_sd * temperature
         else
-            @. surface_temp = base_surf + t_amp * sinusoidal_factor
-            @. temperature = base_field + t_amp * sinusoidal_factor
+            @. surface_temp = base_surf + t_mult * sinusoidal_factor + t_offset
+            @. temperature = base_field + t_mult * sinusoidal_factor + t_offset
         end
         if haskey(mprops, :depth_field)
-            @. model.habitat_quality_field = calculate_habitat_suitability(
-                temperature, model.depth_field)
+            raw_hsi = calculate_habitat_suitability.(temperature, model.depth_field)
+            @. model.habitat_quality_field = clamp(
+                raw_hsi * env.habitat_multiplier + env.habitat_offset,
+                0.0, 1.0
+            )
         end
     else
         surface_temp = get(mprops, :surface_temperature_field, temperature)

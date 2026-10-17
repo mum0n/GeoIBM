@@ -19,7 +19,7 @@ using CairoMakie
 using Random
 using Statistics
 using GeoData
-using GeoDataSources
+using Interpolations
 
 # Include submodules and components
 include("types.jl")
@@ -30,9 +30,8 @@ include("assimilation.jl")
 include("analysis.jl")
 include("visualization.jl")
 include("gui.jl")
-include("leaflet_dashboard.jl")
-include("leaflet_comparison.jl")
 include("cli.jl")
+include("notebook_support.jl")
 
 # Export types and enums
 export LifeStage, Sex, zoea, megalopa, juvenile, adult, egg
@@ -119,16 +118,27 @@ export organism_color, organism_size, organism_marker, organism_heatarray
 export plot_abm_summary, animate_organism_simulation
 export plot_functional_relationships
 export launch_organism_gui, IBMGuiState, step_gui_simulation!
-export generate_leaflet_dashboard_html, launch_leaflet_dashboard
-export generate_leaflet_comparison_dashboard_html, launch_leaflet_comparison_dashboard
 export create_empty_annual_data
 export COUNT_PLOT_FLOOR, log10_count, GUI_EARLY_STAGES
 export kde_density, SIZE_DENSITY_BANDWIDTH_MM, SEX_DENSITY_ALPHA
+export cohort_stage_label
 export rescan_config!, flatten_toml, config_diff, RESCAN_IMMUTABLE
 export calendar_month, CALENDAR_MONTH_END
 export parse_cli_args, run_ibm_cli, julia_main
 export print_simulation_report, print_save_step_outputs, generate_summary_plots
 export display_cli_help
 export Figure
+
+# Export shared dashboard setup kernels and notebook functions
+export setup_spatial_panel!, setup_abundance_panel!, setup_stages_panel!
+export setup_size_density_panel!, setup_ogive_panel!, setup_macro_panel!
+export setup_stock_recruitment_panel!
+export aoi_coords_widget, steering_controls_widget, extract_ctrl_val
+export parameter_steering_sliders_widget, simulation_transport_widget
+export estimate_aoi_bathymetry
+export plot_bottom_temperature_cycle
+export plot_dashboard_spatial, plot_dashboard_abundance, plot_dashboard_stages
+export plot_dashboard_size_density, plot_dashboard_ogive, plot_dashboard_macro
+export plot_dashboard_stock_recruitment, plot_dashboard_environmental_distributions
 
 end # module GeoIBM

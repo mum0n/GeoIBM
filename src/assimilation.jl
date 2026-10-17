@@ -41,7 +41,7 @@ overrides it for a machine with the lakehouse somewhere else.
 function geoibm_store_root()::String
     override = get(ENV, "GEOIBM_STORE_ROOT", "")
     isempty(override) || return abspath(override)
-    return normpath(joinpath(@__DIR__, "..", "..", "lakehouse", "GeoIBM"))
+    return GeoData.lakehouse_dir("GeoIBM")
 end
 
 """
@@ -88,7 +88,7 @@ function environmental_input_status(env_params::EnvironmentParams)
     ]
     return (
         store_dir = store,
-        domain = (lon = lon_r, lat = lat_r),
+        domain = (lon = lon_r, lat = lat_r, time = env_params.time_range),
         inputs = inputs,
         present = [i.role for i in inputs if i.present],
         absent = [i.role for i in inputs if !i.present],
@@ -151,16 +151,28 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
     # -- bathymetry ------------------------------------------------------------
     bathy_target = joinpath(store, "bathymetry.zarr")
     if force || !isdir(bathy_target)
-        verbose && println("  [assimilate] bathymetry: $(env_params.bathymetry_source) over " *
-                           "$(lon_range) lon, $(lat_range) lat -> bathymetry.zarr")
-        GeoDataSources.fetch_erddap_bathymetry(
-            lon_range = lon_range,
-            lat_range = lat_range,
-            dataset_id = env_params.bathymetry_source == "etopo2022" ?
-                         "ETOPO_2022_v1_15s" : env_params.bathymetry_source,
-            output_path = bathy_target,
-            verbose = verbose && false)
-        push!(written, "bathymetry")
+        central_candidates = [
+            GeoData.lakehouse_dir("GeoData", "nwa", "bathymetry.zarr"),
+            GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc")
+        ]
+        c_idx = findfirst(p -> ispath(p), central_candidates)
+        if c_idx !== nothing
+            src = central_candidates[c_idx]
+            verbose && println("  [assimilate] bathymetry: loading from $(src) via GeoData -> bathymetry.zarr")
+            ds_bathy = GeoData.geoload(src)
+            GeoData.geosave(bathy_target, ds_bathy; backend = :zarr)
+            push!(written, "bathymetry")
+        else
+            verbose && println("  [assimilate] bathymetry: no local store found; fetching via GeoData.geoget")
+            ds_bathy = GeoData.geoget(
+                "erddap://ETOPO_2022_v1_15s";
+                cache_dir = store,
+                bounds = (lon_range, lat_range),
+                verbose = verbose
+            )
+            GeoData.geosave(bathy_target, ds_bathy; backend = :zarr)
+            push!(written, "bathymetry")
+        end
     else
         push!(skipped, "bathymetry")
         verbose && println("  [assimilate] bathymetry: already in the store, skipped")
@@ -168,20 +180,45 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
 
     # -- hydrography, one month at a time ---------------------------------------
     months = env_params.temperature_month == 0 ? (1:12) : (env_params.temperature_month,)
-    for m in months
-        if !force && !isempty(_month_dirs(store, m))
-            push!(skipped, "hydrography[$(m)]")
-            continue
+    hydro_target = joinpath(store, "boundary_$(temp_src).zarr")
+    if force || (!isdir(hydro_target) && isempty(_month_dirs(store, first(months))))
+        central_hydro = [
+            GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+                                  "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
+            GeoData.lakehouse_dir("GeoData", "glorys",
+                                  "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc")
+        ]
+        h_idx = findfirst(p -> ispath(p), central_hydro)
+        if h_idx !== nothing
+            src_h = central_hydro[h_idx]
+            verbose && println("  [assimilate] hydrography: loading from $(src_h) via GeoData -> $(hydro_target)")
+            ds_hydro = occursin(".nc", src_h) ?
+                GeoData.geoload(src_h; backend = :ncdatasets) :
+                GeoData.geoload(src_h)
+            GeoData.geosave(hydro_target, ds_hydro; backend = :zarr)
+            push!(written, "hydrography")
+        else
+            verbose && println("  [assimilate] hydrography: fetching $(temp_src) via GeoData.geoget")
+            scheme = temp_src === :woa23 ? "woa23://" : "copernicus://"
+            try
+                ds_hydro = GeoData.geoget(
+                    scheme;
+                    cache_dir = store,
+                    bounds = (lon_range, lat_range),
+                    month = env_params.temperature_month,
+                    verbose = verbose
+                )
+                if ds_hydro isa GeoDataset
+                    GeoData.geosave(hydro_target, ds_hydro; backend = :zarr)
+                    push!(written, "hydrography")
+                end
+            catch err
+                verbose && println("  [assimilate] hydrography: provider fetch skipped ($(err)), relying on in-situ GeoData stores")
+            end
         end
-        verbose && println("  [assimilate] hydrography: $(temp_src) month $(m)")
-        GeoDataSources.fetch_boundary_hydrography_geodata(
-            temp_src;
-            lon_range = lon_range,
-            lat_range = lat_range,
-            input_dir = store,
-            month = m,
-            verbose = false)
-        push!(written, "hydrography[$(m)]")
+    else
+        push!(skipped, "hydrography")
+        verbose && println("  [assimilate] hydrography: already in the store, skipped")
     end
 
     manifest = Dict{String, Any}(
