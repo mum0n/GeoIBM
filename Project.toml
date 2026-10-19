@@ -16,9 +16,11 @@ Optim = "429524aa-4258-5aef-a3af-852621145aeb"
 PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+ZMQ = "c2297ded-f4af-51ae-bb23-16f91089e4e1"
 
 [sources]
 GeoData = {path = "../GeoData"}
@@ -28,4 +30,6 @@ CairoMakie = "0.15"
 Interpolations = "0.15.2"
 Optim = "1.10, 1.11, 1.12, 1.13, 2"
 PlutoUI = "0.7.83"
+Serialization = "1.11.0"
+ZMQ = "1.5.1"
 julia = "1.11.1"
