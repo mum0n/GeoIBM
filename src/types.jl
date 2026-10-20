@@ -910,6 +910,7 @@ Base.@kwdef struct FisheryParams
     fishing_probability_daily::Float64 = 0.0
     fishing_season_start::Float64 = 90.0
     fishing_season_end::Float64 = 150.0
+    no_take_proportion::Float64 = 0.0
 end
 
 """

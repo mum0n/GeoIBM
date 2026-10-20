@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v1.0.4
+# v1.0.3
 
 using Markdown
 using InteractiveUtils
@@ -135,6 +135,96 @@ updating the simulated environmental drivers and Habitat Suitability Index (HSI)
 # ╔═╡ a0000001-0001-0001-0001-000000000030
 @bind aoi_coords HTML(aoi_coords_widget(default_lon = -63.5, default_lat = 44.5))
 
+# ╔═╡ a0000001-0001-0001-0001-000000000055
+begin
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Interactive Initial Stage Abundance Distribution
+    # Click on a stem to increase that stage's abundance by 50;
+    # Shift+click to decrease by 50.
+    # Values feed directly into the IBM's initial_female_cohort /
+    # initial_male_cohort / initial_aggregate_cohort configuration.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    using CairoMakie
+    import CairoMakie: Figure, Axis, stem!, scatter!, Label, empty!
+
+    n_stages = 20
+    stage_labels = string.(0:n_stages-1)
+
+    # Default stage distribution (eggs heavy at stage 0, declining through stages)
+    default_dist = Float64[
+        300.0, 150.0, 120.0, 100.0,   # stages 0-3: eggs + larvae (aggregate)
+        80.0, 70.0, 60.0, 50.0, 45.0,  # stages 4-8: early benthic juvenile
+        40.0, 35.0, 30.0, 25.0,        # stages 9-13: male benthic
+        15.0,                          # stage 14: male terminal
+        40.0, 35.0, 30.0, 25.0, 20.0,  # stages 15-19: female benthic
+    ]
+
+    stage_dist = Observable(copy(default_dist))
+
+    fig = Figure(size = (700, 340), fontsize = 10)
+    ax = Axis(
+        fig[1, 1],
+        title = "Initial Stage Distribution — click stem to adjust (±50, Shift+click −50)",
+        xlabel = "Developmental Stage",
+        ylabel = "Initial Count",
+        xticks = (1:n_stages, stage_labels),
+        xticklabelrotation = π / 3,
+        ymin = 0
+    )
+
+    stem!(ax, 1:n_stages, stage_dist[]; color = :steelblue, linewidth = 2)
+    scatter!(ax, 1:n_stages, stage_dist[]; color = :crimson, markersize = 5)
+
+    total_label = Label(fig[1, 2], "Total: $(round(Int, sum(stage_dist[])))",
+                        fontsize = 11, halign = :left, valign = :center)
+
+    # Reactively redraw when stage_dist changes
+    on(stage_dist) do new_dist
+        empty!(ax)
+        ax.title = "Initial Stage Distribution — click stem to adjust (±50, Shift+click −50)"
+        ax.xlabel = "Developmental Stage"
+        ax.ylabel = "Initial Count"
+        ax.xticks = (1:n_stages, stage_labels)
+        ax.xticklabelrotation = π / 3
+        ax.ymin = 0
+        stem!(ax, 1:n_stages, new_dist; color = :steelblue, linewidth = 2)
+        scatter!(ax, 1:n_stages, new_dist; color = :crimson, markersize = 5)
+        total_label[] = "Total: $(round(Int, sum(new_dist)))"
+    end
+
+    # Mouse click handler: click on a stem to adjust that stage's abundance
+    events(ax).mousebutton |> on do event
+        if event.button === Mouse.left && event.action === Mouse.press
+            try
+                mx = Float64(event.mouseposition[1])
+                my = Float64(event.mouseposition[2])
+
+                # Approximate axis pixel extent in scene coordinates
+                # fig[1,1] typically starts around x=85, ends around x=620 in a 700px figure
+                x_left_px = 85.0
+                x_right_px = 620.0
+
+                if x_left_px <= mx <= x_right_px
+                    frac = (mx - x_left_px) / (x_right_px - x_left_px)
+                    idx = clamp(round(Int, 1 + frac * (n_stages - 1)), 1, n_stages)
+
+                    current = copy(stage_dist[])
+                    if event.modifier === Keyboard.shift
+                        current[idx] = max(0.0, current[idx] - 50.0)
+                    else
+                        current[idx] = current[idx] + 50.0
+                    end
+                    stage_dist[] = current
+                end
+            catch err
+                @warn "Click handler error: $err"
+            end
+        end
+    end
+
+    fig
+end
+
 # ╔═╡ a0000001-0001-0001-0001-000000000006
 @bind steering_sliders HTML(parameter_steering_sliders_widget(default_interval = 10, default_years = 30))
 
@@ -197,6 +287,151 @@ Use the transport controls below to execute, step, pause, or rewind the simulati
 # ╔═╡ a0000001-0001-0001-0001-000000000031
 @bind transport_controls HTML(simulation_transport_widget(default_interval = 10, default_years = 30))
 
+# ╔═╡ a0000001-0001-0001-0001-000000000041
+md"""
+*Figure 1: Spatial Habitat & Organism Distribution.* Realized Habitat Suitability Index (HSI) field with agent particles sized by carapace width ($L_i$) and colored by demographic stage and sex via `organism_color`.
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000042
+md"""
+*Figure 2: Instar Stage Abundance Structure.* Instar stage demographics visualized as paired lollipop stems (`stem!`), split 50/50 for unsexed egg/aggregate stages and by realized counts for individuated stages.
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000043
+md"""
+*Figure 3: Size Frequency by Sex and Maturity.* Normalized Gaussian kernel densities (`kde_density`, $h = 3.0\text{ mm}$, `scale = :probability`) comparing immature vs mature components of both sexes alongside the legal fishery cut ($L_{\text{legal}}$).
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000044
+md"""
+*Figure 4: Maturity Ogives & Fishery Selectivity.* Empirical maturity fractions and legal harvest retention contrasted against theoretical single-ecdysis, cumulative, and knife-edge selectivity curves.
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000045
+md"""
+*Figure 5: Abundance Trajectories.* Dynamic population trajectory on a logarithmic scale ($\log_{10}(\text{count})$) for Total, Mature Females, Mature Males, and Legal Fishable Males.
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000046
+md"""
+*Figure 6: Biomass, Catch & Macro-Models.* Fishable stock biomass ($B_{\text{legal}}$) and annual catch alongside fitted surplus production (Schaefer), delay-difference (Deriso-Schnute), and Leslie matrix trajectories.
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000047
+md"""
+*Figure 7: Stock-Recruitment Relationship.* Realized spawner-recruit pairs $(\log_{10}(S), \log_{10}(R))$ overlaid with parametric Ricker and Beverton-Holt density-dependent recruitment curves.
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000023
+md"""
+## 4. Macro-Ecological Population Dynamic Visuals & Theory
+
+This section links the bottom-up individual-based simulation to classical top-down
+macro-ecological and fisheries population dynamics models. Discrete-time aggregate models
+are fitted directly to the annual demographic output series generated by the IBM.
+
+### Biomass Dynamics (Schaefer Surplus Production Model)
+
+Surplus production models treat the aggregate population as a single homogeneous biomass unit,
+abstracting age and size structures. The discrete-time Schaefer formulation (Schaefer, 1954)
+with catch removed at time $t$ is expressed as:
+
+```math
+B_{t+1} = B_t + r B_t \left(1 - \frac{B_t}{K}\right) - C_t
+```
+
+Where:
+- $B_t$: Aggregate fishable biomass at time period $t$ (kg or metric tons).
+- $r$: Intrinsic rate of population increase ($\text{year}^{-1}$), capturing the maximum per capita reproductive and somatic surplus capacity.
+- $K$: Environmental carrying capacity (kg), representing the unexploited asymptotic equilibrium biomass supported by habitat resources.
+- $r B_t \left(1 - \frac{B_t}{K}\right)$: Surplus production, representing net somatic growth and recruitment balance above natural mortality; maximum surplus production (Maximum Sustainable Yield, $\text{MSY} = \frac{r K}{4}$) occurs at $B_{\text{MSY}} = \frac{K}{2}$.
+- $C_t$: Aggregate fishery catch removals during interval $t$ (kg).
+
+### Deriso-Schnute Delay-Difference Dynamic Model
+
+The delay-difference equation (Deriso, 1980; Schnute, 1985) bridges surplus production and age-structured
+dynamics by incorporating somatic growth (Ford-Walford or Brody-Bertalanffy growth parameters) and age/stage-at-recruitment delays without tracking individual cohorts explicitly:
+
+```math
+B_{t+1} = (1 + \rho) s B_t - \rho s^2 B_{t-1} + R(S_{t-k}) - C_t
+```
+
+Where:
+- $B_t, B_{t-1}$: Exploitable fishable stock biomass in years $t$ and $t-1$.
+- $s$: Annual fraction of natural survival ($s = e^{-M}$, where $M$ is the instantaneous natural mortality rate).
+- $\rho$: Brody growth coefficient from the von Bertalanffy weight allometry:
+  ```math
+  w_{a} - w_{\infty} = \rho (w_{a-1} - w_{\infty}) \quad \Longrightarrow \quad w_{a} = (1+\rho) w_{a-1} - \rho w_{a-2}
+  ```
+  accounting for the persistence of somatic growth momentum from the preceding annual stanza.
+- $(1 + \rho) s B_t$: Projected biomass surviving from $t$ to $t+1$ augmented by somatic weight increment.
+- $-\rho s^2 B_{t-1}$: Correction factor discounting the compound survival and growth of stock from two periods prior ($t-1$), preventing double counting of accumulated tissue.
+- $R(S_{t-k})$: Density-dependent recruitment biomass entering the fishable stock at year $t+1$, lagged by $k$ years after spawning by parental stock $S_{t-k}$. For snow crab, $k$ corresponds to the multi-year developmental delay from larval extrusion to legal recruitment ($L \ge 95$ mm, typically 7–9 years).
+- $C_t$: Harvested biomass removals in year $t$.
+
+### Generalized Leslie (Lefkovitch) Stage-Structured Matrix Model
+
+For stage-structured benthic decapods where molt frequency decreases with size and terminal molt fixes adult morphology, populations are represented by a stage-vector $\mathbf{n}_t \in \mathbb{R}^p$ across $p$ developmental stages:
+
+```math
+\mathbf{n}_{t+1} = \mathbf{A} \mathbf{n}_t - \mathbf{C}_t
+```
+
+Where:
+- $\mathbf{n}_t = \begin{bmatrix} n_{1,t} & n_{2,t} & \cdots & n_{p,t} \end{bmatrix}^T$: Vector of organism abundances across the 20 discrete life-history stages (instars 0–19).
+- $\mathbf{A}$: Transition projection matrix (Lefkovitch, 1965) partitioned into reproductive fecundity, survival with stage retention, and growth transitions:
+  ```math
+  \mathbf{A} = \begin{bmatrix}
+  P_1 & F_2 & F_3 & \cdots & F_p \\
+  G_1 & P_2 & 0   & \cdots & 0 \\
+  0   & G_2 & P_3 & \cdots & 0 \\
+  \vdots & \ddots & \ddots & \ddots & \vdots \\
+  0   & \cdots & 0 & G_{p-1} & P_p
+  \end{bmatrix}
+  ```
+- $F_j$: Effective stage-specific fecundity contribution from stage $j$ to stage 1 ($F_j = \sigma_j m_j$, with $\sigma_j$ maternal survival and $m_j$ egg production).
+- $P_j$: Probability that an individual in stage $j$ survives and remains in stage $j$ during the time interval ($P_j = \sigma_j (1 - \gamma_j)$, where $\gamma_j$ is the ecdysis/molting probability).
+- $G_j$: Probability that an individual in stage $j$ survives and transitions (molts) into stage $j+1$ ($G_j = \sigma_j \gamma_j$).
+- $\mathbf{C}_t$: Stage-specific harvest removal vector ($\mathbf{C}_t = \begin{bmatrix} 0 & \cdots & 0 & C_{\text{legal}, t} \end{bmatrix}^T$).
+- Asymptotic population growth rate is determined by the dominant eigenvalue $\lambda_1 = e^r$ of $\mathbf{A}$, while the right eigenvector $\mathbf{w}_1$ defines the stable stage distribution, and the left eigenvector $\mathbf{v}_1$ defines the stage-specific reproductive values.
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000027
+md"""
+## 5. Tabular Summaries
+
+This section presents the tabular outputs of the simulation and calibration evaluations
+following all graphical panels and model comparisons.
+
+### 5.1 Annual Production & Assessment Summary Table
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000029
+md"""
+### 5.2 Multi-Attribute Calibration & Stopping Criteria Table
+
+The orchestrator (`scripts/organism_orchestrator.jl`) evaluates candidate parameterizations
+against five simultaneous biological criteria:
+- **Persistence**: Population remains viable ($N_{\text{living}} \ge N_{\text{min}}$).
+- **Bounds**: Population does not exceed carrying capacity ceilings ($N_{\text{living}} \le N_{\text{max}}$).
+- **Size Structure Stability**: Drift in mean carapace width does not exceed tolerance.
+- **Maturity Ogive Fidelity**: Empirical maturity schedule matches theoretical logistic curves ($\text{RMSE} \le 0.35$).
+- **Growth Schedule Fidelity**: Stage sizes match empirical reference medians ($\text{RMSE} \le 15.0$ mm).
+"""
+
+# ╔═╡ a0000001-0001-0001-0001-000000000056
+begin
+    # Slider controlling the proportion of the spatial domain that is a no-take zone
+    # (leftmost cells). Fishing occurs only to the right of the partition line:
+    # at proportion p, the leftmost p×N cells are protected, the rightmost
+    # (1−p)×N cells are open to harvest.
+    @bind no_take_prop PlutoUI.Slider(
+        0.0:0.05:1.0,
+        show_value = true,
+        default = 0.0,
+    )
+end
+
 # ╔═╡ a0000001-0001-0001-0001-000000000016
 sim_results = begin
     # 1. Ingest baseline dictionary from snowcrab.toml
@@ -234,7 +469,21 @@ sim_results = begin
     cfg[:fishing_probability_daily] = Float64(extract_ctrl_val(steering_sliders, :fishing_rate, 0.002))
     legal_size_val = Float64(extract_ctrl_val(steering_sliders, :legal_size, 95.0))
     cfg[:legal_size_male] = legal_size_val
-    
+
+    # Apply interactive stage distribution to initial cohorts
+    # Values from the interactive stem plot feed into initial_female_cohort,
+    # initial_male_cohort, and initial_aggregate_cohort configuration.
+    stg_vals = Float64.(stage_dist[])
+    n_half = length(stg_vals) ÷ 2
+    cfg[:initial_male_cohort] = Float64.(stg_vals[1:n_half])
+    cfg[:initial_female_cohort] = Float64.(stg_vals[n_half+1:end])
+    cfg[:initial_aggregate_cohort] = Float64.(stg_vals[1:min(12, length(stg_vals))])
+
+    # No-take proportion from the interactive slider: fraction of the x-axis
+    # (leftmost cells) that is a protected zone. Fishing occurs only to the right
+    # of the partition line.
+    cfg[:no_take_proportion] = Float64(no_take_prop)
+
     # Apply modular biological process toggles
     cfg[:use_energetics] = Bool(extract_ctrl_val(steering_sliders, :use_energetics, true))
     cfg[:use_thermal_stress] = Bool(extract_ctrl_val(steering_sliders, :use_thermal_stress, true))
@@ -350,11 +599,6 @@ plot_dashboard_spatial(
     background_layer = Symbol(extract_ctrl_val(steering_sliders, :background_layer, "habitat_quality"))
 )
 
-# ╔═╡ a0000001-0001-0001-0001-000000000041
-md"""
-*Figure 1: Spatial Habitat & Organism Distribution.* Realized Habitat Suitability Index (HSI) field with agent particles sized by carapace width ($L_i$) and colored by demographic stage and sex via `organism_color`.
-"""
-
 # ╔═╡ a0000001-0001-0001-0001-000000000048
 plot_dashboard_environmental_distributions(
     sim_results.model;
@@ -373,22 +617,12 @@ plot_dashboard_stages(
     sim_days = sim_results.sim_days
 )
 
-# ╔═╡ a0000001-0001-0001-0001-000000000042
-md"""
-*Figure 2: Instar Stage Abundance Structure.* Instar stage demographics visualized as paired lollipop stems (`stem!`), split 50/50 for unsexed egg/aggregate stages and by realized counts for individuated stages.
-"""
-
 # ╔═╡ a0000001-0001-0001-0001-000000000021
 plot_dashboard_size_density(
     sim_results.model,
     sim_results.params;
     sim_days = sim_results.sim_days
 )
-
-# ╔═╡ a0000001-0001-0001-0001-000000000043
-md"""
-*Figure 3: Size Frequency by Sex and Maturity.* Normalized Gaussian kernel densities (`kde_density`, $h = 3.0\text{ mm}$, `scale = :probability`) comparing immature vs mature components of both sexes alongside the legal fishery cut ($L_{\text{legal}}$).
-"""
 
 # ╔═╡ a0000001-0001-0001-0001-000000000022
 plot_dashboard_ogive(
@@ -397,21 +631,11 @@ plot_dashboard_ogive(
     sim_days = sim_results.sim_days
 )
 
-# ╔═╡ a0000001-0001-0001-0001-000000000044
-md"""
-*Figure 4: Maturity Ogives & Fishery Selectivity.* Empirical maturity fractions and legal harvest retention contrasted against theoretical single-ecdysis, cumulative, and knife-edge selectivity curves.
-"""
-
 # ╔═╡ a0000001-0001-0001-0001-000000000020
 plot_dashboard_abundance(
     sim_results.agent_df;
     sim_days = sim_results.sim_days
 )
-
-# ╔═╡ a0000001-0001-0001-0001-000000000045
-md"""
-*Figure 5: Abundance Trajectories.* Dynamic population trajectory on a logarithmic scale ($\log_{10}(\text{count})$) for Total, Mature Females, Mature Males, and Legal Fishable Males.
-"""
 
 # ╔═╡ a0000001-0001-0001-0001-000000000035
 plot_dashboard_macro(
@@ -421,95 +645,11 @@ plot_dashboard_macro(
     sim_days = sim_results.sim_days
 )
 
-# ╔═╡ a0000001-0001-0001-0001-000000000046
-md"""
-*Figure 6: Biomass, Catch & Macro-Models.* Fishable stock biomass ($B_{\text{legal}}$) and annual catch alongside fitted surplus production (Schaefer), delay-difference (Deriso-Schnute), and Leslie matrix trajectories.
-"""
-
 # ╔═╡ a0000001-0001-0001-0001-000000000036
 plot_dashboard_stock_recruitment(
     sim_results.annual_df;
     sim_days = sim_results.sim_days
 )
-
-# ╔═╡ a0000001-0001-0001-0001-000000000047
-md"""
-*Figure 7: Stock-Recruitment Relationship.* Realized spawner-recruit pairs $(\log_{10}(S), \log_{10}(R))$ overlaid with parametric Ricker and Beverton-Holt density-dependent recruitment curves.
-"""
-
-# ╔═╡ a0000001-0001-0001-0001-000000000023
-md"""
-## 4. Macro-Ecological Population Dynamic Visuals & Theory
-
-This section links the bottom-up individual-based simulation to classical top-down
-macro-ecological and fisheries population dynamics models. Discrete-time aggregate models
-are fitted directly to the annual demographic output series generated by the IBM.
-
-### Biomass Dynamics (Schaefer Surplus Production Model)
-
-Surplus production models treat the aggregate population as a single homogeneous biomass unit,
-abstracting age and size structures. The discrete-time Schaefer formulation (Schaefer, 1954)
-with catch removed at time $t$ is expressed as:
-
-```math
-B_{t+1} = B_t + r B_t \left(1 - \frac{B_t}{K}\right) - C_t
-```
-
-Where:
-- $B_t$: Aggregate fishable biomass at time period $t$ (kg or metric tons).
-- $r$: Intrinsic rate of population increase ($\text{year}^{-1}$), capturing the maximum per capita reproductive and somatic surplus capacity.
-- $K$: Environmental carrying capacity (kg), representing the unexploited asymptotic equilibrium biomass supported by habitat resources.
-- $r B_t \left(1 - \frac{B_t}{K}\right)$: Surplus production, representing net somatic growth and recruitment balance above natural mortality; maximum surplus production (Maximum Sustainable Yield, $\text{MSY} = \frac{r K}{4}$) occurs at $B_{\text{MSY}} = \frac{K}{2}$.
-- $C_t$: Aggregate fishery catch removals during interval $t$ (kg).
-
-### Deriso-Schnute Delay-Difference Dynamic Model
-
-The delay-difference equation (Deriso, 1980; Schnute, 1985) bridges surplus production and age-structured
-dynamics by incorporating somatic growth (Ford-Walford or Brody-Bertalanffy growth parameters) and age/stage-at-recruitment delays without tracking individual cohorts explicitly:
-
-```math
-B_{t+1} = (1 + \rho) s B_t - \rho s^2 B_{t-1} + R(S_{t-k}) - C_t
-```
-
-Where:
-- $B_t, B_{t-1}$: Exploitable fishable stock biomass in years $t$ and $t-1$.
-- $s$: Annual fraction of natural survival ($s = e^{-M}$, where $M$ is the instantaneous natural mortality rate).
-- $\rho$: Brody growth coefficient from the von Bertalanffy weight allometry:
-  ```math
-  w_{a} - w_{\infty} = \rho (w_{a-1} - w_{\infty}) \quad \Longrightarrow \quad w_{a} = (1+\rho) w_{a-1} - \rho w_{a-2}
-  ```
-  accounting for the persistence of somatic growth momentum from the preceding annual stanza.
-- $(1 + \rho) s B_t$: Projected biomass surviving from $t$ to $t+1$ augmented by somatic weight increment.
-- $-\rho s^2 B_{t-1}$: Correction factor discounting the compound survival and growth of stock from two periods prior ($t-1$), preventing double counting of accumulated tissue.
-- $R(S_{t-k})$: Density-dependent recruitment biomass entering the fishable stock at year $t+1$, lagged by $k$ years after spawning by parental stock $S_{t-k}$. For snow crab, $k$ corresponds to the multi-year developmental delay from larval extrusion to legal recruitment ($L \ge 95$ mm, typically 7–9 years).
-- $C_t$: Harvested biomass removals in year $t$.
-
-### Generalized Leslie (Lefkovitch) Stage-Structured Matrix Model
-
-For stage-structured benthic decapods where molt frequency decreases with size and terminal molt fixes adult morphology, populations are represented by a stage-vector $\mathbf{n}_t \in \mathbb{R}^p$ across $p$ developmental stages:
-
-```math
-\mathbf{n}_{t+1} = \mathbf{A} \mathbf{n}_t - \mathbf{C}_t
-```
-
-Where:
-- $\mathbf{n}_t = \begin{bmatrix} n_{1,t} & n_{2,t} & \cdots & n_{p,t} \end{bmatrix}^T$: Vector of organism abundances across the 20 discrete life-history stages (instars 0–19).
-- $\mathbf{A}$: Transition projection matrix (Lefkovitch, 1965) partitioned into reproductive fecundity, survival with stage retention, and growth transitions:
-  ```math
-  \mathbf{A} = \begin{bmatrix}
-  P_1 & F_2 & F_3 & \cdots & F_p \\
-  G_1 & P_2 & 0   & \cdots & 0 \\
-  0   & G_2 & P_3 & \cdots & 0 \\
-  \vdots & \ddots & \ddots & \ddots & \vdots \\
-  0   & \cdots & 0 & G_{p-1} & P_p
-  \end{bmatrix}
-  ```
-- $F_j$: Effective stage-specific fecundity contribution from stage $j$ to stage 1 ($F_j = \sigma_j m_j$, with $\sigma_j$ maternal survival and $m_j$ egg production).
-- $P_j$: Probability that an individual in stage $j$ survives and remains in stage $j$ during the time interval ($P_j = \sigma_j (1 - \gamma_j)$, where $\gamma_j$ is the ecdysis/molting probability).
-- $G_j$: Probability that an individual in stage $j$ survives and transitions (molts) into stage $j+1$ ($G_j = \sigma_j \gamma_j$).
-- $\mathbf{C}_t$: Stage-specific harvest removal vector ($\mathbf{C}_t = \begin{bmatrix} 0 & \cdots & 0 & C_{\text{legal}, t} \end{bmatrix}^T$).
-- Asymptotic population growth rate is determined by the dominant eigenvalue $\lambda_1 = e^r$ of $\mathbf{A}$, while the right eigenvector $\mathbf{w}_1$ defines the stable stage distribution, and the left eigenvector $\mathbf{v}_1$ defines the stage-specific reproductive values.
-"""
 
 # ╔═╡ a0000001-0001-0001-0001-000000000024
 macro_results = begin
@@ -541,6 +681,20 @@ macro_results = begin
     end
 end
 
+# ╔═╡ a0000001-0001-0001-0001-000000000026
+begin
+    if macro_results.has_fits
+        # Three-way comparative evaluation (Schaefer vs Delay-Diff vs Leslie)
+        p_comp = plot_macro_model_comparison(macro_results.comparison)
+        p_comp
+    else
+        fig_comp_empty = Figure(size = (600, 120))
+        Label(fig_comp_empty[1, 1], "Three-way comparison awaiting >= 3 annual periods.",
+              color = :gray)
+        fig_comp_empty
+    end
+end
+
 # ╔═╡ a0000001-0001-0001-0001-000000000025
 begin
     if macro_results.has_fits
@@ -557,45 +711,8 @@ begin
     end
 end
 
-# ╔═╡ a0000001-0001-0001-0001-000000000026
-begin
-    if macro_results.has_fits
-        # Three-way comparative evaluation (Schaefer vs Delay-Diff vs Leslie)
-        p_comp = plot_macro_model_comparison(macro_results.comparison)
-        p_comp
-    else
-        fig_comp_empty = Figure(size = (600, 120))
-        Label(fig_comp_empty[1, 1], "Three-way comparison awaiting >= 3 annual periods.",
-              color = :gray)
-        fig_comp_empty
-    end
-end
-
-# ╔═╡ a0000001-0001-0001-0001-000000000027
-md"""
-## 5. Tabular Summaries
-
-This section presents the tabular outputs of the simulation and calibration evaluations
-following all graphical panels and model comparisons.
-
-### 5.1 Annual Production & Assessment Summary Table
-"""
-
 # ╔═╡ a0000001-0001-0001-0001-000000000017
 sim_results.annual_df
-
-# ╔═╡ a0000001-0001-0001-0001-000000000029
-md"""
-### 5.2 Multi-Attribute Calibration & Stopping Criteria Table
-
-The orchestrator (`scripts/organism_orchestrator.jl`) evaluates candidate parameterizations
-against five simultaneous biological criteria:
-- **Persistence**: Population remains viable ($N_{\text{living}} \ge N_{\text{min}}$).
-- **Bounds**: Population does not exceed carrying capacity ceilings ($N_{\text{living}} \le N_{\text{max}}$).
-- **Size Structure Stability**: Drift in mean carapace width does not exceed tolerance.
-- **Maturity Ogive Fidelity**: Empirical maturity schedule matches theoretical logistic curves ($\text{RMSE} \le 0.35$).
-- **Growth Schedule Fidelity**: Stage sizes match empirical reference medians ($\text{RMSE} \le 15.0$ mm).
-"""
 
 # ╔═╡ a0000001-0001-0001-0001-000000000028
 criteria_eval = begin
@@ -633,13 +750,14 @@ end
 
 # ╔═╡ Cell order:
 # ╟─a0000001-0001-0001-0001-000000000001
-# ╟─a0000001-0001-0001-0001-000000000002
+# ╠═a0000001-0001-0001-0001-000000000002
 # ╟─a0000001-0001-0001-0001-000000000003
 # ╟─a0000001-0001-0001-0001-000000000004
 # ╟─a0000001-0001-0001-0001-000000000005
 # ╟─a0000001-0001-0001-0001-000000000030
 # ╟─a0000001-0001-0001-0001-000000000033
 # ╟─a0000001-0001-0001-0001-000000000037
+# ╟─a0000001-0001-0001-0001-000000000055
 # ╟─a0000001-0001-0001-0001-000000000006
 # ╟─a0000001-0001-0001-0001-000000000015
 # ╟─a0000001-0001-0001-0001-000000000050
@@ -669,3 +787,4 @@ end
 # ╟─a0000001-0001-0001-0001-000000000017
 # ╟─a0000001-0001-0001-0001-000000000029
 # ╟─a0000001-0001-0001-0001-000000000028
+# ╠═a0000001-0001-0001-0001-000000000056

@@ -1119,6 +1119,14 @@ function initialize_model(;
     # first step. `model_step!` refreshes it once per step.
     properties[:density_feedback] = benthic_density_feedback(model)
 
+    # Spatial fishing partition: a fraction `no_take_proportion` of the grid's
+    # x-axis (leftmost cells) is a no-take zone; fishing occurs only to the right
+    # of the partition line. Stored as the first fished cell index (1-based), so
+    # cells i <= no_take_line are protected, cells i > no_take_line are fished.
+    grid_nx = grid[1]
+    no_take_prop = clamp(params.fishery.no_take_proportion, 0.0, 1.0)
+    properties[:no_take_line] = floor(Int, grid_nx * no_take_prop)
+
     # Valid marine habitat cells for benthic organisms (strictly non-land: depth >= 20.0 and hsi > 0)
     depth_min_bound = 20.0
     marine_cells = Tuple{Int, Int}[]
@@ -1583,7 +1591,10 @@ function agent_step!(org::Organism, model)
     end
 
     # 5. Fishery Harvest
-    if in_fishing_season
+    # Organisms in the leftmost `no_take_proportion` of grid columns are in a
+    # no-take zone and are never fished; the partition line (last protected cell
+    # index) is stored in model.properties[:no_take_line] by `initialize_model`.
+    if in_fishing_season && org.pos[1] > get(model.properties, :no_take_line, 0)
         legal_size = params.fishery.legal_size_male
         if is_legal_male(org, legal_size, params.organism.adult_size_threshold)
             # Legality is checked before the draw, not after. It used to consume one
