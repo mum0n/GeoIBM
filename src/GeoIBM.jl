@@ -21,6 +21,16 @@ using Statistics
 using GeoData
 using Interpolations
 
+"""
+    _PROJECT_ROOT
+
+The root of this package -- the directory holding `src/`, `configs/` and `Project.toml`.
+
+Configured store paths are resolved against it, so a run started from any working directory
+reads from the same place.
+"""
+const _PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
+
 # Include submodules and components
 include("types.jl")
 include("organism_dynamics.jl")

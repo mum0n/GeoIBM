@@ -51,10 +51,15 @@ The directory a run reads its environment from: `geodata_store_dir` when it is n
 `geodata_input_dir` otherwise. Both are honoured because a configuration written before the
 store existed still says `inputs`, and honouring only one of them would silently move a run's
 inputs to a lakehouse it did not ask for.
+
+A configured path is resolved against this package's root rather than the working directory,
+and the lakehouse is accepted either inside the project (`lakehouse/...`) or beside it
+(`../lakehouse/...`), so the same configuration resolves the same way in either layout.
 """
 function environmental_store_dir(env_params::EnvironmentParams)
     d = something(env_params.geodata_store_dir, "")
-    return isempty(strip(d)) ? env_params.geodata_input_dir : d
+    isempty(strip(d)) && return env_params.geodata_input_dir
+    return GeoData.project_lakehouse_path(d, _PROJECT_ROOT)
 end
 
 """
