@@ -328,7 +328,7 @@ function fecundity(
     fecundity_quantile::Union{Nothing, Real} = nothing
 )
     if size <= 0.0
-        error("Organism size must be positive for fecundity estimation, got: $(size)")
+        return 0.0
     end
     sz = Float64(size)
     param_type = if fecundity_parameterization !== nothing
@@ -914,6 +914,17 @@ function perform_reproduction!(::SpeciesBehavior, org::Organism, model)
                 )
                 model.aggregate_populations.next_group_id += 1
                 push!(model.aggregate_populations.groups, new_group)
+            end
+            # Record the clutch for the per-clutch stock-recruitment path (M13).
+            if haskey(abmproperties(model), :clutch_recruitment_records)
+                push!(abmproperties(model)[:clutch_recruitment_records], (
+                    hatch_time = Float64(org.hatch_day),
+                    mother_size = Float64(org.size),
+                    mother_mass = Float64(org.mass),
+                    egg_count = Int(org.egg_count),
+                    recruits_settled = Int(org.egg_count),
+                    density_feedback = 1.0
+                ))
             end
 
             org.egg_count = 0

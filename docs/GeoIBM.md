@@ -1066,7 +1066,7 @@ The simulation architecture enforces strict structural consistency across develo
 | | `shell_age_first_stage` | `6` | Anchor stage for shell age calculation. | `organism_dynamics.jl` |
 | | `shell_condition_days` | `[30, 365, 730, 1277.5]` | Breakpoints in days for shell condition categories (1 to 5). | `organism_dynamics.jl` |
 | | `egg_mass_g`, `egg_size_mm` | `7e-5`, `0.60` | Mass (g) and diameter (mm) of an individual ovum. | `types.jl`, `species.jl`, `simulation.jl` |
-| | `energy_deficit_removal_probability`| `0.75` | Daily mortality probability when energy reserves drop into deficit. | `simulation.jl` |
+| | `energy_deficit_removal_probability`| `0.75` | Probability of staying in place (not moving) when energy reserves drop into deficit. | `simulation.jl` |
 | | `juvenile_max_stage` | `12` | Stage boundary where cohorts transition to individual agents. | `organism_dynamics.jl`, `simulation.jl`, `types.jl` |
 | | `adult_size_threshold` | `68.0` | Size threshold (mm CW) for morphometric adult categorization. | `types.jl`, `simulation.jl` |
 | | `trait_quantile_min/max`| `0.01`, `0.99`| Quantile bounds for drawing individual biological traits. | `types.jl`, `simulation.jl` |
@@ -1155,3 +1155,86 @@ The simulation architecture enforces strict structural consistency across develo
 | | `maturity_ogive_min_count`| `10` | Minimum sample count required per size bin to evaluate maturity ogive. | `types.jl`, `analysis.jl` |
 | | Penalty & weight terms | Various | Composite optimization objective loss weights. | `analysis.jl` |
 | | `ogive_bin_start/step/stop`| `20.0`, `10.0`, `140.0` | Carapace size binning range (mm) for empirical ogives. | `analysis.jl` |
+
+---
+
+## 8. Deep Logic, Consistency and Correctness Check (2026-10)
+
+A full audit of `src/`, `configs/` and `test/` was carried out on 2026-10-22:
+every module was read in full, cross-module call graphs were traced, the
+third-party contracts the model depends on were verified against the installed
+package sources, and the critical findings were reproduced by execution.
+
+The complete report — with file-and-line references, reproductions, and the
+justification for each judgement — is in
+**[`docs/deep_check_2026-10.md`](deep_check_2026-10.md)**.
+
+**Summary of the audit:** 3 critical, 22 major and 31 minor findings, plus 3
+places where a docstring and the code disagree. The package's biology and
+parameterisation are internally consistent; the defects are concentrated in the
+Agents.jl integration boundary, the configuration plumbing, and the statistics
+layer.
+
+### 8.1 Critical findings
+
+| ID | Location | Finding | Evidence |
+|---|---|---|---|
+| **C1** | `src/simulation.jl:1597` | The fishery harvest path reads `model.properties`, which is not a model field. Agents.jl 7.1.0 resolves model properties out of the properties container (`core/model_abstract.jl:120`), so this is a lookup of the key `:properties` and raises `KeyError: key :properties not found`. Any run with a fishery enabled aborts on the first in-season day. | Reproduced by execution; also fails in the project's own suite at `test/test_config_parameters.jl:364`. The correct accessor `abmproperties(model)` is used at `src/simulation.jl:1626` and `:1715`. |
+| **C2** | `src/assimilation.jl:216`, `:188`, `:110-123` | `assimilate_environmental_inputs` never writes the hydrography artefact it reports as written: the `:woa23` provider returns interpolators and paths, not a `GeoDataset`, so `ds_hydro isa GeoDataset` is false. The writer, the presence check and the reader use three different names, so `read_assimilated_environment` raises "no [:hydrography]" immediately after a successful assimilation. | `GeoDataSources/src/woa23.jl:313-325` (return contract), `:137-139` (artefact naming) vs `src/assimilation.jl:188` (writer), `:110-123` (presence check), `src/simulation.jl:770` (reader). |
+| **C3** | `src/simulation.jl:960` | `GridSpace(grid)` defaults to `periodic = true` in Agents.jl 7.1.0, so `nearby_positions` returns *wrapped* neighbours and dispersal can move an organism from one side of the domain to the other in one step — including across the no-take / fished partition, which is defined on the x index. | The model's own type parameter records it: `StandardABM{GridSpace{2, true}, ...}`. Default at `~/.julia/packages/Agents/lKaNl/src/spaces/grid_single.jl:22,35`; consumer at `src/simulation.jl:1415`. |
+
+### 8.2 Major findings
+
+| ID | Location | Finding |
+|---|---|---|
+| M1 | `src/types.jl:514-515`, `src/simulation.jl:1215,1289-1297` | The per-sex cohort vectors are length 12 (stages 0-11) but individual seeding enumerates stages 12+, so **no individual organism is ever seeded from them**. Reproduced: 0 agents seeded. |
+| M2 | `src/simulation.jl:1231,1297` | `seed_sum` counts stages that seed nothing, and the per-cell rounding means the seeded population need not equal `n_agents`. |
+| M3 | `src/simulation.jl:1100-1108`, `:1793` | Agents.jl defaults `agents_first = true`, so `model_step!` runs **after** the agent phase: day 1 is simulated against the initial field, and the calendar the agents read lags by one step. |
+| M4 | `src/simulation.jl:962-966` vs `src/organism_dynamics.jl:919` | `model.dt` and `params.simulation.dt` come from different places; on the keyword path they differ (2.0 vs 1.0), so ageing and hazards disagree. |
+| M5 | `src/organism_dynamics.jl:674-690`, `src/simulation.jl:1096` | `current_day_of_year`'s documented fallback is unreachable — `:day_of_year` is always present — so the GUI-tick path reads a stale calendar. |
+| M6 | `src/simulation.jl:962-966` | The seed actually used is never written to `params.simulation.seed`. |
+| M7 | `src/analysis.jl:1509,1563` | `optimize_blocks` lacks the "every trial was penalised" guard that `optimize_model` has, so a wholly diverging Leslie fit is reported as a successful one. |
+| M8 | `src/analysis.jl:2700-2703` | The Leslie damping ratio is inverted: λ₁/\|λ₂\| instead of \|λ₂\|/λ₁ (Caswell 2001, §9.1). |
+| M9 | `src/analysis.jl:3574-3575`, `:3933-3937` | The calibrated maturity curve applies the temperature response twice (fitted logit term *and* an L50 shift), and the reported (L50, slope) is not the fitted curve. |
+| M10 | `src/analysis.jl:3759-3761`, `:3929` | The maturity fallback stores a mm/°C quantity in a dimensionless logit-coefficient slot. |
+| M11 | `src/analysis.jl:687-712` | The Ricker and Beverton-Holt predictors stop reproducing the fitted line when the slope is non-positive, so R²/AIC/`best_model` are computed on a curve that was not fitted. |
+| M12 | `src/analysis.jl:2404-2413` | The Leslie fit is estimated on a fabricated stage decomposition built from an undocumented constant (`exp(-0.28·(stage-4))`). |
+| M13 | `src/analysis.jl:470-489`, `src/simulation.jl:1084-1091` | The per-clutch stock-recruitment extraction is always empty: nothing ever populates `:clutch_recruitment_records`. |
+| M14 | `src/cli.jl:309-310`, `:241-260` | `--temp_base` / `--temp_amplitude` are advertised as legacy aliases but are silently ignored (the alias is handled everywhere *except* the CLI parser). Reproduced, and fails at `test/test_config_parameters.jl:175` and `:1263`. |
+| M15 | `src/types.jl:913`, `src/simulation.jl:1127` | `no_take_proportion` is declared and read but absent from both TOML files, so the no-take line is not configurable. Fails at `test/test_config_parameters.jl:244`. |
+| M16 | `src/visualization.jl:54-58`, `:614-619` | The mature-adult series is never plotted: the guarded column `count_is_adult` does not exist in the observation schema. |
+| M17 | `src/visualization.jl:860-861` | `round(Int, bh.R_max)` throws `InexactError` when `R_max = Inf` (a non-positive fitted slope), aborting the whole plot export. |
+| M18 | `src/gui.jl:2179-2212`, `:1791-1813` | GUI "Reset" does not clear the snapshot cache, so "Restore Year" can reinstate the previous run's model. |
+| M19 | `src/assimilation.jl:190-203`, `:229-243` | The manifest records a product and a domain that the copied hydrography artefact does not have. |
+| M20 | `src/simulation.jl:1799-1802` | The food field is not clamped, so it goes negative for `dt > 1/replenishment_rate`. |
+| M21 | `src/simulation.jl:1611-1637` | A caught-and-released organism skips dispersal and reproduction for the rest of the step. |
+| M22 | `configs/default.toml:94,101` vs `configs/snowcrab.toml:109,115` | Two undocumented differences between the shipped configurations (`use_geodata`, `bathymetry_source`), breaking the project's own configuration-diff invariant. |
+
+### 8.3 Test-suite baseline at the time of the audit
+
+`julia --project=. test/runtests.jl config` reports
+`1456 passed, 4 failed, 3 errored`. The failures correspond to C1, M14, M15
+and M22; the full mapping is tabulated in
+[`docs/deep_check_2026-10.md` §7](deep_check_2026-10.md#7-current-test-suite-failures-baseline).
+
+### 8.4 Reproducing the findings
+
+The verification scripts are kept in `scratch/`:
+
+```
+scratch/verify_agents.jl    # Agents.jl API: model.properties, GridSpace periodicity
+scratch/verify_claims.jl    # seeding, dt divergence, calendar staleness, the fishery KeyError
+scratch/verify_order.jl     # the agents_first step ordering
+scratch/verify_cli.jl       # the --temp_base / --temp_amplitude alias behaviour
+```
+
+### 8.5 Recommended order of work
+
+1. **C1** — one-line fix; unblocks the fishery, which is currently unusable.
+2. **C3** — one-line fix, but it changes every dispersal result.
+3. **M3** — decide the phase order explicitly and align the comments.
+4. **M1 + M2** — extend the cohort vectors, add a length validation, correct `seed_sum`.
+5. **M14 + M15 + M22** — restore the CLI alias, add the two missing TOML keys, annotate the undocumented differences.
+6. **M7-M12** — the statistics layer; reported numbers change, so affected figures need regenerating.
+7. **M16, M17, M21** — plotting and export paths.
+8. **C2 + M19** — the assimilation path; the store contract needs designing rather than patching.

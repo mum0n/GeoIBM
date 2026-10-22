@@ -1282,8 +1282,8 @@ function plot_dashboard_macro(
     
     setup_macro_panel!(
         ax, pts_b, pts_c, pts_obs, pts_sch, pts_dd, pts_les;
-        label_obs = l_obs, label_sch = l_sch, label_dd = l_dd, label_les = l_les
-    )
+        label_obs = l_obs, label_sch = l_sch, label_dd = l_dd, label_les = l_les,
+        label_catch = "Cumulative Catch Biomass (kg)")
     return fig
 end
 

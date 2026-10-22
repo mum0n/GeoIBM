@@ -226,8 +226,13 @@ function parse_cli_args(args::AbstractVector)
         if k_str == "help"
             config[:help] = true
         elseif k_str in ("gui", "gui_simple", "gui-simple")
-            config[:gui] = (lowercase(v_str) != "false")
+            config[:gui] = coerce_config_value(Bool, v_str)
             config[:gui_simple] = config[:gui]
+        elseif k_str in ("temp_base", "temp_amplitude")
+            # Legacy aliases for the thermal parameters.
+            alias = k_str == "temp_base" ? :temp_offset : :temp_multiplier
+            config[alias] = coerce_config_value(Float64, v_str)
+            config[Symbol(k_str)] = config[alias]
         elseif k_str == "config"
             # Already consumed by the pre-scan that located the configuration
             # files; it is recorded on the config dict rather than set here.
@@ -256,7 +261,11 @@ function parse_cli_args(args::AbstractVector)
                         k_str
                 end
             else
-                config[sym_k] = coerce_config_value(declared, v_str)
+                try
+                    config[sym_k] = coerce_config_value(declared, v_str)
+                catch e
+                    @warn "Could not parse value for configuration key; ignoring" key = k_str value = v_str exception = e
+                end
             end
         end
     end

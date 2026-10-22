@@ -791,7 +791,9 @@ include("test_fixtures.jl")
         # the duration. The seeded clutch is deliberately identical in both files, so
         # snow crab differs from the baseline in how long it runs and over what area,
         # not in what it starts with.
-        @test differing == ["environment.benthic_carrying_capacity",
+        @test differing == ["environment.bathymetry_source",
+            "environment.benthic_carrying_capacity",
+            "environment.use_geodata",
             "simulation.grid_nx", "simulation.grid_ny"]
 
         # And the operating scale is what it claims to be.
@@ -869,7 +871,8 @@ include("test_fixtures.jl")
             "sum_mass", "count_is_adult_male", "count_is_mature_male",
             "count_is_mature_female", "count_is_legal_male", "count_is_ovigerous",
             "sum_mass_if_mature_female", "sum_mass_if_mature_male",
-            "sum_mass_if_legal_male"
+            "sum_mass_if_legal_male",
+            "count_stage_0", "count_stage_1", "count_stage_2", "count_stage_3", "count_stage_4", "count_stage_5", "count_stage_6", "count_stage_7", "count_stage_8", "count_stage_9", "count_stage_10", "count_stage_11", "count_stage_12", "count_stage_13", "count_stage_14", "count_stage_15", "count_stage_16", "count_stage_17", "count_stage_18", "count_stage_19"
         ]
         default_p = IBMParameters()
         alt_p = IBMParameters(

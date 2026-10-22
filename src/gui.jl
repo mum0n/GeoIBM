@@ -419,9 +419,9 @@ Populate theoretical maturity curves, selectivity retention, and realized binned
 """
 function setup_ogive_panel!(ax, legal_size, realized_males, realized_females)
     cw_ref = 20.0:1.0:140.0
-    lines!(ax, cw_ref, [maturity(0, log(c)) for c in cw_ref],
+    lines!(ax, cw_ref, [maturity(0, log(c); deterministic = true) for c in cw_ref],
            color = :black, linewidth = 2.0, label = "Theoretical Male")
-    lines!(ax, cw_ref, [maturity(1, log(c)) for c in cw_ref],
+    lines!(ax, cw_ref, [maturity(1, log(c); deterministic = true) for c in cw_ref],
            color = :grey40, linewidth = 2.0, linestyle = :dash, label = "Theoretical Female")
     lines!(ax, cw_ref, [selectivity(c; s50 = legal_size) for c in cw_ref],
            color = :purple, linewidth = 2.0, label = "Theoretical S(L)")
@@ -444,9 +444,10 @@ function setup_macro_panel!(ax, ts_biomass, ts_catch, obs_pts, sch_pts, dd_pts, 
                             label_obs = "Annual Surveyed Biomass",
                             label_sch = "Schaefer Fit",
                             label_dd = "Delay-Diff Fit",
-                            label_les = "Leslie Fit")
+                            label_les = "Leslie Fit",
+                            label_catch = "Annual Catch")
     lines!(ax, ts_biomass, label = "Legal Fishable Biomass", color = :purple, linewidth = 2.2)
-    lines!(ax, ts_catch, label = "Annual Catch", color = :darkorange, linewidth = 1.8, linestyle = :dash)
+    lines!(ax, ts_catch, label = label_catch, color = :darkorange, linewidth = 1.8, linestyle = :dash)
     scatter!(ax, obs_pts, color = :black, markersize = 9, label = label_obs)
     lines!(ax, sch_pts, color = :royalblue, linewidth = 2.0, linestyle = :dash, label = label_sch)
     lines!(ax, dd_pts, color = :seagreen, linewidth = 2.0, linestyle = :dashdot, label = label_dd)
@@ -1136,6 +1137,12 @@ agents and stream points to interface 3 observables.
 function update_functional_observables!(state::IBMGuiState,
                                        living::Vector{Organism})
     if isempty(living)
+        state.obs_cw_male[] = Float64[]
+        state.obs_cw_female[] = Float64[]
+        state.obs_cw_mature_male[] = Float64[]
+        state.obs_cw_mature_female[] = Float64[]
+        state.obs_cw_immature_male[] = Float64[]
+        state.obs_cw_immature_female[] = Float64[]
         return nothing
     end
 
@@ -1377,8 +1384,8 @@ function check_and_update_macro_models!(
             mature_females = [Float64(n_fem)],
             mature_males = [Float64(n_mal)],
             fishable_male_biomass_kg = [b_leg_kg],
-            mature_male_biomass_kg = [b_leg_kg],
-            mature_female_biomass_kg = [b_leg_kg * 0.7],
+            mature_male_biomass_kg = [summary.total_mature_male_mass_kg],
+            mature_female_biomass_kg = [summary.total_mature_female_mass_kg],
             total_egg_production = [Float64(abmproperties(state.model)[:annual_eggs_spawned])],
             annual_egg_production = [Float64(abmproperties(state.model)[:annual_eggs_spawned])],
             recruits = [Float64(rec_female)],
@@ -2159,7 +2166,8 @@ state.n_legal_history = copy(snap.n_legal_history)
             autolimits!(ax_ogive)
             xlims!(ax_ogive, 0, 165)
             autolimits!(ax_sr)
-        catch
+        catch e
+            @warn "axis autolimits failed" exception = e
         end
     end
 
@@ -2207,6 +2215,8 @@ state.n_legal_history = copy(snap.n_legal_history)
         state.catch_at_year_start = 0.0
         state.current_year_idx = 1
         state.annual_data = create_empty_annual_data()
+        empty!(state.snapshots)
+        state.snapshot_labels[] = String[]
         step_gui_simulation!(state, 0.0)
         state.status_text[] = "Model Reset | Day 0"
     end

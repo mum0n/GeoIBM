@@ -62,7 +62,7 @@ function perform_reproduction! end
     Organism(GridAgent{2})
 
 Individual agent representation for post-individuation life stages (stage 6 onwards,
-up to stage 16 in males and stage 14 in females).
+up to stage 19 in males and stage 16 in females).
 """
 @agent struct Organism(GridAgent{2})
     stage::Int                      # Developmental stage index (6 through 16)
@@ -239,6 +239,8 @@ ramp to disagree with the configured value.
 """
 is_legal_male(org::Organism, legal_size::Real, adult_size::Real) =
     org.sex === male && org.size >= legal_size && org.size >= adult_size
+
+is_stage(org::Organism, stage::Integer) = org.stage == stage
 
 is_legal(org::Organism, legal_size::Real, adult_size::Real) =
     is_legal_male(org, legal_size, adult_size)
@@ -511,8 +513,8 @@ Base.@kwdef struct SimulationParams
     # nothing at all.
     initial_aggregate_cohort::Vector{Float64} = [0.0, 2000.0, 0.0, 0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    initial_female_cohort::Vector{Float64} = fill(0.0, 12)
-    initial_male_cohort::Vector{Float64} = fill(0.0, 12)
+initial_female_cohort::Vector{Float64} = fill(0.0, 20)
+initial_male_cohort::Vector{Float64} = fill(0.0, 20)
     # Age attributed to a freshly seeded cohort at a given stage, in days.
     initial_cohort_days_per_stage::Float64 = 90.0
 
@@ -972,7 +974,7 @@ Base.@kwdef struct SpeciesParams
     fecundity_multiparous_slope::Float64 = 2.5811
     fecundity_multiparous_err::Float64 = 0.145
     # Standard deviation of the intercept when a fecundity draw is requested
-    # without an explicit quantile.
+    # *with* an explicit quantile (used to perturb the intercept draw).
     fecundity_intercept_sd::Float64 = 0.05
     # Sainte-Marie allometric form: `size^exponent * 10^coefficient`.
     fecundity_stmarie_exponent::Float64 = 2.725

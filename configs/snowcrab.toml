@@ -82,8 +82,8 @@ temp_seasonal_phase_day = 80.0    # Day of year at peak temperature
 # scale whatever shape these give. `n_agents` is the sum of the two sex vectors when
 # a caller does not state it, and an override when they do.
 initial_aggregate_cohort = [0.0, 2000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-initial_female_cohort    = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-initial_male_cohort      = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+initial_female_cohort    = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+initial_male_cohort      = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 # Age attributed to a freshly seeded cohort at a given stage, in days.
 initial_cohort_days_per_stage  = 90.0
 # A seeded individual's age is initial_age_days_per_stage * (stage -
@@ -106,13 +106,14 @@ temp_multiplier       = 1.0        # Seasonal cycle amplitude multiplier (defaul
 temp_noise_sd         = 0.5        # Spatial thermal stochasticity (SD)
 temp_base_degreedays  = -1.5       # Extra degree-days contributed by temperature
 # --- GeoData Real Habitat Integration ---
-use_geodata           = true      # Query GeoData for real bathymetry and hydrography
+use_geodata           = true      # Query GeoData for real bathymetry and hydrography  # >>> snow crab override
 domain_lon            = [-65.0, -63.0] # Longitudinal bounds [min_lon, max_lon]
 domain_lat            = [43.0, 45.0]   # Latitudinal bounds [min_lat, max_lat]
 time_range            = ["1993-01-01", "1993-12-31"] # Simulation temporal window
 pelagic_depth         = 15.0       # Mean water column depth for planktonic stages (m)
 temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
-bathymetry_source     = "nwa_bathymetry" # Bathymetric dataset (nwa_bathymetry, etopo2022, erddap)
+temperature_month     = 0         # Climatological month (0 = annual)
+bathymetry_source     = "nwa_bathymetry" # Bathymetric dataset (nwa_bathymetry, etopo2022, erddap)  # >>> snow crab override
 geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
 geodata_store_dir     = "../lakehouse/GeoIBM" # Assimilated environmental storage directory
 # --- Food and habitat ---
@@ -513,6 +514,7 @@ legal_size_male           = 95.0
 # result the model produces. Set it to the rate your scenario implies.
 fishing_probability_daily = 0.0    # Daily probability a legal male is caught
 fishing_season_start      = 90.0   # First day of the fishing season
+no_take_proportion        = 0.0    # Fraction of grid columns (leftmost) in the no-take zone
 fishing_season_end        = 150.0  # Last day of the fishing season
 
 # -----------------------------------------------------------------------------
@@ -603,3 +605,4 @@ growth_rmse_weight     = 1.0    # Weight on growth RMSE (mm)
 ogive_bin_start        = 20.0   # Lower edge (mm)
 ogive_bin_step         = 10.0   # Bin width (mm)
 ogive_bin_stop         = 140.0  # Upper edge (mm)
+

@@ -18,13 +18,13 @@ end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000002
 begin
-    # Ensure package environment is active and load core libraries
+    # GeoIBM is a development package (not registered), so activate the
+    # parent project directory before loading it.
     using Pkg
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    
+    Pkg.activate(joinpath(@__DIR__, ".."))
     using GeoIBM
     using DataFrames
-    import CairoMakie: Figure, Axis, heatmap!, lines!, scatter!, barplot!, hist!, vlines!, hlines!, axislegend, Colorbar, Theme, set_theme!, AxisAspect, Label, Point2f, linesegments!
+    import CairoMakie: Figure, Axis, heatmap!, lines!, scatter!, barplot!, hist!, vlines!, hlines!, axislegend, Colorbar, Theme, set_theme!, AxisAspect, Label, Point2f, linesegments!, Observable, Mouse, Keyboard, events, on, stem!, empty!
     using PlutoUI
     using Random
     using Statistics
@@ -144,8 +144,6 @@ begin
     # Values feed directly into the IBM's initial_female_cohort /
     # initial_male_cohort / initial_aggregate_cohort configuration.
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    using CairoMakie
-    import CairoMakie: Figure, Axis, stem!, scatter!, Label, empty!
 
     n_stages = 20
     stage_labels = string.(0:n_stages-1)
@@ -168,7 +166,7 @@ begin
         xlabel = "Developmental Stage",
         ylabel = "Initial Count",
         xticks = (1:n_stages, stage_labels),
-        xticklabelrotation = π / 3,
+        xticklabelrotation = pi / 3,
         ymin = 0
     )
 
@@ -185,7 +183,7 @@ begin
         ax.xlabel = "Developmental Stage"
         ax.ylabel = "Initial Count"
         ax.xticks = (1:n_stages, stage_labels)
-        ax.xticklabelrotation = π / 3
+        ax.xticklabelrotation = pi / 3
         ax.ymin = 0
         stem!(ax, 1:n_stages, new_dist; color = :steelblue, linewidth = 2)
         scatter!(ax, 1:n_stages, new_dist; color = :crimson, markersize = 5)
@@ -474,7 +472,7 @@ sim_results = begin
     # Values from the interactive stem plot feed into initial_female_cohort,
     # initial_male_cohort, and initial_aggregate_cohort configuration.
     stg_vals = Float64.(stage_dist[])
-    n_half = length(stg_vals) ÷ 2
+    n_half = div(length(stg_vals), 2)
     cfg[:initial_male_cohort] = Float64.(stg_vals[1:n_half])
     cfg[:initial_female_cohort] = Float64.(stg_vals[n_half+1:end])
     cfg[:initial_aggregate_cohort] = Float64.(stg_vals[1:min(12, length(stg_vals))])
@@ -752,39 +750,39 @@ end
 # ╟─a0000001-0001-0001-0001-000000000001
 # ╠═a0000001-0001-0001-0001-000000000002
 # ╟─a0000001-0001-0001-0001-000000000003
-# ╟─a0000001-0001-0001-0001-000000000004
+# ╠═a0000001-0001-0001-0001-000000000004
 # ╟─a0000001-0001-0001-0001-000000000005
-# ╟─a0000001-0001-0001-0001-000000000030
-# ╟─a0000001-0001-0001-0001-000000000033
-# ╟─a0000001-0001-0001-0001-000000000037
-# ╟─a0000001-0001-0001-0001-000000000055
-# ╟─a0000001-0001-0001-0001-000000000006
+# ╠═a0000001-0001-0001-0001-000000000030
+# ╠═a0000001-0001-0001-0001-000000000033
+# ╠═a0000001-0001-0001-0001-000000000037
+# ╠═a0000001-0001-0001-0001-000000000055
+# ╠═a0000001-0001-0001-0001-000000000006
 # ╟─a0000001-0001-0001-0001-000000000015
-# ╟─a0000001-0001-0001-0001-000000000050
-# ╟─a0000001-0001-0001-0001-000000000031
-# ╟─a0000001-0001-0001-0001-000000000016
-# ╟─a0000001-0001-0001-0001-000000000019
+# ╠═a0000001-0001-0001-0001-000000000050
+# ╠═a0000001-0001-0001-0001-000000000031
+# ╠═a0000001-0001-0001-0001-000000000016
+# ╠═a0000001-0001-0001-0001-000000000019
 # ╟─a0000001-0001-0001-0001-000000000041
-# ╟─a0000001-0001-0001-0001-000000000048
+# ╠═a0000001-0001-0001-0001-000000000048
 # ╟─a0000001-0001-0001-0001-000000000049
-# ╟─a0000001-0001-0001-0001-000000000034
+# ╠═a0000001-0001-0001-0001-000000000034
 # ╟─a0000001-0001-0001-0001-000000000042
-# ╟─a0000001-0001-0001-0001-000000000021
+# ╠═a0000001-0001-0001-0001-000000000021
 # ╟─a0000001-0001-0001-0001-000000000043
-# ╟─a0000001-0001-0001-0001-000000000022
+# ╠═a0000001-0001-0001-0001-000000000022
 # ╟─a0000001-0001-0001-0001-000000000044
-# ╟─a0000001-0001-0001-0001-000000000020
+# ╠═a0000001-0001-0001-0001-000000000020
 # ╟─a0000001-0001-0001-0001-000000000045
-# ╟─a0000001-0001-0001-0001-000000000035
+# ╠═a0000001-0001-0001-0001-000000000035
 # ╟─a0000001-0001-0001-0001-000000000046
-# ╟─a0000001-0001-0001-0001-000000000036
+# ╠═a0000001-0001-0001-0001-000000000036
 # ╟─a0000001-0001-0001-0001-000000000047
 # ╟─a0000001-0001-0001-0001-000000000023
-# ╟─a0000001-0001-0001-0001-000000000024
-# ╟─a0000001-0001-0001-0001-000000000025
-# ╟─a0000001-0001-0001-0001-000000000026
+# ╠═a0000001-0001-0001-0001-000000000024
+# ╠═a0000001-0001-0001-0001-000000000025
+# ╠═a0000001-0001-0001-0001-000000000026
 # ╟─a0000001-0001-0001-0001-000000000027
-# ╟─a0000001-0001-0001-0001-000000000017
+# ╠═a0000001-0001-0001-0001-000000000017
 # ╟─a0000001-0001-0001-0001-000000000029
-# ╟─a0000001-0001-0001-0001-000000000028
+# ╠═a0000001-0001-0001-0001-000000000028
 # ╠═a0000001-0001-0001-0001-000000000056

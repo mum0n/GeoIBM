@@ -51,9 +51,9 @@ function plot_population_timeseries(
         xlabel = "Time",
         ylabel = "Count"
     )
-    if :count_is_adult in propertynames(agent_df)
+    if :count_is_adult_male in propertynames(agent_df)
         lines!(
-            ax1, agent_df.time, agent_df.count_is_adult,
+            ax1, agent_df.time, (agent_df.count_is_adult_male),
             label = "Mature Adults", linewidth = 2.0, color = :seagreen
         )
     end
@@ -272,7 +272,7 @@ function plot_stage_allometry(model)
         color = :magenta, linestyle = :dash
     )
 
-    male_stages = [Float64(c.stage) + randn() * 0.08 for c in organisms if c.sex === male]
+    male_stages = [Float64(c.stage) + randn(Random.Xoshiro(0)) * 0.08 for c in organisms if c.sex === male]
     male_sizes = [Float64(c.size) for c in organisms if c.sex === male]
     if !isempty(male_sizes)
         scatter!(
@@ -281,7 +281,7 @@ function plot_stage_allometry(model)
         )
     end
 
-    female_stages = [Float64(c.stage) + randn() * 0.08 for c in organisms if c.sex === female]
+    female_stages = [Float64(c.stage) + randn(Random.Xoshiro(0)) * 0.08 for c in organisms if c.sex === female]
     female_sizes = [Float64(c.size) for c in organisms if c.sex === female]
     if !isempty(female_sizes)
         scatter!(
@@ -611,9 +611,9 @@ function plot_simulation_dashboard(
         xlabel = "Time",
         ylabel = "Count"
     )
-    if :count_is_adult in propertynames(agent_df)
+    if :count_is_adult_male in propertynames(agent_df)
         lines!(
-            ax1, agent_df.time, agent_df.count_is_adult,
+            ax1, agent_df.time, (agent_df.count_is_adult_male),
             label = "Adults", linewidth = 2.0, color = :seagreen
         )
     end
@@ -735,7 +735,7 @@ function plot_simulation_dashboard(
         label = "llbf (Female)", linewidth = 2.5, color = :magenta, linestyle = :dash
     )
     if !isempty(organisms)
-        male_st = [Float64(c.stage) + randn() * 0.08 for c in organisms if c.sex === male]
+        male_st = [Float64(c.stage) + randn(Random.Xoshiro(0)) * 0.08 for c in organisms if c.sex === male]
         male_sz = [Float64(c.size) for c in organisms if c.sex === male]
         if !isempty(male_sz)
             scatter!(ax5, male_st, male_sz, color = (:dodgerblue, 0.65), markersize = 7)
@@ -857,7 +857,8 @@ function plot_stock_recruitment(
         r_bh = [bh.predict(s) for s in s_grid]
         r_rk = [rk.predict(s) for s in s_grid]
 
-        bh_lbl = "Beverton-Holt (R²=$(round(bh.R2, digits=2)), Rmax=$(round(Int, bh.R_max)))"
+        bh_rmax_lbl = isfinite(bh.R_max) ? string(round(Int, bh.R_max)) : "Inf"
+bh_lbl = "Beverton-Holt (R²=$(round(bh.R2, digits=2)), Rmax=$(bh_rmax_lbl))"
         rk_lbl = "Ricker (R²=$(round(rk.R2, digits=2)), Rmax=$(round(Int, rk.R_max)))"
 
         lines!(ax1, collect(s_grid), r_bh, label = bh_lbl, linewidth = 2.5, color = :seagreen)

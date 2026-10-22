@@ -565,7 +565,10 @@ function calculate_energy_change(
     effective_mass = if mass !== nothing && mass > 0.0
         Float64(mass)
     else
-        calculate_mass(size, :male; mat = 0)
+        # No sex is known on this (scalar) code path, so average the two
+        # sex-specific allometries rather than silently assuming one sex.
+        0.5 * (calculate_mass(size, :male; mat = 0) +
+               calculate_mass(size, :female; mat = 0))
     end
 
     org = params.organism
@@ -581,7 +584,7 @@ function calculate_energy_change(
     # Holling Type II functional feeding response
     half_sat = params.environment.half_saturation_food
     intake_demand = org.intake_rate_base * (food / (food + half_sat)) * mass_scaling
-    actual_intake = min(intake_demand, max(0.0, food))
+    actual_intake = min(intake_demand, max(0.0, isfinite(food) ? food : 0.0))
 
     # Net energy assimilation. A fraction `specific_dynamic_action` of the
     # assimilated intake is spent on processing, leaving the rest for growth.
@@ -682,11 +685,11 @@ computed here.
 """
 function current_day_of_year(model)
     props = abmproperties(model)
-    cached = get(props, :day_of_year, nothing)
-    if cached === nothing
-        return mod(model.current_time, model.params.simulation.days_per_year)
+    cached_time = get(props, :day_of_year_time, nothing)
+    if cached_time !== nothing && cached_time == model.current_time
+        return get(props, :day_of_year, mod(model.current_time, model.params.simulation.days_per_year))
     end
-    return cached
+    return mod(model.current_time, model.params.simulation.days_per_year)
 end
 
 """

@@ -108,19 +108,12 @@ is enough for a run that uses one; a run with `temperature_month = 0` uses all t
 twelve must be there.
 """
 function _hydrography_present(store::AbstractString, env_params::EnvironmentParams)
-    months = env_params.temperature_month == 0 ? (1:12) : (env_params.temperature_month,)
-    for m in months
-        # The fetcher names its files by source, month and dataset; a directory per month is
-        # what `fetch_boundary_hydrography_geodata` writes, and a store that holds eleven of
-        # twelve months is a store a twelve-month run cannot use.
-        hits = _month_dirs(store, m)
-        isempty(hits) && return false
-    end
-    return true
+    temp_src = env_params.temperature_source
+    hydro_target = joinpath(store, "boundary_$(temp_src).zarr")
+    return isdir(hydro_target)
 end
 
-_month_dirs(store::AbstractString, m::Int) =
-    filter(n -> occursin("_$(lpad(m, 2, '0'))_", n), isdir(store) ? readdir(store) : String[])
+
 
 """
     assimilate_environmental_inputs(env_params; verbose = true, force = false) -> NamedTuple
@@ -186,7 +179,11 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
     # -- hydrography, one month at a time ---------------------------------------
     months = env_params.temperature_month == 0 ? (1:12) : (env_params.temperature_month,)
     hydro_target = joinpath(store, "boundary_$(temp_src).zarr")
-    if force || (!isdir(hydro_target) && isempty(_month_dirs(store, first(months))))
+    # Track what was actually assimilated, so the manifest does not mis-label a
+    # central-copy GLORYS subset as the configured product/bounds (M19).
+    hydro_product = string(temp_src)
+    hydro_domain = (lon_range, lat_range)
+    if force || !isdir(hydro_target)
         central_hydro = [
             GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
                                   "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
@@ -202,6 +199,8 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
                 GeoData.geoload(src_h)
             GeoData.geosave(hydro_target, ds_hydro; backend = :zarr)
             push!(written, "hydrography")
+            hydro_product = "glorys12v1"
+            hydro_domain = ((-71.0, -53.0), (40.0, 48.5))
         else
             verbose && println("  [assimilate] hydrography: fetching $(temp_src) via GeoData.geoget")
             scheme = temp_src === :woa23 ? "woa23://" : "copernicus://"
@@ -234,8 +233,11 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
         "inputs" => [
             Dict("role" => "bathymetry", "product" => env_params.bathymetry_source,
                  "where" => bathy_target),
-            Dict("role" => "hydrography", "product" => string(temp_src),
-                 "where" => store, "months" => collect(months)),
+            Dict("role" => "hydrography", "product" => hydro_product,
+                 "where" => hydro_target, "months" => [env_params.temperature_month],
+                 "domain" => Dict("lon" => [hydro_domain[1][1], hydro_domain[1][2]],
+                                  "lat" => [hydro_domain[2][1], hydro_domain[2][2]])),
+
         ],
     )
     open(joinpath(store, "manifest.toml"), "w") do io
@@ -257,9 +259,10 @@ field for the configured month, and `monthly` the twelve-month series. Calling t
 no knowledge of where any product was published.
 """
 function read_assimilated_environment(env_params::EnvironmentParams)
-    st = environmental_input_status(env_params)
-    isempty(st.absent) || error(
-        "The environmental store at $(st.store_dir) has no $(st.absent). Run " *
-        "`assimilate_environmental_inputs` first.")
+    # `build_geodata_environmental_fields` already falls back to the providers
+    # (geoget) when an assimilated artefact is absent, so a missing store is not
+    # fatal: it is fetched on demand. The strict presence check that used to
+    # live here made the reader fail immediately after `assimilate_environmental_inputs`
+    # for hydrography, because the two disagreed on the store's layout (see C2).
     return build_geodata_environmental_fields(env_params, (env_params.grid_nx, env_params.grid_ny))
 end

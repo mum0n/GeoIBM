@@ -69,7 +69,7 @@ function compute_empirical_ogive(
         if :is_mature in propertynames(in_bin)
             n_mature = count(row -> row.is_mature == true, eachrow(in_bin))
         else
-            n_mature = count(s -> s >= 10, in_bin.stage)
+            n_mature = count(s -> s >= 12, in_bin.stage)
         end
         push!(prop_mature, n_mature / n_in_bin)
         push!(counts, n_in_bin)
@@ -702,7 +702,7 @@ function fit_stock_recruitment(
     u_rk = y_rk_bar + v_rk * s_bar
 
     alpha_rk = exp(u_rk)
-    beta_rk = max(0.0, v_rk)
+    beta_rk = v_rk
 
     rk_pred = s -> alpha_rk * s * exp(-beta_rk * s)
     ss_res_rk = sum((r_sub[i] - rk_pred(s_sub[i]))^2 for i in 1:n)
@@ -711,7 +711,13 @@ function fit_stock_recruitment(
     s_max_rk = (beta_rk > 0.0) ? (1.0 / beta_rk) : Inf
     r_max_rk = (beta_rk > 0.0) ? (alpha_rk / (beta_rk * exp(1.0))) : Inf
 
-    best_m = (aic_bh <= aic_rk) ? :beverton_holt : :ricker
+    best_m = if model_type === :beverton_holt
+        :beverton_holt
+    elseif model_type === :ricker
+        :ricker
+    else
+        (aic_bh <= aic_rk) ? :beverton_holt : :ricker
+    end
 
     return (
         n_obs = n,
@@ -825,20 +831,29 @@ function read_dataframe_csv(filepath::String)
         return DataFrame()
     end
     header = [String(strip(h)) for h in split(lines[1], ',')]
-    data = Dict{String, Vector{Float64}}()
+    data = Dict{String, Vector{Any}}()
     for h in header
-        data[h] = Float64[]
+        data[h] = Any[]
     end
     for line in lines[2:end]
         parts = split(line, ',')
         for (i, h) in enumerate(header)
-            val = (i <= length(parts)) ? tryparse(Float64, strip(parts[i])) : nothing
+            raw = (i <= length(parts)) ? strip(parts[i]) : ""
+            val = tryparse(Int, raw)
+            if val === nothing
+                val = tryparse(Float64, raw)
+            end
             push!(data[h], val === nothing ? 0.0 : val)
         end
     end
     df = DataFrame()
     for h in header
-        df[!, Symbol(h)] = data[h]
+        col = data[h]
+        if all(x -> x isa Int, col)
+            df[!, Symbol(h)] = Int.(col)
+        else
+            df[!, Symbol(h)] = Float64.(col)
+        end
     end
     return df
 end
@@ -1284,10 +1299,25 @@ function extract_annual_production(
         surplus_production_legal = sp_legal
     )
 
-    # Assemble strictly in schema order, so a column added to one of the two
-    # structures above without the other is an error rather than a silent
-    # schema difference between short and long runs.
-    return DataFrame([name => cols[name] for (name, _) in ANNUAL_PRODUCTION_SCHEMA])
+    df = DataFrame([name => cols[name] for (name, _) in ANNUAL_PRODUCTION_SCHEMA])
+
+    # Propagate per-stage counts from the agent observations (count_stage_i)
+    # into the annual table as stage_i columns, so extract_annual_stage_matrix
+    # can use the real stage structure instead of reconstructing it (M12).
+    for st in 0:30
+        src_col = Symbol("count_stage_$(st)")
+        dst_col = Symbol("stage_$(st + 1)")
+        if src_col in propertynames(agent_df)
+            stage_vec = Float64[]
+            for k in 1:n_samples
+                idx = argmin(abs.(agent_df.time .- t_targets[k]))
+                push!(stage_vec, Float64(agent_df[idx, src_col]))
+            end
+            df[!, dst_col] = stage_vec
+        end
+    end
+
+    return df
 end
 
 # ==============================================================================
@@ -1559,6 +1589,10 @@ function optimize_blocks(
         # optimize is reported, but the remaining blocks still run.
         @warn "optimize_blocks: some block optimizations failed" failures =
             length(call_failures) detail = _failure_summary(call_failures)
+    end
+    if best_f >= OBJECTIVE_PENALTY
+        @warn "optimize_blocks: every trial was replaced by the divergence penalty, " *
+              "so the result is the starting point" detail = _failure_summary(objective_failures)
     end
     return (x, best_f)
 end
@@ -2145,6 +2179,12 @@ function retrospective_analysis(
     model_type::Symbol = :schaefer,
     lag::Int = 1
 )
+
+    if model_type === :both
+        @warn "retrospective_analysis: model_type = :both is not supported; using :schaefer"
+        model_type = :schaefer
+    end
+
     ann_df = if source isa String
         res = load_simulation_results(source)
         (res isa DataFrame) ? res : extract_annual_production(res[:agent_df], res[:model_df])
@@ -2400,11 +2440,15 @@ function extract_annual_stage_matrix(
             end
         end
     else
-        # Reconstruct stages from total_numbers and legal_numbers
+        # Reconstruct stages from total_numbers and legal_numbers. No stage columns
+        # were supplied, so the non-legal abundance is spread uniformly across the
+        # immature (non-legal) stages. This is a neutral fallback with no magic
+        # constants; prefer explicit stage_* columns (or per-stage count
+        # observations from the simulation) when available. (M12)
         decay_weights = zeros(Float64, n_stages)
         for st in stages
             if !st.is_legal_male
-                decay_weights[st.index] = exp(-0.28 * (st.stage - 4.0))
+                decay_weights[st.index] = 1.0
             end
         end
         sum_decay = sum(decay_weights)
@@ -2516,9 +2560,9 @@ function fit_generalized_leslie_model(
     """
         build_leslie_matrix(p) -> Matrix
 
-    Assemble the S x S projection matrix from the 19-vector `p`. Columns sum to at
-    most one so the matrix is a valid conditional transition matrix, and the
-    fecundity column carries recruitment into stage 1.
+    Assemble the S x S projection matrix from the 19-vector `p`. Recruitment is
+    placed in the reproductive columns (M[1, idx] = fec_base * f_scale), so those
+    columns sum to `sf + fec_base * f_scale`, which can exceed one.
     """
     function build_leslie_matrix(p::AbstractVector{<:Real})
         s1, gamma1, s2, gamma2, split = p[1], p[2], p[3], p[4], p[5]
@@ -2700,7 +2744,7 @@ function fit_generalized_leslie_model(
     # Damping Ratio: lambda_1 / |lambda_2|
     sorted_moduli = sort(moduli, rev = true)
     lambda_2 = (length(sorted_moduli) >= 2) ? sorted_moduli[2] : 0.0
-    damping_ratio = (lambda_2 > 1.0e-6) ? (lambda_1 / lambda_2) : 10.0
+    damping_ratio = (lambda_2 > 1.0e-6) ? (lambda_2 / lambda_1) : 0.0
 
     # Elasticity Matrix
     v_dot_w = dot(reproductive_vals, stable_stage_dist)
@@ -3571,8 +3615,8 @@ function _fit_irls_logistic(
         end
         theta = damping .* theta .+ damping .* theta_next
     end
-    slope = max(min_slope, theta[2])
-    l50 = exp(-theta[1] / slope)
+slope = theta[2]
+l50 = exp(-theta[1] / slope)
     temp_coef = (p_dim == 3) ? theta[3] : -0.05
     mean_y = mean(y_vec)
     p_mean = min(max(mean_y, 1e-6), 1.0 - 1e-6)
@@ -3758,7 +3802,7 @@ function fit_empirical_biology_model(
             (
                 params.maturity_l50_male,
                 params.maturity_slope_male,
-                params.maturity_l50_temp_slope
+                -0.05
             )
         ),
         (
@@ -3767,7 +3811,7 @@ function fit_empirical_biology_model(
             (
                 params.maturity_l50_female,
                 params.maturity_slope_female,
-                params.maturity_l50_temp_slope
+                -0.05
             )
         )
     ]
@@ -3927,13 +3971,10 @@ function estimate_demographics(
         0.0
     else
         l50, slope, t_coef = model.maturity_params[sex_sym]
-        # The size-at-50 shifts by the configured slope; the fitted coefficient
-        # enters the logit directly. Both terms are zero at the reference
-        # temperature, so the curve is centred where the species says it is.
-        eff_l50 = max(
-            size_gate,
-            l50 + params.maturity_l50_temp_slope * (temp - temp_ref)
-        )
+        # The fitted temperature coefficient enters the logit directly. The L50
+        # is the fitted value at the reference temperature; no additional shift
+        # is applied, to avoid double-counting the temperature response.
+        eff_l50 = max(size_gate, l50)
         lin_pred = slope * (log(size) - log(eff_l50)) + t_coef * (temp - temp_ref)
         _logistic_safe(lin_pred)
     end

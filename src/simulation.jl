@@ -637,13 +637,16 @@ function initialize_model(config::AbstractDict; kwargs...)
         criteria = crit
     )
 
+    # Drop `grid` from the splat: it has already been normalised above, and
+    # leaving it in would override the normalised tuple with the raw vector.
+    kwargs_filtered = Dict(k => v for (k, v) in kwargs if k != :grid)
     return initialize_model(
         grid = grid_dim,
         dt = dt,
         params = params,
         seed = seed,
         n_agents = get(merged, :n_agents, nothing);
-        kwargs...
+        kwargs_filtered...
     )
 end
 
@@ -957,12 +960,25 @@ function initialize_model(;
         behavior = SpeciesBehaviorImpl(params.species)
     end
     
-    space = GridSpace(grid)
+    space = GridSpace(grid; periodic = false)
 
     rng = if seed === nothing
         Random.default_rng()
     else
         Random.Xoshiro(seed)
+    end
+
+    # Record the seed that was actually used so that saved configurations and run
+    # reports reproduce the run.
+    if seed !== nothing && params.simulation.seed != seed
+        params = reconstruct_params(params; seed = seed)
+    end
+
+    # Propagate the time step into the parameter struct so that hazards and
+    # ageing agree. Otherwise model.dt and params.simulation.dt diverge on
+    # this code path and every biological rate is scaled by the wrong dt.
+    if params.simulation.dt != dt
+        params = reconstruct_params(params; dt = dt)
     end
 
     initial_depth = if haskey(kwargs, :depth_map) && kwargs[:depth_map] !== nothing
@@ -1104,7 +1120,8 @@ function initialize_model(;
         model_step! = model_step!,
         properties = properties,
         rng = rng,
-        scheduler = scheduler
+        scheduler = scheduler,
+        agents_first = false
     )
     properties[:scheduler] = scheduler
     # `Schedulers.fastest` returns the agent container's own id order, which for a
@@ -1259,6 +1276,7 @@ function initialize_model(;
         sex_code = (sex === female) ? 1 : 0
         prob_mat = maturity(
             behavior, sex_code, log(new_org.size);
+            temp = params.environment.temp_base,
             maturity_quantile = new_org.trait_maturity_quantile
         )
         new_org.is_mature = (stg >= max_stage) || (rand(rng) < prob_mat)
@@ -1302,6 +1320,7 @@ function initialize_model(;
         else
             # No distribution stated: cycle the total evenly over the cells.
             for k in 1:seed_target
+                isempty(cells) && break
                 stg, sex = cells[mod1(k, length(cells))]
                 seed_one(stg, sex, sample_marine_pos())
             end
@@ -1347,7 +1366,7 @@ function initialize_model(;
             digits = 2,
         ) mortality_multiplier = round(multiplier; digits = 1) aggregate_cohorts =
             round(sum(sim_params.initial_aggregate_cohort); digits = 1) seeded_individuals =
-            round(seed_sum; digits = 1)
+            benthic_cnt
     end
     properties[:n_legal_males] = leg_m
 
@@ -1375,8 +1394,9 @@ function sample_individual_traits!(org::Organism, model, rng)
 end
 
 function sample_weighted(items, weights, rng)
+    isempty(items) && return nothing
     tot = sum(weights)
-    if tot <= 0.0 || isempty(items)
+    if tot <= 0.0
         return items[rand(rng, 1:length(items))]
     end
     r = rand(rng) * tot
@@ -1415,8 +1435,16 @@ function organism_disperse!(
     candidates = [org.pos; collect(nearby_positions(org.pos, model))]
 
     if !model.params.toggles.use_directed_movement
-        # Stochastic random walk: discrete neighbor choice
-        chosen_pos = candidates[rand(rng, 1:length(candidates))]
+        # Stochastic random walk: discrete neighbor choice, but only onto
+        # marine cells (depth >= 20 m and positive habitat), mirroring the
+        # directed branch's rejection of land.
+        valid = [p for p in candidates if begin
+            cx, cy = p[1], p[2]
+            model.depth_field[cx, cy] >= 20.0 &&
+                model.habitat_quality_field[cx, cy] > 0.0
+        end]
+        isempty(valid) && (valid = [org.pos])
+        chosen_pos = valid[rand(rng, 1:length(valid))]
         if chosen_pos != org.pos
             move_agent!(org, chosen_pos, model)
         end
@@ -1594,7 +1622,7 @@ function agent_step!(org::Organism, model)
     # Organisms in the leftmost `no_take_proportion` of grid columns are in a
     # no-take zone and are never fished; the partition line (last protected cell
     # index) is stored in model.properties[:no_take_line] by `initialize_model`.
-    if in_fishing_season && org.pos[1] > get(model.properties, :no_take_line, 0)
+    if in_fishing_season && org.pos[1] > get(abmproperties(model), :no_take_line, 0)
         legal_size = params.fishery.legal_size_male
         if is_legal_male(org, legal_size, params.organism.adult_size_threshold)
             # Legality is checked before the draw, not after. It used to consume one
@@ -1633,7 +1661,6 @@ function agent_step!(org::Organism, model)
                         end
                     end
                 end
-                return nothing
             end
         end
     end
@@ -1710,6 +1737,9 @@ function model_step!(model)
 
     # The seasonal target is spatially uniform; the field's only structure is the
     # white noise. When use_geodata == false, t_offset acts as base mean and t_mult as amplitude.
+    # When use_geodata == true, t_offset is an anomaly added on top of the hydrographic mean
+    # (default 0.0); setting temp_base (an alias of temp_offset) to a non-zero value therefore
+    # biases the geodata temperature by that amount (m5).
     seasonal_target = t_offset + t_mult * sinusoidal_factor
     temperature = model.temperature_field
     mprops = abmproperties(model)
@@ -1791,6 +1821,7 @@ function model_step!(model)
     # Published for the agent phase, which needs the same day of year for every
     # organism and used to recompute the modulo once per agent per day.
     model.day_of_year = day_of_year
+    abmproperties(model)[:day_of_year_time] = model.current_time
 
     f_max = env.food_max
     f_rate = env.food_replenishment_rate
@@ -1798,8 +1829,7 @@ function model_step!(model)
     # and one add per cell rather than a subtract, two multiplies and an add.
     food_decay = 1.0 - f_rate * dt
     food_gain = f_rate * f_max * dt
-    @. model.food_availability_field = food_decay * model.food_availability_field +
-                                       food_gain
+    @. model.food_availability_field = max(0.0, food_decay * model.food_availability_field + food_gain)
 
     # 2. Advance pre-individuation aggregate cohort groups (stages 0 through 5)
     step_aggregate_groups!(model)
@@ -1884,7 +1914,7 @@ from the model's own parameters rather than from hardcoded defaults.
 function default_agent_observations(params::IBMParameters)
     adult_size = params.organism.adult_size_threshold
     legal_size = params.fishery.legal_size_male
-    return [
+    obs = [
         (:stage, length),
         (:stage, safe_mean),
         (:size, safe_mean),
@@ -1907,6 +1937,12 @@ function default_agent_observations(params::IBMParameters)
             total_sum
         )
     ]
+    # Per-stage counts, so extract_annual_stage_matrix can use real stage
+    # structure instead of reconstructing it from totals (M12).
+    for st in 0:params.organism.max_stage_male
+        push!(obs, (named_predicate(is_stage, Symbol("stage_$(st)"), st), count))
+    end
+    return obs
 end
 
 """
