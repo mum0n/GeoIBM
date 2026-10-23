@@ -24,7 +24,7 @@ begin
     Pkg.activate(joinpath(@__DIR__, ".."))
     using GeoIBM
     using DataFrames
-    import CairoMakie: Figure, Axis, heatmap!, lines!, scatter!, barplot!, hist!, vlines!, hlines!, axislegend, Colorbar, Theme, set_theme!, AxisAspect, Label, Point2f, linesegments!, Observable, Mouse, Keyboard, events, on, stem!, empty!
+    import CairoMakie: Figure, Axis, heatmap!, lines!, scatter!, barplot!, hist!, vlines!, hlines!, axislegend, Colorbar, Theme, set_theme!, AxisAspect, Label, Point2f, linesegments!, Observable, Mouse, Keyboard, events, on, stem!, empty!, ylims!
     using PlutoUI
     using Random
     using Statistics
@@ -91,7 +91,7 @@ using `configs/snowcrab.toml`.
 md"""
 ## 1. Snow Crab Configuration & Interactive Steering
 
-The simulation parameters are ingested directly from [`configs/snowcrab.toml`](file:///c:/home/jae/projects/GeoIBM/configs/snowcrab.toml).
+The simulation parameters are ingested directly from [`configs/snowcrab.toml`](../configs/snowcrab.toml).
 Use the reactive widgets below to adjust external environmental drivers and fishery pressure.
 Every modification automatically ripples through all downstream spatial, demographic,
 and macro-ecological analyses.
@@ -152,7 +152,7 @@ begin
     default_dist = Float64[
         300.0, 150.0, 120.0, 100.0,   # stages 0-3: eggs + larvae (aggregate)
         80.0, 70.0, 60.0, 50.0, 45.0,  # stages 4-8: early benthic juvenile
-        40.0, 35.0, 30.0, 25.0,        # stages 9-13: male benthic
+        40.0, 35.0, 30.0, 25.0, 20.0,  # stages 9-13: male benthic
         15.0,                          # stage 14: male terminal
         40.0, 35.0, 30.0, 25.0, 20.0,  # stages 15-19: female benthic
     ]
@@ -166,14 +166,13 @@ begin
         xlabel = "Developmental Stage",
         ylabel = "Initial Count",
         xticks = (1:n_stages, stage_labels),
-        xticklabelrotation = pi / 3,
-        ymin = 0
+        xticklabelrotation = pi / 3
     )
 
-    stem!(ax, 1:n_stages, stage_dist[]; color = :steelblue, linewidth = 2)
+    stem!(ax, 1:n_stages, stage_dist[]; color = :steelblue, stemwidth = 2)
     scatter!(ax, 1:n_stages, stage_dist[]; color = :crimson, markersize = 5)
-
-    total_label = Label(fig[1, 2], "Total: $(round(Int, sum(stage_dist[])))",
+    ylims!(ax, 0, nothing)
+    total_label = Label(fig[1, 2], "Total: " * string(round(Int, sum(stage_dist[]))),
                         fontsize = 11, halign = :left, valign = :center)
 
     # Reactively redraw when stage_dist changes
@@ -184,14 +183,14 @@ begin
         ax.ylabel = "Initial Count"
         ax.xticks = (1:n_stages, stage_labels)
         ax.xticklabelrotation = pi / 3
-        ax.ymin = 0
-        stem!(ax, 1:n_stages, new_dist; color = :steelblue, linewidth = 2)
+        ylims!(ax, 0, nothing)
+        stem!(ax, 1:n_stages, new_dist; color = :steelblue, stemwidth = 2)
         scatter!(ax, 1:n_stages, new_dist; color = :crimson, markersize = 5)
-        total_label[] = "Total: $(round(Int, sum(new_dist)))"
+        total_label[] = "Total: " * string(round(Int, sum(new_dist)))
     end
 
     # Mouse click handler: click on a stem to adjust that stage's abundance
-    events(ax).mousebutton |> on do event
+    on(events(ax).mousebutton) do event
         if event.button === Mouse.left && event.action === Mouse.press
             try
                 mx = Float64(event.mouseposition[1])
@@ -376,7 +375,7 @@ For stage-structured benthic decapods where molt frequency decreases with size a
 ```
 
 Where:
-- $\mathbf{n}_t = \begin{bmatrix} n_{1,t} & n_{2,t} & \cdots & n_{p,t} \end{bmatrix}^T$: Vector of organism abundances across the 20 discrete life-history stages (instars 0–19).
+- $\mathbf{n}_t = \begin{bmatrix} n_{1,t} & n_{2,t} & \cdots & n_{p,t} \end{bmatrix}^T$: Vector of abundances across the $p$ pooled and sex-specific rows emitted by `build_stages()` — $p = 15$ for the snow crab: two pooled recruit/juvenile rows (stages 7–8), then seven male rows (stages 9–15) and six female rows (stages 9–14). The organism's own life-history stages remain twenty (instars 0–19); the matrix pools the recruit bins and caps each sex's adult rows at its configured Leslie terminal stage.
 - $\mathbf{A}$: Transition projection matrix (Lefkovitch, 1965) partitioned into reproductive fecundity, survival with stage retention, and growth transitions:
   ```math
   \mathbf{A} = \begin{bmatrix}
@@ -392,6 +391,7 @@ Where:
 - $G_j$: Probability that an individual in stage $j$ survives and transitions (molts) into stage $j+1$ ($G_j = \sigma_j \gamma_j$).
 - $\mathbf{C}_t$: Stage-specific harvest removal vector ($\mathbf{C}_t = \begin{bmatrix} 0 & \cdots & 0 & C_{\text{legal}, t} \end{bmatrix}^T$).
 - Asymptotic population growth rate is determined by the dominant eigenvalue $\lambda_1 = e^r$ of $\mathbf{A}$, while the right eigenvector $\mathbf{w}_1$ defines the stable stage distribution, and the left eigenvector $\mathbf{v}_1$ defines the stage-specific reproductive values.
+- Transient damping is summarised by the damping ratio $\rho = \lambda_1 / \lvert\lambda_2\rvert \ge 1$ (Caswell 2001, §9.1): a larger $\rho$ means the dominant eigenvalue dominates its rival more strongly and transient dynamics die out faster; with no real rival mode the fit reports $\rho = \infty$.
 """
 
 # ╔═╡ a0000001-0001-0001-0001-000000000027
@@ -472,9 +472,22 @@ sim_results = begin
     # Values from the interactive stem plot feed into initial_female_cohort,
     # initial_male_cohort, and initial_aggregate_cohort configuration.
     stg_vals = Float64.(stage_dist[])
-    n_half = div(length(stg_vals), 2)
-    cfg[:initial_male_cohort] = Float64.(stg_vals[1:n_half])
-    cfg[:initial_female_cohort] = Float64.(stg_vals[n_half+1:end])
+    # stage_dist is indexed by developmental stage (0..n-1). The leading stages
+    # (below juvenile_max_stage) feed the aggregate cohort; benthic stages seed
+    # individuals, so they are zeroed in the aggregate vector but retained (and
+    # early stages cleared) in the sex-specific cohorts.
+    male_cohort = zeros(Float64, length(stg_vals))
+    female_cohort = zeros(Float64, length(stg_vals))
+    for stg in 0:(length(stg_vals)-1)
+        if stg >= 12
+            male_cohort[stg+1] = stg_vals[stg+1]
+            if stg <= 16
+                female_cohort[stg+1] = stg_vals[stg+1]
+            end
+        end
+    end
+    cfg[:initial_male_cohort] = male_cohort
+    cfg[:initial_female_cohort] = female_cohort
     cfg[:initial_aggregate_cohort] = Float64.(stg_vals[1:min(12, length(stg_vals))])
 
     # No-take proportion from the interactive slider: fraction of the x-axis

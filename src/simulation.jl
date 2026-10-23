@@ -1244,8 +1244,18 @@ function initialize_model(;
     end
 
     # What the configuration asks for, and what the caller overrides it with.
-    # `n_agents` is the sum of the two sex vectors unless given.
-    seed_sum = sum(sim_params.initial_female_cohort) + sum(sim_params.initial_male_cohort)
+    # `n_agents` is the benthic-stage mass of the two sex vectors unless given.
+    # The denominator counts only the stages that actually receive individuated
+    # agents (`first_benthic` and above, per sex). The pelagic cohort entries
+    # state where larvae are, not adults to seed; including them would inflate
+    # the denominator and shrink the seeded population below whatever `n_agents`
+    # promised.
+    seed_sum = 0.0
+    for sex in (female, male)
+        vec = (sex === female) ? sim_params.initial_female_cohort :
+              sim_params.initial_male_cohort
+        seed_sum += sum(abundance_at(vec, stg) for stg in first_benthic:max_stage_of(sex))
+    end
 
     function seed_one(stg::Int, sex, position)
         sz = stage_size(behavior, stg, sex; type = :random, rng = rng, params = params)
@@ -1290,17 +1300,19 @@ function initialize_model(;
 
     # Seed individuals from the two sex vectors.
     #
-    # `n_agents` is the sum of the vectors when the caller does not state it, and
-    # an override when they do. Two cases, because they are different requests:
+    # `n_agents` is the benthic-stage mass of the vectors when the caller does
+    # not state it, and an override when they do. Two cases, because they are
+    # different requests:
     #
     #  * The vectors state a distribution. That is the point of them, so their
-    #    *shape* is honoured; an override only rescales it, so the caller can ask
-    #    for a different total without restating the shape.
-    #  * The vectors are empty and `n_agents` is given. There is no distribution to
-    #    honour, so the count is spread evenly across the stage range of each sex.
-    #    Uniform rather than juvenile-skewed: a skew is a shape choice and shapes
-    #    now live in the vectors, so inventing one here would reintroduce exactly
-    #    the hidden constant the vectors were added to remove.
+    #    *shape* is honoured; an override only rescales it across the benthic
+    #    stages, so the caller can ask for a different total without restating
+    #    the shape.
+    #  * The vectors are empty and `n_agents` is given. There is no distribution
+    #    to honour, so the count is spread evenly across the stage range of each
+    #    sex. Uniform rather than juvenile-skewed: a skew is a shape choice and
+    #    shapes now live in the vectors, so inventing one here would reintroduce
+    #    exactly the hidden constant the vectors were added to remove.
     seed_target = something(n_agents, seed_sum)
     if seed_target > 0
         # The (stage, sex) cells, so the two cases below share one enumeration.

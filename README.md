@@ -64,10 +64,10 @@ GeoIBM/
 │   ├── default.toml          # every declared parameter, at its struct default
 │   └── snowcrab.toml         # snow crab overlay: biology plus operating scale
 ├── docs/
-│   ├── GeoIBM.md        # detailed reference
-│   └── snowcrab_ibm_research_paper.md
+│   ├── GeoIBM.md             # detailed reference
+│   └── deep_check_2026-10.md # the October documentation audit and its disposition
 ├── src/
-│   ├── GeoIBM.jl        # module, includes, exports
+│   ├── GeoIBM.jl             # module, includes, exports
 │   ├── types.jl              # Organism, the twelve parameter structs, config plumbing
 │   ├── species.jl            # the SpeciesBehavior implementation and stage tables
 │   ├── organism_dynamics.jl  # allometry, bioenergetics, molting, mortality, cohorts
@@ -75,14 +75,25 @@ GeoIBM/
 │   ├── analysis.jl           # summaries, stock-recruitment, macro models, criteria
 │   ├── cli.jl                # argument parsing, run reports, orchestration
 │   ├── visualization.jl      # CairoMakie figures and animations
-│   └── gui.jl                # GLMakie interactive dashboard
+│   ├── gui.jl                # GLMakie interactive dashboard
+│   ├── assimilation.jl       # GeoData store assimilation and input status
+│   └── notebook_support.jl   # dashboard helpers shared with the Pluto notebook
 ├── notebooks/
-│   └── workflow.jl            # Pluto: assimilate the store, configure, run, analyse
+│   └── GeoIBMNotes.jl        # Pluto: configure, run, visualise, analyse, calibrate
 ├── scripts/
-│   ├── organism_ibm.jl              # simulation CLI
-│   ├── organism_orchestrator.jl     # calibration driver
-│   └── fit_macro_models.jl          # post-hoc macro model fitting
-└── test/runtests.jl
+│   ├── organism_ibm.jl             # simulation CLI
+│   ├── organism_orchestrator.jl    # calibration driver
+│   └── fit_macro_models.jl         # post-hoc macro model fitting
+└── test/
+    ├── runtests.jl                 # segment dispatcher (biology, macro, config,
+    │                               #  simulation, vis, habitat)
+    ├── test_allometry_biology.jl   # growth, maturity, mortality, fecundity
+    ├── test_config_parameters.jl   # TOML round trip and parameter coverage
+    ├── test_fixtures.jl            # shared test helpers
+    ├── test_habitat_environment.jl # GeoData store and environmental fields
+    ├── test_macro_dynamics.jl      # macro-model fits and reporting
+    ├── test_simulation_agents.jl   # cohort lifecycle, seeding, individuation, step loop
+    └── test_visualization_gui.jl   # figures and dashboard internals
 ```
 
 ## The environmental store
@@ -91,7 +102,6 @@ An IBM needs a world: a sea floor and a thermal cycle. Those come from published
 ETOPO 2022 bathymetry and WOA23 (or GLORYS12V1) hydrography — and they are assimilated once
 into a GeoData store beside the other halves':
 
-| artefact | product | where |
 | artefact | product | where |
 |---|---|---|
 | `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `lakehouse_dir("GeoIBM")` |
@@ -150,11 +160,13 @@ It is idempotent: what is already assimilated is skipped, so a second run does n
                                [ Adult Females ]                      [ Adult Males ]
 ```
 
-Feature toggles live on `IBMParameters.toggles`: `use_energetics`,
-`use_molting`, `use_mortality`, `use_reproduction`,
-`use_spermatheca`, `use_degree_days`, `use_thermal_stress`,
-`use_food_dynamics`, `use_habitat_taxis`, `use_senescence`, `use_cannibalism`,
-`use_movement`, `use_directed_movement`, `use_immigration`.
+Feature toggles live on `IBMParameters.toggles`, and these are the ten that
+exist: `use_energetics`, `use_thermal_stress`, `use_cannibalism`,
+`use_senescence`, `use_spermatheca`, `use_movement`, `use_directed_movement`,
+`use_degree_days`, `use_molting`, `use_reproduction`. The fishery is
+deliberately not among them: harvest is switched by
+`fishery.fishing_probability_daily` (zero means off), so the toggle set cannot
+disagree with the catch statistics about whether a fishery is running.
 
 ## Mathematical reference
 
@@ -197,12 +209,17 @@ m = m_base + m_predation(size) + m_soft_shell(Δt) + m_starvation(E)
     + m_thermal(T) + m_senescence(age) + m_cannibalism(local density)
 ```
 
-**Carrying capacity.** `N` is the total benthic stock, individuated plus
-aggregate cohorts, and `K` (`environment.benthic_carrying_capacity`) must exceed
-the seeded stock. At the reference scale the seeded stock is 6500 against
-K = 10000, giving a multiplier of 1.42. `initialize_model` warns when the stock
-already exceeds K, because that is a silent failure: at K = 300 against the same
-seed the multiplier is 2050 and every hazard is a certainty on day one.
+**Carrying capacity.** `N` is the total benthic stock — individuated agents plus
+aggregate cohorts not yet individuated — and `K`
+(`environment.benthic_carrying_capacity`) must exceed it, because the density
+term `1 + (N/K)^exponent` multiplies every mortality hazard. The shipped cohort
+vectors seed one aggregate cohort of 2000 members at the first cohort stage and
+no individuated agents (both sex vectors are zero), so a run starts at
+N = 2000 — 1.04 against the snow crab `K` = 10000, with exponent 2.0 — and the
+multiplier rises as the population grows. `initialize_model` warns when the
+stock already exceeds `K`, because that is a silent failure: over-seed against a
+small capacity (`n_agents = 4800`, `K = 300`) and the multiplier is 257, so
+every hazard is a certainty on day one.
 
 **Fecundity.** Two allometric branches, primiparous and multiparous, selected by
 shell age (`species.primiparous_shell_age_max`). Parity is a property of
@@ -215,12 +232,27 @@ indexed and out-of-range stages clamp to the terminal entry.
 ## Operating scale and performance
 
 `configs/snowcrab.toml` runs a **1000 × 1000 grid**, which at one cell per metre
-is a 1 km × 1 km survey stratum. Three `Float64` fields of that size cost 23 MB,
-and they are the only per-cell state.
+is a 1 km × 1 km survey stratum. The shipped seeding holds one 2000-member
+aggregate clutch at stage 1 and an empty individuated stock: day one runs
+exactly 2000 benthic organisms, and the density multiplier is
+$1 + (2000/10000)^2 = 1.04$.
 
-The measured cost is about **21 ms per simulated day**, so a two-year run is
-roughly **15 s** of dynamics plus whatever the observation columns add. What that
-time is spent on, and what has been done about it:
+Measured cost (benchmarked 2026-10-23; median of three replicates, 1500
+organisms at the seeded distribution, warm-up excluded; script and replicate log
+in `scratch/bench_perf.jl` / `scratch/bench_perf.log`):
+
+| Grid (cells) | Dynamics only (ms/day) | With the CLI's default observation set (ms/day) |
+|---|---|---|
+| 1000 × 1000 | 40.3 | 49.9 |
+| 200 × 200 | 30.7 | 29.3 |
+| 100 × 100 | 36.5 | 28.5 |
+| 30 × 30 | 22.6 | 20.9 |
+
+Replicate spread is about ±25%, so read the table in halves, not decimals. An
+end-to-end timing of the shipped snowcrab configuration measured 32.6 ms of
+bare dynamics per simulated day: a two-year, 730-day run is roughly **24 s** of
+dynamics, or roughly **36 s** with the CLI's default per-step observation
+columns. What that time is spent on, and what has been done about it:
 
 | Cost | Note |
 |---|---|
@@ -232,12 +264,13 @@ time is spent on, and what has been done about it:
 
 Two things worth knowing before scaling further:
 
-* **A sparse grid is cheap.** At 1000 × 1000 with a few thousand organisms the
-  cells are mostly empty, so `nearby_agents` returns almost nothing and the
-  per-organism cost is low. The same organisms on a 30 × 30 grid were three
-  times more expensive per organism, because each neighbourhood query returned
-  hundreds of occupants. Grid size does not track population cost the way you
-  would expect.
+* **Neither grid extreme dominates.** At 1500 organisms the sweep moved both
+  ways: the cheapest grid measured was 30 × 30 (22.6 ms/day bare) and the most
+  expensive was 1000 × 1000 (40.3 ms/day). Per-cell environmental field work
+  scales with grid area, while per-organism bookkeeping and neighbourhood
+  queries grow with local occupancy, which is highest on coarse grids; the two
+  drivers pull against each other, and the ±25% replicate noise brackets their
+  ordering.
 * **Pin the activation order if you store runs.** `initialize_model` now defaults
   to `Agents.Schedulers.Randomly()`, which draws the activation order from the
   model's RNG, so a fixed seed fixes the order by construction. The Agents.jl
@@ -259,7 +292,7 @@ Three-tier precedence, later wins:
 3. `configs/snowcrab.toml`, the species overlay; then CLI flags on top.
 
 ```powershell
-julia --project=. scripts/organism_ibm.jl --temp_base=4.5 --days=90
+julia --project=. scripts/organism_ibm.jl --temp_offset=4.5 --days=90
 ```
 
 A configuration key that is not a declared parameter is reported as a warning and
@@ -279,13 +312,14 @@ and the conventional `snowcrab.toml` sibling is overlaid on it.
 |---|---|---|
 | `--config=<path>` | — | Overlay TOML; if it names the baseline, its `snowcrab.toml` sibling is used instead |
 | `--days=<Int>` | `730` | Duration in days |
-| `--n_agents=<Int>` | `300` | Seeded individuals |
+| `--n_agents=<Int>` | sex-vector cohort sum | Seeded individuated agents. The default is `sum(initial_female_cohort) + sum(initial_male_cohort)` — `0` on the shipped baselines, whose life starts from the aggregate cohort instead. The aggregate cohort is seeded independently of this flag either way |
 | `--grid=<nx,ny>` | `100,100` | Grid dimensions |
 | `--grid_nx`, `--grid_ny` | `100` | Grid dimensions, individually |
 | `--seed=<Int>` | `1234` | RNG seed |
-| `--temp_base=<Float>` | `5.0` | Mean bottom-water temperature (°C) |
+| `--temp_offset=<Float>` | `0.0` | Baseline bottom-water temperature offset (°C) |
+| `--temp_multiplier=<Float>` | `1.0` | Seasonal cycle amplitude multiplier |
+| `--temp_base`, `--temp_amplitude` | — | Legacy aliases for `--temp_offset` / `--temp_multiplier` |
 | `--benthic_carrying_capacity=<Float>` | `12000.0` | Total benthic capacity, whole model |
-| `--fishing_probability_daily=<Float>` | `0.0` | **The fishery switch.** Zero means no harvest |
 | `--fishing_probability_daily=<Float>` | `0.0` | **The fishery switch.** Zero means no harvest |
 | `--frequency_days=<Float>` | `365.0` | Output sampling interval |
 | `--snapshot_day=<Float>` | `274.0` | Annual survey snapshot day of year |
@@ -321,9 +355,28 @@ agent_df, model_df = run_simulation(model, 730; when = 7)
 
 ## Tests
 
+The suite runs in six selectable segments (pass one or more segment names to run
+those alone):
+
 ```powershell
-julia --project=. test/runtests.jl
+julia --project=. test/runtests.jl              # all segments
+julia --project=. test/runtests.jl biology      # allometry, growth, empirical biology
+julia --project=. test/runtests.jl habitat      # habitat suitability, GeoData integration
+julia --project=. test/runtests.jl macro        # macro models and Leslie matrices
+julia --project=. test/runtests.jl config       # configuration, CLI parsing, parameters
+julia --project=. test/runtests.jl simulation   # agents, energetics, mortality, dispersal
+julia --project=. test/runtests.jl vis          # plots and GUI dashboard
 ```
+
+Pass counts as of 2026-10-23 (`vis` below):
+
+| Segment | Checks passed |
+|---|---|
+| `biology` | 140 |
+| `habitat` | 165 |
+| `macro` | 203 |
+| `config` | 1492 |
+| `simulation` | 481 |
 
 The suite covers the empirical growth and maturity rules, the mortality
 decomposition, the configuration round trip, the cohort lifecycle and
@@ -336,3 +389,9 @@ its checks are guards rather than behaviour tests and are worth knowing about:
   CRLF files, which made this guard vacuous;
 * an animal can never exceed its sex's asymptotic size, and the stage-size curve
   can never produce one.
+
+The `vis` segment currently fails under Julia 1.13 in a headless environment
+with a GLMakie autolimits error while the GUI dashboard renders. This is a
+pre-existing environment interaction, not a regression in the plotting code or
+the model; it is left as-is rather than masked, and the other five segments are
+unaffected.

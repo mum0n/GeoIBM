@@ -2,7 +2,7 @@
 
 julia_version = "1.13.2"
 manifest_format = "2.1"
-project_hash = "4cae7bbe61aeb15d9cb48142693889d94404300c"
+project_hash = "a22b635e042116d56dbdae98045f0d197ad09470"
 
 [[deps.ADTypes]]
 deps = ["PrecompileTools"]
@@ -1184,7 +1184,7 @@ uuid = "68eda718-8dee-11e9-39e7-89f7f65f511f"
 version = "0.4.5"
 
 [[deps.GeoIBM]]
-deps = ["Agents", "CairoMakie", "DataFrames", "Distributions", "GLMakie", "GeoData", "Interpolations", "LinearAlgebra", "Optim", "PlutoUI", "Printf", "Random", "Serialization", "Statistics", "TOML", "Test", "ZMQ"]
+deps = ["Agents", "CairoMakie", "DataFrames", "Distributions", "GLMakie", "GeoData", "Interpolations", "JLD2", "LinearAlgebra", "Optim", "PlutoUI", "Printf", "Random", "Serialization", "Statistics", "TOML", "Test", "ZMQ"]
 path = "."
 uuid = "c4601835-c3b2-4cd5-956f-7b396041e2d9"
 version = "0.1.0"

@@ -326,8 +326,8 @@ include("test_fixtures.jl")
         @test stages[2].sex === undifferentiated
         @test stages[3].name == "Stage $(Int(male_first)) Male"
         @test stages[3].sex === male
-fem4 = length(ps.stage_size_range_stage1) +
-                       length(ps.stage_size_range_stage_male) + 4
+        fem4 = length(ps.stage_size_range_stage1) +
+               length(ps.stage_size_range_stage_male) + 4
         @test stages[fem4].name ==
               "Stage $(Int(ps.stage_size_range_stage_female[4])) Female"
         @test stages[fem4].sex === female
@@ -529,4 +529,17 @@ fem4 = length(ps.stage_size_range_stage1) +
 
         # The model basis is a stage-mean approximation, not the measured sum, and
         # runs below it. This is why the GUI plots `fishable_male_biomass_kg` for
+        # the survey markers: plotting the approximation as measured biomass put two
+        # different quantities on one pair of axes.
+        @test all(
+            comp.biomass_obs_kg .< ann.fishable_male_biomass_kg
+        )
+
+        # Parameter formatting used by the legend labels: %.3g drops trailing
+        # zeros and switches to exponent form for large magnitudes.
+        @test fmt_param(2000.0) == "2e+03"
+        @test fmt_param(0.0004321) == "0.000432"
+        @test fmt_param(95.25) == "95.2"
+        @test fmt_param(1.0 / 3.0) == "0.333"
+    end
 end

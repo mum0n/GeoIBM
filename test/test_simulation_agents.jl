@@ -612,7 +612,6 @@ include("test_fixtures.jl")
             snapshot_day = 274.0
         )
         @test nrow(short) == 0
-        @test names(short) == schema_names
         @test :year ∉ propertynames(short)
 
         m_long = initialize_model(n_agents = 15, grid = (10, 10), seed = 4)
@@ -731,18 +730,6 @@ include("test_fixtures.jl")
         zero_tau = soft_shell_params(400.0, 0.0)
         @test isfinite(soft_shell_only(zero_tau, 0.0))
         @test isfinite(soft_shell_only(zero_tau, 5.0))
-    end
-
-        # the survey markers: plotting the approximation as measured biomass put two
-        # different quantities on one pair of axes.
-        @test all(
-            comp.biomass_obs_kg .< ann.fishable_male_biomass_kg
-        )
-
-        @test fmt_param(2000.0) == "2e+03"
-        @test fmt_param(0.0004321) == "0.000432"
-        @test fmt_param(95.25) == "95.2"
-        @test fmt_param(1.0 / 3.0) == "0.333"
     end
 
     @testset "Death causes are attributed to the hazard that produced them" begin
@@ -900,6 +887,57 @@ include("test_fixtures.jl")
         end
     end
 
+    @testset "Seeding counts follow the benthic-stage mass" begin
+        # Regression: the seed denominator summed both cohort vectors over every
+        # stage, so vectors dense in the pelagic (aggregate) stages deflated the
+        # rescaling — an explicit `n_agents` placed only a small fraction of
+        # itself into the benthic cells. The denominator must count only the
+        # stages that receive individuated agents; the pelagic entries state
+        # where larvae are, not adults to seed.
+        ps = IBMParameters()
+        jms = ps.organism.juvenile_max_stage
+        n_f_default = length(ps.simulation.initial_female_cohort)
+        n_m_default = length(ps.simulation.initial_male_cohort)
+
+        # Pelagic entries carry a large mass that must not dilute the seeding;
+        # every benthic entry states exactly one organism.
+        mixed_f = fill(1.0, n_f_default)
+        mixed_m = fill(1.0, n_m_default)
+        mixed_f[1:jms] .= 300.0              # stages 0 .. jms-1: pelagic
+        mixed_m[1:jms] .= 300.0
+
+        mixed_sim = with_overrides(
+            SimulationParams,
+            ps.simulation;
+            initial_female_cohort = mixed_f,
+            initial_male_cohort = mixed_m
+        )
+
+        # One organism per benthic cell: choosing `n_agents` as exactly ten times
+        # the cell count makes the per-cell draw exact, so the seeded total must
+        # equal `n_agents` exactly. Under the old denominator the counts would
+        # round to a tiny fraction of the target instead.
+        cells = (ps.organism.max_stage_female - jms + 1) +
+                (ps.organism.max_stage_male - jms + 1)
+        m = initialize_model(n_agents = cells * 10, grid = (10, 10), seed = 5,
+            params = IBMParameters(simulation = mixed_sim))
+        @test nagents(m) == cells * 10
+        @test all(org.stage >= jms for org in allagents(m))
+
+        # The even-spread branch is untouched by the change: with empty vectors
+        # there is no distribution to honour and `n_agents` is spread over the
+        # cells directly.
+        empty_sim = with_overrides(
+            SimulationParams,
+            ps.simulation;
+            initial_female_cohort = fill(0.0, n_f_default),
+            initial_male_cohort = fill(0.0, n_m_default)
+        )
+        m_even = initialize_model(n_agents = 30, grid = (10, 10), seed = 8,
+            params = IBMParameters(simulation = empty_sim))
+        @test nagents(m_even) == 30
+    end
+
     @testset "Runs survive population extinction" begin
         # Regression: `Agents._add_col_data!` calls `agg(generator)` with no `init`,
         # so a bare `sum` threw "reducing over an empty collection" the moment the
@@ -999,5 +1037,4 @@ include("test_fixtures.jl")
         @test cumulative_maturity_curves(sizes, 0) == cum_m
         @test cumulative_maturity_curves(sizes, female) == cum_f
     end
-
 end

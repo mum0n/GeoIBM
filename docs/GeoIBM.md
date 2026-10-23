@@ -98,14 +98,17 @@ The source repository is organized into focused, modular components:
 GeoIBM/
 ├── Project.toml              # Dependencies and compatibility bounds
 ├── docs/
-│   ├── GeoIBM.md        # Comprehensive architecture and API reference (this file)
-│   └── notes.md              # Research notes and design specifications
+│   ├── GeoIBM.md             # Comprehensive architecture and API reference (this file)
+│   └── deep_check_2026-10.md # Methodological audit of documentation claims (2026-10)
 ├── src/
-│   ├── GeoIBM.jl        # Module definition, includes, and exported public APIs
+│   ├── GeoIBM.jl             # Module definition, includes, and exported public APIs
 │   ├── types.jl              # Core type system: Organism, StageDefinition, IBMParameters
 │   ├── organism_dynamics.jl  # Generic growth, allometry fallbacks, bioenergetics, molt
 │   ├── species.jl            # Species behaviour: allometry, phenology, reproduction
 │   ├── simulation.jl         # Grid initialization, agent/model steppers, simulation runner
+│   ├── cli.jl                # CLI entry points: parsing, configuration layers, reporting
+│   ├── assimilation.jl       # Environmental store: GeoData fetch, manifest, read-back
+│   ├── notebook_support.jl   # Pluto widget builders and notebook-facing dashboards
 │   ├── analysis.jl           # KDE, OLS/IRLS estimation, Leslie matrices, macro models
 │   ├── visualization.jl      # Diagnostic figures and video animations (CairoMakie)
 │   └── gui.jl                # Real-time interactive 3-dashboard GUI (GLMakie)
@@ -114,9 +117,20 @@ GeoIBM/
 │   └── snowcrab.toml         # Snow crab overlay: biology plus operating scale
 ├── scripts/
 │   ├── organism_ibm.jl       # CLI simulation application
-│   └── organism_orchestrator.jl # Parameter variation and calibration orchestrator
+│   ├── organism_orchestrator.jl # Parameter variation and calibration orchestrator
+│   └── fit_macro_models.jl   # Post-hoc macro-model fitting CLI for saved results
+├── notebooks/
+│   ├── README.md             # Pluto launch and headless-run instructions
+│   └── GeoIBMNotes.jl        # Pluto research notebook
 └── test/
-    └── runtests.jl           # Complete automated test suite
+    ├── runtests.jl           # Suite entry point: biology, macro, config, simulation, vis, habitat
+    ├── test_fixtures.jl      # Shared fixtures and synthetic datasets
+    ├── test_allometry_biology.jl
+    ├── test_habitat_environment.jl
+    ├── test_macro_dynamics.jl
+    ├── test_simulation_agents.jl
+    ├── test_config_parameters.jl
+    └── test_visualization_gui.jl
 ```
 
 ### Component Roles
@@ -127,9 +141,14 @@ GeoIBM/
 | [`src/organism_dynamics.jl`](src/organism_dynamics.jl) | Implements generic biological interfaces and fallbacks, Kleiber metabolic bioenergetics ($W^{0.75}$), Holling Type II consumption, ecdysis mechanics, mortality hazards, and spatial dispersal. |
 | [`src/species.jl`](src/species.jl) | Implements `SpeciesParams`, `SpeciesBehaviorImpl`, empirical Hiatt increments, log-logistic maturity schedules, allometric fecundity, thermal ecdysial thresholds, and primiparous/multiparous reproductive cycles. |
 | [`src/simulation.jl`](src/simulation.jl) | Manages model instantiation (`initialize_model`), environmental field generation, scheduled time stepping (`agent_step!`, `model_step!`), and batch execution (`run_simulation`). |
+| [`src/cli.jl`](src/cli.jl) | Resolves the two-layer configuration (baseline `default.toml` plus a run overlay), parses CLI switches into typed parameters, and provides terminal reporting, snapshot telemetry, batch figure export and `julia_main` binary entry points. |
+| [`src/assimilation.jl`](src/assimilation.jl) | Assimilates the published environmental inputs (ETOPO 2022 bathymetry, WOA23/GLORYS12V1 hydrography) into an idempotent GeoData store with a manifest, and reads the store back for a run. |
+| [`src/notebook_support.jl`](src/notebook_support.jl) | Standardized HTML/JS widget builders (domain picker, steering sliders, transport bar) and standalone CairoMakie dashboard panels for the Pluto notebook, mirroring the `gui.jl` dashboards. |
 | [`src/analysis.jl`](src/analysis.jl) | Computes kernel density estimations (KDE), iterative logistic fits (IRLS), demographic summaries, Schaefer and Delay-Difference biomass models, generalized Leslie matrices, and retrospective analyses. |
 | [`src/visualization.jl`](src/visualization.jl) | Generates executive diagnostic figures, maturity ogives, stock-recruitment plots, and video animations via CairoMakie (`Figure` output). |
 | [`src/gui.jl`](src/gui.jl) | Provides interactive real-time multi-dashboard steering GUI with reactive particle streaming, parameter steering, and macro-ecological model fitting via GLMakie (`launch_organism_gui`). |
+| [`scripts/fit_macro_models.jl`](../scripts/fit_macro_models.jl) | Post-hoc CLI fitting Schaefer and delay-difference macro models to saved simulation results — whole population and fishable component — with optional retrospective analysis and Mohn's ρ. |
+| [`notebooks/GeoIBMNotes.jl`](../notebooks/GeoIBMNotes.jl) | Pluto research notebook walking the model's life history, calibration, macro fitting and outputs through the `notebook_support.jl` widgets; `notebooks/README.md` covers launching it and running it headless. |
 
 ---
 
@@ -209,13 +228,28 @@ Pre-recruit cohorts develop through discrete pelagic instars (egg, Zoea I, Zoea 
 `configs/snowcrab.toml` configures a **1000 × 1000** grid, which at one cell per
 metre is a 1 km × 1 km footprint — the scale of a single snow crab survey
 stratum — with `benthic_carrying_capacity = 10000`, roughly 10000 organisms per
-square kilometre. The seeded stock is 2000 individuals plus 4500 in aggregate
-cohorts, so the density multiplier starts at 1.42 and rises as the population
-grows toward K.
+square kilometre. The shipped seeding holds one 2000-member aggregate clutch at
+stage 1 and an empty individuated stock, so day one runs exactly 2000 benthic
+organisms and the density multiplier is $1 + (2000/10000)^2 = 1.04$.
 
-Three `Float64` fields of that size cost 23 MB and are the only per-cell state.
-The measured cost is about **3 ms per simulated day**, so a two-year run is
-roughly 2 s of dynamics plus whatever the observation columns add.
+### Measured run cost (benchmarked 2026-10-23)
+
+Median milliseconds per simulated day from a three-replicate benchmark of 1500
+organisms at the seeded distribution, warm-up excluded (`scratch/bench_perf.jl`,
+replicate log in `scratch/bench_perf.log`):
+
+| Grid (cells) | Dynamics only (ms/day) | With the CLI's default observation set (ms/day) |
+|---|---|---|
+| 1000 × 1000 | 40.3 | 49.9 |
+| 200 × 200 | 30.7 | 29.3 |
+| 100 × 100 | 36.5 | 28.5 |
+| 30 × 30 | 22.6 | 20.9 |
+
+Replicate spread is about ±25%, so read the table in halves, not decimals. A
+separate end-to-end timing of the shipped snowcrab configuration measured
+32.6 ms of bare dynamics per simulated day: a two-year, 730-day run is then
+roughly **24 s** of dynamics, or roughly **36 s** with the CLI's default
+per-step observation columns collected.
 
 ### Where the time goes, and what has been done
 
@@ -235,17 +269,20 @@ roughly 2 s of dynamics plus whatever the observation columns add.
 
 ### Three counter-intuitive properties
 
-**A sparse grid is cheap per organism.** At 1000 × 1000 with a few thousand
-organisms the cells are almost all empty, so `nearby_agents` returns nothing and
-the per-organism cost is low. The same organisms on a 30 × 30 grid were roughly
-three times more expensive *per organism*, because each neighbourhood query
-returned hundreds of occupants instead of none. Grid size does not track
-population cost the way you would expect: the per-cell field updates scale with
-the grid, and the per-organism neighbour queries scale with local occupancy.
+**Neither grid extreme dominates.** At 1500 organisms the sweep moved both ways:
+the cheapest grid measured was 30 × 30 (22.6 ms/day bare) and the most expensive
+was 1000 × 1000 (40.3 ms/day). Two cost drivers pull against each other along
+the sweep — per-cell environmental field work scales with grid area, while
+per-organism bookkeeping and neighbourhood queries grow with local occupancy,
+which is highest on coarse grids — and the ±25% replicate noise brackets the
+ordering between them.
 
-**Cell count is now nearly irrelevant.** After the cohort merge the cost is 3.2
-ms/day at 1000 × 1000 and 1.0 ms/day at 200 × 200 for the same population — the
-two environmental fields are 85% of what is left.
+**Observation width adds measurable cost only on the heaviest grid.** The
+CLI's default per-step observation columns are extra population passes
+beside the dynamics. At 1000 × 1000 the with-observation runs measured about
+10 ms/day more than the bare runs; on the smaller grids the difference sat
+inside the replicate noise, so the honest bound is "no more than ~10 ms/day,
+and often less".
 
 **Pin the activation order for stored runs.** `initialize_model` defaults to
 `Agents.Schedulers.Randomly()`, which draws the activation order from the model's
@@ -262,10 +299,10 @@ column.
 
 * **`K` must exceed the seeded stock.** The density term `1 + (N/K)^exponent`
   multiplies every hazard directly, so a stock above K is not a slow calibration
-  problem: at K = 300 against the same seed the multiplier is 2050 and every
-  hazard is a certainty on day one, which presents as an extinction the model
-  never modelled. `initialize_model` warns when the stock already exceeds K and
-  names the fields to change.
+  problem: with the shipped 2000-member clutch at K = 300 the day-one multiplier
+  is already about 45, which presents as an extinction the model never modelled.
+  `initialize_model` warns when the stock already exceeds K and names the fields
+  to change.
 * **Asymptotic size bounds everything.** `species.max_size_male` and
   `max_size_female` are the ceiling on any modelled or drawn size, and the
   saturating limit of the stage-size curve. The growth rule has a log-size slope
@@ -299,11 +336,13 @@ julia --project=. scripts/organism_ibm.jl [OPTIONS]
 |---|---|---|---|
 | `--config=<path>` | String | — | Overlay TOML. `default.toml` is always loaded first; if this names the baseline, its `snowcrab.toml` sibling is overlaid on it. |
 | `--days=<int>` | Integer | `730` | Simulation duration in days. |
-| `--n_agents=<int>` | Integer | `300` | Initial population size. |
+| `--n_agents=<int>` | Integer | sex-vector cohort sum | Initial individuated population; an explicit value overrides the sum of the sex-structured cohort vectors, rescaling their shape. Shipped vectors are all-zero, so unwritten the default is `0` individuated agents and the aggregate clutch seeds alone. |
 | `--grid=<nx,ny>` | Int,Int | `100,100` | 2D spatial grid dimensions. |
 | `--grid_nx=<int>`, `--grid_ny=<int>` | Integer | `100` | Grid dimensions, individually. |
 | `--seed=<int>` | Integer | `1234` | Random seed. |
-| `--temp_base=<float>` | Float | `5.0` | Baseline bottom water temperature (°C). |
+| `--temp_offset=<float>` | Float | `0.0` | Baseline bottom-temperature offset (°C); anomaly on top of the GeoData hydrographic mean. |
+| `--temp_multiplier=<float>` | Float | `1.0` | Seasonal temperature multiplier on the synthetic oscillation; scales GeoData anomalies. |
+| `--temp_base=<float>`, `--temp_amplitude=<float>` | Float | — | Legacy aliases for `--temp_offset` and `--temp_multiplier`. |
 | `--benthic_carrying_capacity=<float>` | Float | `12000.0` | Total benthic capacity for the whole model, not per cell. |
 | `--frequency_days=<float>` | Float | `365.0` | Output sampling interval. |
 | `--snapshot_day=<float>` | Float | `274.0` | Annual survey snapshot day of year. |
@@ -328,7 +367,7 @@ harvested until you set that probability.
 The orchestrator script at [`scripts/organism_orchestrator.jl`](scripts/organism_orchestrator.jl) executes systematic grid and sensitivity searches across multi-criteria objective targets:
 
 ```bash
-julia --project=. scripts/organism_orchestrator.jl --vary="temp_base=2.0:1.0:5.0;fishing_prob=0.0,0.02,0.05" --days=1095 --runs=3
+julia --project=. scripts/organism_orchestrator.jl --vary="temp_offset=2.0:1.0:5.0;fishing_prob=0.0,0.02,0.05" --days=1095 --runs=3
 ```
 
 ---
@@ -350,7 +389,7 @@ Spatial agent structure tracked by `Agents.jl`.
 
 ```julia
 @agent struct Organism(GridAgent{2})
-    stage::Int                             # Developmental stage index (0 to 16)
+    stage::Int                             # Developmental stage index (individuated agents: 12 through 19 male, 12 through 16 female)
     sex::Sex                               # male, female, or undifferentiated
     behavior::SpeciesBehavior              # Behavioral dispatch instance
     age_days::Float64                      # Total age in days
@@ -390,20 +429,22 @@ end
 *Note: Includes property forwarding for `cw_mean`, `cw_range`, `mean_weight`, and `instar`.*
 
 #### `IBMParameters`
-Top-level configuration structure with modular nested settings:
+Top-level configuration structure with eleven nested parameter sections:
 - `toggles::ProcessToggles`: Granular biological and operational feature switches.
-- `simulation::SimulationParams`: Time step $\Delta t$, random seed, agent count, duration.
-- `environment::EnvironmentParams`: Baseline temperature, seasonal amplitude, food dynamics.
-- `organism::OrganismParams`: Metabolic and consumption rates, molt energy thresholds.
-- `phenology::PhenologyParams`: Molting and mating seasonal calendar bounds, brooding period.
-- `mortality::MortalityParams`: Senescence thresholds, post-molt vulnerability duration.
-- `fishery::FisheryParams`: Legal size thresholds ($L_{50}$), daily harvest probability.
-- `output::OutputParams`: Reporting frequencies, output directory paths, visualization flags.
+- `simulation::SimulationParams`: Time step $\Delta t$, random seed, initial abundance distributions, calendar duration.
+- `environment::EnvironmentParams`: Baseline temperature, seasonal amplitude, food replenishment, spatial habitat weights, carrying capacity.
+- `organism::OrganismParams`: Metabolic budgets, Kleiber scaling, ecdysis energy thresholds, asymptotic size bounds, stage labels.
+- `phenology::PhenologyParams`: Molting and mating seasonal calendar windows, thermal brooding duration, spermathecal storage.
+- `mortality::MortalityParams`: Stage-dependent baseline natural mortality, predation, soft-shell vulnerability, starvation, thermal stress, terminal adult senescence, juvenile cannibalism.
+- `fishery::FisheryParams`: Minimum legal size threshold ($L_{50}$), fishing season calendar window, daily harvest probability switch.
+- `output::OutputParams`: Periodic snapshot intervals, CSV results destination, plotting and animation controls.
+- `species::SpeciesParams`: Species-specific allometry (Hiatt increment, weight-length powers), log-logistic maturity ogives, Sainte-Marie fecundity.
+- `leslie::LeslieParams`: Generalized Lefkovitch stage-structured projection-matrix parameters and multi-year fitting controls.
+- `criteria::CriteriaParams`: Multi-criteria population viability and fidelity thresholds (persistence, size drift, maturity RMSE, growth RMSE).
 
-There is no binning section. Demographic histogramming was configured but never implemented,
-so the section only ever advertised settings that had no effect; it has been removed rather
-than left as an inert control.
-- `binning::BinningParams`: Demographic histogram binning configurations.
+There is no binning section. Demographic histogramming was configured but never
+implemented, so the section only ever advertised settings that had no effect; it has
+been removed rather than left as an inert control.
 
 ---
 
@@ -411,14 +452,13 @@ than left as an inert control.
 
 All biological processes, allometric constants, and parameterizations specific to the snow crab (*Chionoecetes*) are centralized within `src/species.jl`.
 
-#### Parameters: `SpeciesParams <: SpeciesParams`
+#### Parameters: `SpeciesParams`
 - **Maturity Ogives**:
   - `maturity_l50_male::Float64 = 91.8` (mm CW), `maturity_l50_male_sd::Float64 = 1.2`
   - `maturity_slope_male::Float64 = 6.9957`, `maturity_slope_male_sd::Float64 = 0.25`
   - `maturity_l50_female::Float64 = 51.6` (mm CW), `maturity_l50_female_sd::Float64 = 0.8`
   - `maturity_slope_female::Float64 = 12.9812`, `maturity_slope_female_sd::Float64 = 0.40`
-- **Fecundity Allometry**:
-  - `fecundity_parameterization::String = "moncton"` (Sainte-Marie 1993)
+- **Fecundity Allometry** (Sainte-Marie 1993 log-linear egg production):
   - `fecundity_primiparous_intercept::Float64 = -0.7229`, `slope = 2.94`, `err = 0.090`
   - `fecundity_multiparous_intercept::Float64 = 0.0158`, `slope = 2.5811`, `err = 0.145`
 - **Hiatt Growth Increments**:
@@ -434,532 +474,153 @@ struct SpeciesBehaviorImpl <: SpeciesBehavior
 end
 SpeciesBehaviorImpl() = SpeciesBehaviorImpl(SpeciesParams())
 default_species_behavior() = SpeciesBehaviorImpl()
-const Organism = Organism
 ```
 
 #### Concrete Methods:
-- `stage_size_lower_bound(behavior::SpeciesBehaviorImpl, stage::Real, sex)`: Lower bound of carapace width (mm) across stages 1 to 16.
-- `llbm(stage)`: Convenience shortcut for male lower bound: `stage_size_lower_bound(SpeciesBehaviorImpl(), stage, :male)`.
-- `llbf(stage)`: Convenience shortcut for female lower bound: `stage_size_lower_bound(SpeciesBehaviorImpl(), stage, :female)`.
-- `get_stage_size(behavior::SpeciesBehaviorImpl, stage::Real, sex; type=:mid, rng=...)`: Bounds (`:lb`, `:ub`), midpoint (`:mid`), or stochastic beta-distributed (`:random`) carapace width.
-- `growth_increment(behavior::SpeciesBehaviorImpl, log_size::Real; sex, mat, temp, condition, rng, growth_quantile)`: Evaluates post-molt natural logarithm $\ln(\text{size}_{t+1})$.
-- `predict_postgrowth_size(behavior::SpeciesBehaviorImpl, size::Real; ...)`: Linear post-molt size in millimeters.
-- `growth_schedule(behavior::SpeciesBehaviorImpl)`: Reference `DataFrame` of stage sizes and increments.
-- `maturity(behavior::SpeciesBehaviorImpl, sex, log_size::Real; temp, maturity_quantile, rng, deterministic)`: Log-logistic morphometric maturity probability.
-- `fecundity(behavior::SpeciesBehaviorImpl, size::Real; is_primiparous, method, shell_age, rng, deterministic, fecundity_quantile)`: Brood egg count estimation.
-- `selectivity(behavior::SpeciesBehaviorImpl, size::Real; s50, s50_sigma)`: Logistic gear retention probability.
-- `calculate_mass(behavior::SpeciesBehaviorImpl, size::Real, sex; mat, stochastic, rng)`: Wet body mass (grams) from carapace width (mm).
-- `build_stages(behavior::SpeciesBehaviorImpl; max_male_stage=12, max_female_stage=11)`: Constructs the demographic stage hierarchy.
-- `min_intermolt_days(behavior::SpeciesBehaviorImpl, stage::Int)`: Minimum chronological days required between molts.
-- `required_degree_days(behavior::SpeciesBehaviorImpl, stage::Int)`: Thermal degree-days required before ecdysis.
-- `perform_development!(behavior::SpeciesBehaviorImpl, org::Organism, model)`: Advances physiological development and molting.
-- `perform_reproduction!(behavior::SpeciesBehaviorImpl, org::Organism, model)`: Executes seasonal copulation, spermathecal storage, brood extrusion, and hatching.
+- `stage_size_lower_bound(behavior, stage, sex)`: Lower edge of the carapace-width band (mm) for a stage, saturating at the asymptotic size.
+- `llbm(stage)` / `llbf(stage)`: Male / female lower bound evaluated against `SpeciesBehaviorImpl()`.
+- `get_stage_size(behavior, stage, sex; type=:mid, rng=Random.default_rng())`: Lower (`:lb`), upper (`:ub`), midpoint (`:mid`) or beta-distributed (`:random`) carapace width within the stage band. `stage_size` is the exported alias, and convenience methods on the default implementation exist as `get_stage_size(stage, sex; ...)`.
+- `growth_increment(behavior, log_size; sex=0, mat=0, temp=nothing, condition=1.0, rng=Random.default_rng(), growth_quantile=nothing)`: Post-molt natural logarithm $\ln(\text{size}_{t+1})$; `growth_quantile` pins the phenotypic quantile deterministically.
+- `predict_postgrowth_size(...)`: Linear (unlogged) post-molt size in millimeters.
+- `growth_schedule(behavior)`: Reference table of stage sizes and increments.
+- `maturity(behavior, sex, log_size; temp=nothing, maturity_quantile=nothing, rng=Random.default_rng(), deterministic=false)`: Log-logistic morphometric maturity probability, guarded by the absolute size gate (`species.maturity_size_gate`); convenience `maturity(size; sex=0, params=nothing, ...)` works in raw size.
+- `fecundity(behavior, size; is_primiparous=true, method=nothing, shell_age=1.0, rng=Random.default_rng(), deterministic=false, fecundity_quantile=nothing)`: Brood egg count under the Sainte-Marie parameterization, with convenience wrappers on raw size.
+- `selectivity(behavior, size; s50=nothing, s50_sigma=nothing)`: Logistic gear-retention probability, vectorized; convenience `selectivity(size; params=nothing, ...)` accepts a `SpeciesParams`.
+- `calculate_mass(behavior, size, sex; mat=0, stochastic=false, rng=Random.default_rng())`: Wet body mass (g) from carapace width (mm) under the sex- and maturity-stratified allometries; convenience `calculate_mass(size, sex; ...)`.
+- `build_stages(behavior; max_male_stage=nothing, max_female_stage=nothing)`: Stage table for the generalized Leslie/Lefkovitch model — pooled-sex recruit/juvenile bins first, then sex-specific rows up to each sex's configured terminal stage (`leslie_max_male_stage` / `leslie_max_female_stage`, overridable). The four stage-table vectors are read in parallel, so a length mismatch is an error.
+- `min_intermolt_days(behavior, stage)` / `required_degree_days(behavior, stage)`: Chronological and thermal ecdysis gates.
+- `perform_development!(behavior, org, model)` / `perform_reproduction!(behavior, org, model)`: Physiological development and molting; seasonal copulation, spermathecal storage, brood extrusion and hatching.
 
 ---
 
 ### 6.3 Individual State Queries & Predicates (`src/types.jl`)
 
-High-performance inline predicates for demographic filtering:
-- `is_adult(org::Organism)`: True if individual has undergone terminal morphometric molt (`org.is_mature`).
-- `is_adult_male(org::Organism)`: True if male and mature.
-- `is_adult_female(org::Organism)`: True if female and mature.
+Inline predicates for demographic filtering:
+- `is_adult(org::Organism)`: True once morphometrically mature (`org.is_mature`).
+- `is_mature_male(org)` / `is_mature_female(org)`: True if mature and of that sex; `is_adult_male` / `is_adult_female` are the same checks under the maturity-first naming.
 - `is_ovigerous(org::Organism)`: True if carrying an extruded clutch (`org.egg_count > 0`).
-- `is_legal_male(org::Organism; legal_size=95.0)`: True if male and `size >= legal_size`.
-- `is_legal(org::Organism; legal_size=95.0)`: Alias for `is_legal_male`.
-- `mass_if_adult_female(org::Organism)`: Returns `org.mass` if adult female, otherwise `0.0`.
-- `mass_if_adult_male(org::Organism)`: Returns `org.mass` if adult male, otherwise `0.0`.
-- `mass_if_legal_male(org::Organism; legal_size=95.0)`: Returns `org.mass` if legal male, otherwise `0.0`.
-- `weight_if_*`: Backwards-compatible aliases for `mass_if_*`.
+- `is_legal_male(org::Organism, legal_size::Real, adult_size::Real)`: True if male and `size >= legal_size` and `size >= adult_size`. Call sites pass the thresholds from `FisheryParams.legal_size_male` and `OrganismParams.adult_size_threshold` rather than hardcoding them.
+- `is_legal(...)`: Alias for `is_legal_male`.
+- `is_stage(org::Organism, stage::Integer)`: True at that developmental stage.
+- `mass_if_mature_female(org)` / `mass_if_mature_male(org)`: `org.mass` if mature of that sex, else `0.0`.
+- `mass_if_legal_male(org, legal_size, adult_size)`: `org.mass` for a legal male, else `0.0`.
 
 ---
 
 ### 6.4 Organism Dynamics & Bioenergetics (`src/organism_dynamics.jl`)
 
-- `calculate_energy_change(temp::Real, food::Real, size::Real; params=IBMParameters(), mass=nothing)`:
-  Evaluates net energy assimilation $\frac{dE}{dt}$ and actual forage intake $I_{\text{actual}}$ via Kleiber metabolic scaling ($W^{0.75}$) and Holling Type II functional response.
-- `calculate_energy_change(org::Organism, temp::Real, food::Real; params=IBMParameters())`:
-  Agent-level method wrapping the above.
-- `molt_probability(org::Organism, current_temp::Real, current_time::Real=0.0; params=IBMParameters())`:
-  Computes daily probability of undergoing ecdysis based on intermolt days, degree-days, energy reserves, and temperature.
-- `check_molt_conditions(org::Organism, current_temp::Real, current_time::Real=0.0; params=IBMParameters(), rng=Random.default_rng())`:
-  Evaluates boolean criteria for ecdysis.
-- `perform_molt!(org::Organism, current_time::Real, current_temp::Real; params=IBMParameters(), rng=Random.default_rng())`:
-  Executes ecdysis, advances stage, evaluates maturity transition, updates size and mass via Hiatt models, and resets degree-days.
-- `calculate_mortality_probability(org::Organism, current_temp::Real, local_density::Real, current_time::Real=0.0; params=IBMParameters())`:
-  Computes aggregate daily mortality hazard combining baseline natural mortality, senescence, thermal stress, and density-dependent competition.
-- `shell_condition(days_since_molt::Real)`:
-  Translates days post-ecdysis into standard fishery shell condition categories (1: soft, 2: new hard, 3: intermediate, 4: old, 5: very old).
-- `step_aggregate_groups!(model; behavior=model.species_behavior)`:
-  Advances pre-individuation aggregate cohorts (stages 0 to 5) through survival, growth, and stage graduation into spatial agents at stage 6.
-- `organism_disperse!(org::Organism, model; rng=abmrng(model))`:
-  Executes spatial movement governed by thermal and forage habitat taxis.
-- `crab_disperse!(args...; kwargs...)`: Alias for `organism_disperse!`.
+- `calculate_energy_change(temp, food, size; params=IBMParameters(), mass=nothing)`: Net energy change $\frac{dE}{dt}$ and actual forage intake via Kleiber metabolic scaling ($W^{0.75}$) and a Holling Type II functional response. When `mass=nothing` the mass used is the male immature allometry at the given size; pass `mass` explicitly for sex-correct scaling.
+- `calculate_energy_change(org::Organism, temp, food; params=IBMParameters())`: Agent-level method using the organism's stored mass.
+- `molt_probability(org, current_temp, current_time=0.0; params=IBMParameters())`: Daily ecdysis probability from intermolt days, degree-days, energy reserves and temperature; zero for mature animals or when `toggles.use_molting` is false.
+- `check_molt_conditions(org, current_temp, current_time=0.0; params=IBMParameters(), rng=nothing)`: Bernoulli draw on the daily molt probability.
+- `perform_molt!(org, current_time, temp=nothing; params=IBMParameters(), rng=Random.default_rng())`: Executes ecdysis — advances the stage, evaluates the maturity transition, resamples size and mass from the stage band, and resets degree-days and shell age.
+- `calculate_mortality_probability(org, temp, local_density, current_time; params=IBMParameters(), density_feedback=1.0, on_clamp=nothing)`: Aggregate daily hazard combining stage-dependent baseline natural mortality, senescence (restricted to terminally molted adults, evaluated on unfloored post-terminal shell age), thermal stress, starvation, and the density term passed in `density_feedback`. `on_clamp` observes each hazard-cap clamp event.
+- `shell_condition(org, current_time; params=IBMParameters())`: Days since the last ecdysis translated into shell-condition categories 1-5 over `organism.shell_condition_days`.
+- `step_aggregate_groups!(model; behavior=get(abmproperties(model), :species_behavior, default_species_behavior()))`: Advances the pre-individuation aggregate cohorts (stages `FIRST_COHORT_STAGE` through `juvenile_max_stage - 1`) through survival, growth and transition hazards, then individuates the terminal cohort into `Organism` agents at `juvenile_max_stage` with a 1:1 sex split.
+- `organism_disperse!(org, model; rng=abmrng(model))`: Spatial movement gated on `use_movement` / `use_directed_movement`, toward thermal and forage habitat gradients under the softmax temperature.
 
 ---
 
 ### 6.5 Simulation Engine (`src/simulation.jl`)
 
-- `default_ibm_configuration()`:
-  Returns complete baseline configuration `Dict{Symbol, Any}` encompassing spatial grid geometry, runtime duration, environmental forcings, bioenergetics, life-history phenology, fishery dynamics, process toggles, and output handling.
-- `load_ibm_configuration(filepath::String)`:
-  Reads simulation configuration from a structured TOML file.
-- `save_ibm_configuration(config::AbstractDict, filepath::String)`:
-  Serializes configuration dictionary to TOML format.
-- `initialize_model(; N_agents=100, dims=(50, 50), temp_map=nothing, food_map=nothing, dt_days=1.0, params=IBMParameters(), behavior=default_species_behavior(), rng_seed=nothing)`:
-  Constructs and seeds an `Agents.StandardABM` spatial simulation model.
-- `initialize_model(config_filepath::String; kwargs...)`:
-  Initializes model from a TOML configuration file with keyword overrides.
-- `initialize_model(config::AbstractDict; kwargs...)`:
-  Initializes model from a configuration dictionary with keyword overrides.
-- `agent_step!(org::Organism, model)`:
-  Advances an individual agent through one time step (energetics, degree-days, molting, mortality, harvest, dispersal, reproduction).
-- `model_step!(model)`:
-  Advances global environment fields (temperature seasonality, food replenishment), steps aggregate cohorts, and updates demographic caches.
-- `run_simulation(model::StandardABM, total_days::Real; agent_collect=[], model_collect=[])`:
-  Executes the simulation across `total_days` and collects agent- and model-level time-series `DataFrames`.
-- ABM Utility Accessors:
-  - `nagents(model)`: Total active spatial agents.
-  - `allagents(model)`: Iterator over all agents.
-  - `abmrng(model)`: Model random number generator.
-  - `safe_mean(x)`: Mean calculation returning `0.0` for empty collections.
+- `default_ibm_configuration()`: Complete baseline configuration `Dict{Symbol, Any}` — grid geometry, runtime duration, environmental forcings, bioenergetics, life-history phenology, fishery dynamics, process toggles and output handling.
+- `load_ibm_configuration(filepath)`: Reads a configuration from a structured TOML file.
+- `save_ibm_configuration(filepath::String, config::AbstractDict)`: Serializes the configuration dictionary to TOML.
+- `initialize_model(; n_agents=nothing, grid=(50, 50), temp_map, food_map, habitat_map, dt=1.0, params, behavior, seed, scheduler=Agents.Schedulers.Randomly(), kwargs...)`: Constructs and seeds the model on a closed-domain `GridSpace(grid; periodic = false)`. Individuals are seeded from the two sex-structured cohort vectors across their benthic stage range; `n_agents` overrides their sum, rescaling the vector shape per benthic cell (rounding is applied per cell on purpose — the stage shape is preserved, not the exact total). The aggregate cohort is seeded in either case from `initial_aggregate_cohort`. Any value left at `nothing` resolves to its built-in default (synthetic environment maps, struct `IBMParameters`, random seed, `SpeciesBehaviorImpl`), an explicit `dt` and `seed` are recorded into the returned simulation parameters, and extra `kwargs` (e.g. `depth_map`) are attached as model properties.
+- `initialize_model(config_filepath::String; kwargs...)` / `initialize_model(config::AbstractDict; kwargs...)`: Build the model from a configuration file or dictionary with the same keyword overrides.
+- `agent_step!(org::Organism, model)`: One individual time step: energetics, degree-days, molting, mortality, harvest, dispersal, reproduction.
+- `model_step!(model)`: Steps the global environment fields (temperature seasonality, food replenishment), advances the aggregate cohorts, and refreshes the demographic caches.
+- `run_simulation(model, n_steps; adata=nothing, mdata=nothing, when=nothing, step_callback=nothing)`: Runs `n_steps` through `Agents.run!` and returns `(agent_df, model_df)`. With `adata` omitted the default observation set from `default_agent_observations` is collected; with `mdata` omitted the model's cumulative counters (eggs, recruits, catches, molts, mortality causes) are collected. `step_callback` is stored on the model and invoked after each step.
+- `default_agent_observations(params)`: The default per-step agent observation tuples, including per-stage counts (`stage_1`, `stage_2`, ...).
+- ABM utility accessors — `nagents(model)`, `allagents(model)`, `abmrng(model)` (Agents.jl), plus `safe_mean` / `safe_sum` empty-safe reductions.
 
 ---
 
 ### 6.6 Empirical Biology, Surveys, & Demographics (`src/analysis.jl`)
 
-- `gaussian_kde(data::AbstractVector{<:Real}; eval_points=nothing, bandwidth=nothing)`:
-  1D Gaussian kernel density estimation.
-- `derive_stage_proportions_kde(sizes::AbstractVector{<:Real}, sexes::AbstractVector; stages=build_stages())`:
-  Discretizes empirical size distributions into stage proportions.
-- `generate_mock_survey_data(; n_samples=500, rng=Random.default_rng(), behavior=default_species_behavior())`:
-  Synthesizes research survey catch records across size, sex, maturity, shell condition, and fecundity.
-- `fit_empirical_biology_model(data::DataFrame)`:
-  Calibrates allometric exponents, maturity ogives, and phenotypic covariance matrices from survey data.
-- `estimate_demographics(model::EmpiricalBiologicalModel; size::Real, sex, temp=nothing, shell_age=1.0, rng=Random.default_rng())`:
-  Predicts mass, maturity probability, and fecundity for an individual crab.
-- `sample_organism_traits(model::EmpiricalBiologicalModel; rng=Random.default_rng())`:
-  Samples correlated individual phenotypic trait quantiles.
-- `sample_crab_traits(args...; kwargs...)`: Alias for `sample_organism_traits`.
-- `summarize_empirical_model(model::EmpiricalBiologicalModel; io=stdout)`:
-  Prints formatted ASCII parameter summary.
-- `compute_empirical_ogive(sizes::AbstractVector{<:Real}, mature_flags::AbstractVector{<:Integer}; n_bins::Int=15)`:
-  Computes binned proportions mature for empirical ogive fitting.
-- `summarize_population(agent_df::DataFrame; frequency_days=365.0)`:
-  Aggregates simulation results into annual demographic summaries.
+- `gaussian_kde(data; eval_points=nothing, bandwidth=nothing)`: One-dimensional Gaussian kernel density estimate, returning `(grid, density)`.
+- `derive_stage_proportions_kde(sizes, sexes=nothing; stages=build_stages())`: Discretizes a size distribution into per-stage proportions and counts.
+- `generate_mock_survey_data(; n_samples=500, rng=Random.default_rng(), behavior=default_species_behavior())`: Synthesizes survey catch records across size, sex, maturity, shell condition and fecundity.
+- `fit_empirical_biology_model(data::DataFrame; params=SpeciesParams())`: Calibrates allometric mass regressions, maturity ogives and phenotypic covariances from survey data (required columns `:size`, `:sex`, `:maturity`, `:mass`, `:temp_c`, `:fecundity`).
+- `estimate_demographics(model; size, sex, temp=4.0, shell_age=1.0, params=SpeciesParams(), rng=...)`: Predicts mass, maturity probability and fecundity for an individual crab.
+- `sample_organism_traits(model; size, sex, temp=4.0, shell_age=1.0, params=SpeciesParams(), rng=...)`: Samples correlated individual phenotypic trait draws.
+- `summarize_empirical_model(model; io=stdout)`: Formatted ASCII parameter summary.
+- `compute_empirical_ogive(sizes, mature_flags; n_bins=15)`: Binned proportions mature for empirical ogive fitting.
+- `summarize_population(model)`: Demographic summary from a live model — counts by sex, maturity and stage with biomass totals.
 
 ---
 
 ### 6.7 Macro-Ecological Models & Stock Assessment (`src/analysis.jl`)
 
-- `extract_stock_recruitment(agent_df::DataFrame, model_df::DataFrame; lag_years::Int=4, frequency_days=365.0)`:
-  Computes annual spawner biomass and lagged recruitment pairs.
-- `fit_stock_recruitment(spawners::AbstractVector{<:Real}, recruits::AbstractVector{<:Real}; model_type::Symbol=:beverton_holt)`:
-  Fits Beverton-Holt ($R = \frac{\alpha S}{1 + \beta S}$) or Ricker ($R = \alpha S e^{-\beta S}$) models.
-- `summarize_stock_recruitment(fit::NamedTuple; io=stdout)`:
-  Prints formatted stock-recruitment parameters ($R^2$, $\alpha$, $\beta$, $S_{\text{max}}$).
-- `extract_annual_production(agent_df::DataFrame, model_df::DataFrame; frequency_days=365.0)`:
-  Extracts annual timeseries of legal biomass, survey biomass, catches, and egg production.
-- `fit_schaefer(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; dt=1.0)`:
-  Fits Schaefer continuous surplus production model: $\frac{dB}{dt} = r B (1 - B/K) - C$.
-- `fit_delay_difference(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; w_recruit=0.25, alpha=0.30, rho=0.85)`:
-  Fits Deriso-Schnute delay-difference model.
-- `fit_population_dynamics(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; model_type::Symbol=:schaefer, kwargs...)`:
-  Unified dispatch wrapper for biomass dynamic models.
-- `summarize_population_dynamics(fit::NamedTuple; io=stdout)`:
-  Prints parameter estimates and diagnostics ($r$, $K$, MSY, $B_{\text{MSY}}$, RMSE, $R^2$).
-- `mohn_rho(retrospective_trajectories::Vector{<:AbstractVector{<:Real}})`:
-  Calculates Mohn's $\rho$ metric quantifying retrospective assessment bias:
-  $$\rho = \frac{1}{P} \sum_{p=1}^P \frac{B_{T-p}^{(-p)} - B_{T-p}^{(0)}}{B_{T-p}^{(0)}}$$
-- `retrospective_analysis(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; n_peels::Int=5, model_type::Symbol=:schaefer, kwargs...)`:
-  Executes retrospective peels and evaluates assessment stability.
-- `summarize_retrospective(retro_res::NamedTuple; io=stdout)`:
-  Prints retrospective peeling table and Mohn's $\rho$.
-- `extract_annual_stage_matrix(agent_df::DataFrame; stages=build_stages(), frequency_days=365.0)`:
-  Constructs annual abundance matrix $\mathbf{N}_{t,s}$ across discrete life-history stages.
-- `fit_generalized_leslie_model(stage_matrix::AbstractMatrix{<:Real}, catch_matrix::AbstractMatrix{<:Real}; stages=build_stages(), years=Int[])`:
-  Calibrates stage-transition projection matrix $\mathbf{A}$, dominant eigenvalue $\lambda$, damping ratio, reproductive values, and elasticity matrix.
-- `summarize_leslie_model(fit::LeslieMatrixFit; io=stdout)`:
-  Prints formatted Leslie demographic diagnostics ($\lambda$, $r$, damping ratio).
-- `compare_macro_models(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}, leslie_fit::LeslieMatrixFit; stages=build_stages(), years=Int[])`:
-  Constructs comparative evaluation (`MacroModelComparison`) across Schaefer, Delay-Difference, and Leslie formulations.
-- `summarize_macro_comparison(comp::MacroModelComparison; io=stdout)`:
-  Prints comparative table of $R^2$, RMSE, and AIC across macro models.
-- `evaluate_population_criteria(model::StandardABM, agent_df::DataFrame; min_biomass_threshold=100.0, target_sex_ratio=0.50)`:
-  Evaluates population viability and harvest sustainability criteria.
-- `save_simulation_results(agent_df::DataFrame, model_df::DataFrame, output_dir::String="outputs"; prefix="simulation")`:
-  Saves simulation outputs to CSV format.
-- `load_simulation_results(output_dir::String="outputs"; prefix="simulation")`:
-  Loads simulation outputs from CSV files.
-- `write_dataframe_csv(df::DataFrame, filepath::String)` / `read_dataframe_csv(filepath::String)`:
-  CSV I/O helpers.
+- `extract_stock_recruitment(model)`: Stock-recruitment pairs from the model's clutch recruitment records (spawners in thousands of eggs, settlement-time recruits, and the density feedback at settlement).
+- `extract_stock_recruitment(agent_df, model_df; lag_days=nothing, window_days=nothing, days_per_year=365.0)`: Annual spawner and lagged-recruit pairs from run outputs; `nothing` lags and windows fall back to the configuration.
+- `fit_stock_recruitment(spawners, recruits; model_type=:both)`: Fits Beverton-Holt ($R = \frac{\alpha S}{1 + \beta S}$) and/or Ricker ($R = \alpha S e^{-\beta S}$); with `:both`, model selection is by AIC.
+- `summarize_stock_recruitment(sr_df::DataFrame; fits=nothing)`: Prints the stock-recruitment table and, when fits are supplied, the parameter estimates ($R^2$, $\alpha$, $\beta$, $S_{\max}$).
+- `extract_annual_production(agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0)`: Annual time series of totals and survey-snapshot biomass, catches and egg production, plus per-stage columns (`stage_1`, ...) from `ANNUAL_PRODUCTION_SCHEMA` — an empty short run returns the same columns as a populated long one.
+- `save_simulation_results(filepath, agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0, meta=Dict{Symbol, Any}())`: Writes both data frames and metadata to one JLD2 file; returns the path.
+- `load_simulation_results(filepath::String)`: Loads a results file written this way.
+- `fit_schaefer(time, numbers, catches; label="Population")`: Surplus-production fit $\frac{dB}{dt} = rB\left(1 - \frac{B}{K}\right) - C$ in the units of `numbers`; returns `r`, `K`, `MSY`, `N_msy`, `U_msy` with trajectory, $R^2$, RMSE and AIC.
+- `fit_delay_difference(time, numbers, catches; lag=1, label="Population")`: Deriso-Schnute delay-difference fit returning survival `s`, natural mortality `M` and the recruitment parameters.
+- `fit_population_dynamics(source; lag=1)`: Unified whole-population dispatch — `source` may be a saved-results path, an `(agent_df, model_df)` tuple, or an annual-production table; returns a `NamedTuple` with the Schaefer, delay-difference and Leslie fits plus the annual table.
+- `summarize_population_dynamics(macro_fits)`: Prints parameter estimates and diagnostics ($r$, $K$, MSY, $N_{\text{MSY}}$, $R^2$, RMSE) for each macro fit.
+- `mohn_rho(terminal_peeled, terminal_base)`: Mohn's $\rho$ retrospective bias; the two peel vectors must have equal length.
+- `retrospective_analysis(source; n_peels=5, model_type=:schaefer, lag=1)`: Sequentially peels terminal years, refits, and quantifies retrospective stability; `model_type = :both` is not supported here and warns before falling back.
+- `summarize_retrospective(retro_result)`: Prints the peel table and Mohn's $\rho$.
+- `extract_annual_stage_matrix(source; stages=build_stages())`: Returns `(stage_matrix, catch_matrix, years)` from a live model, an `(agent_df, model_df)` tuple or a saved-results path.
+- `fit_generalized_leslie_model(stage_matrix, catch_matrix=zeros(size(stage_matrix)); stages=build_stages(), years=1:size(stage_matrix, 2))`: Calibrates the stage-transition projection matrix $\mathbf{A}$, dominant eigenvalue $\lambda$, damping ratio, reproductive values and elasticities into a `LeslieMatrixFit`.
+- `summarize_leslie_model(fit::LeslieMatrixFit)`: Formatted Leslie diagnostics ($\lambda$, $r$, damping ratio).
+- `compare_macro_models(annual_data, leslie_fit; lag=1)`: Three-way comparison (`MacroModelComparison`) of Schaefer, delay-difference and Leslie formulations on the same series.
+- `summarize_macro_comparison(comp::MacroModelComparison)`: Comparative table of $R^2$, RMSE and AIC across the macro models.
+- `evaluate_population_criteria(model, agent_df; min_population=nothing, max_population=nothing, max_size_drift=nothing, max_maturity_rmse=nothing, max_growth_rmse=nothing, window_steps=nothing, maturity_ogive_min_count=nothing)`: Population-fidelity scoring against the five biological criteria; `nothing` thresholds fall back to `params.criteria`, and the configured `benthic_carrying_capacity` is read from the model properties.
+- `write_dataframe_csv(df, filepath)` / `read_dataframe_csv(filepath)`: CSV I/O helpers.
 
 ---
 
 ### 6.8 Visualization & Animation (`src/visualization.jl`)
 
-- `plot_population_timeseries(model_df::DataFrame)`:
-  Multi-panel plot of total abundance, mature biomass, recruit counts, and catches over time.
-- `plot_stage_distribution(model::StandardABM)`:
-  Histogram of organism stages partitioned by sex.
-- `plot_instar_distribution`: Backwards-compatible alias for `plot_stage_distribution`.
-- `plot_size_by_sex(model::StandardABM)`:
-  Kernel density and histogram of carapace sizes across sexes.
-- `plot_stage_allometry(model::StandardABM)`:
-  Carapace size vs. stage compared against theoretical empirical lower and upper bounds.
-- `plot_instar_allometry`: Backwards-compatible alias for `plot_stage_allometry`.
-- `plot_maturity_ogives(model::StandardABM)`:
-  Empirical maturity proportions vs. size compared with theoretical logistic ogives.
-- `plot_reproduction_dynamics(agent_df::DataFrame, model_df::DataFrame)`:
-  Egg counts, ovigerous female abundance, and larval production over time.
-- `plot_spatial_habitat(model::StandardABM)`:
-  2D heatmap of bottom temperature overlaid with agent spatial positions.
-- `plot_simulation_dashboard(model::StandardABM, agent_df::DataFrame; model_df=DataFrame())`:
-  Executive 6-panel summary dashboard visualizing timeseries, stage composition, spatial positions, and maturity.
-- `plot_stock_recruitment(sr_df::DataFrame, fit::NamedTuple)`:
-  Fitted stock-recruitment curve overlaid on empirical annual points.
-- `plot_population_dynamics_fits(comp::MacroModelComparison)`:
-  Observed survey biomass trajectories compared against Schaefer, Delay-Difference, and Leslie predictions.
-- `plot_macro_model_comparison`: Alias for `plot_population_dynamics_fits`.
-- `plot_retrospective_analysis(retro_res::NamedTuple)`:
-  Retrospective biomass peel trajectories with Mohn's $\rho$ annotation.
-- `plot_stage_specific_dynamics(leslie_fit::LeslieMatrixFit)`:
-  Stable stage distribution, reproductive values, and elasticity matrix heatmap.
-- `plot_functional_relationships(behavior::SpeciesBehavior=default_species_behavior())`:
-  Diagnostic panels showing growth increments, maturity ogives, mass allometry, and fecundity relationships.
-- `export_all_plots(model::StandardABM, agent_df::DataFrame, model_df::DataFrame, output_dir::String="outputs")`:
-  Generates and exports all diagnostic figures to disk as PNG files.
-- `organism_color(org::Organism)`: Color mapper based on sex and maturity status.
-- `organism_size(org::Organism)`: Marker size scaling proportional to carapace width.
-- `organism_marker(org::Organism)`: Shape mapper (`:circle` for female, `:square` for male).
-- `organism_heatarray(model::StandardABM)`: Spatial temperature or food grid matrix extractor.
-- `crab_color`, `crab_size`, `crab_marker`, `crab_heatarray`: Domain aliases.
-- `plot_abm_summary(model::StandardABM; heat_field="temperature", output_path="outputs/abm_spatial_summary.png")`:
-  High-resolution spatial summary rendering using CairoMakie.
-- `animate_organism_simulation(model::StandardABM; filepath="organism_animation.mp4", frames=120, dt=2, framerate=15, field_name="temperature")`:
-  Renders `.mp4` video recording spatial agent movement and environmental dynamics.
-- `animate_snowcrab_simulation`: Backwards-compatible alias for `animate_organism_simulation`.
+CairoMakie throughout:
+- `plot_population_timeseries(agent_df; model_df=nothing)`: Abundance and recruit trajectories; the recruits panel appears when `model_df` carries `:total_recruits_settled`.
+- `plot_stage_distribution(model)`: Stage histogram partitioned by sex.
+- `plot_size_by_sex(model)`: Kernel density and histogram of carapace widths across sexes.
+- `plot_stage_allometry(model)`: Carapace size vs. stage against the theoretical lower and upper bounds.
+- `plot_maturity_ogives(model; size_bins=20:10:140, ecdyses=nothing, min_count=1)`: Empirical maturity proportions vs. size with theoretical logistic ogives.
+- `plot_reproduction_dynamics(agent_df, model_df)`: Egg counts, ovigerous female abundance and larval production over time.
+- `plot_spatial_habitat(model)`: Bottom-temperature heatmap with agent positions.
+- `plot_simulation_dashboard(model, agent_df; model_df=nothing)`: Multi-panel executive dashboard — timeseries, stage composition, spatial positions, maturity.
+- `plot_stock_recruitment(sr_data; fits=nothing, title=...)`: Fitted stock-recruitment curves over the empirical annual points, with as many panels as fits provide. Convenience method `(model, agent_df; model_df=nothing, title=...)` extracts the pairs from a run first.
+- `plot_population_dynamics_fits(macro_fits; title=...)`: Observed trajectory against the Schaefer, delay-difference and Leslie predictions from `fit_population_dynamics`.
+- `plot_macro_model_comparison(comp::MacroModelComparison; title=...)`: Three-way comparison figure for the result of `compare_macro_models` — a separate function, not an alias.
+- `plot_retrospective_analysis(retro_res)`: Retrospective peel trajectories with Mohn's $\rho$ annotation.
+- `plot_stage_specific_dynamics(fit::LeslieMatrixFit; title=...)`: Stable stage distribution, reproductive values and elasticity matrix.
+- `plot_functional_relationships(params_list; type=:maturity, ...)`: Species-function diagnostic panels (maturity, growth, mass, fecundity) for one or more parameter sets — `params_list` is a vector of `IBMParameters`.
+- `export_all_plots(model, agent_df, output_dir; model_df=nothing, ext="png")`: Generates and exports the diagnostic figure set.
+- `organism_color(org)` / `organism_size(org)` / `organism_marker(org)` / `organism_heatarray(model[, field])`: Plot-attribute mappers by sex, size, maturity and field.
+- `plot_abm_summary(model; heat_field=:temperature, output_path=nothing)`: High-resolution spatial summary; written to `output_path` when given, otherwise returned as a figure.
+- `animate_organism_simulation(model; filepath="organism_animation.mp4", frames=120, dt=2, framerate=15, heat_field=:temperature)`: `.mp4` animation of spatial movement and environmental dynamics.
 
 ---
 
 ### 6.9 Interactive GUI Dashboard (`src/gui.jl`)
 
-- `launch_organism_gui(model=nothing; figure_size=(1600, 1000), target_fps=30)`:
-  Launches interactive multi-panel GUI window (`GLMakie.Screen`) featuring three interlinked dashboards:
-  1. **Control & Dynamics View**: Parameter steering sliders, temperature amplitude, fishing mortality, benthic carrying capacity, real-time spatial heatmaps with animated particle scatter overlays, and live population timeseries.
-  2. **Demographics & Macro Models View**: Real-time stage distribution histograms, size distributions by sex, and dynamic Schaefer logistic vs. Deriso-Schnute surplus production fits.
-  3. **Process Functions View**: Empirical maturity ogives, fishery retention selectivity, and allometric scaling curves plotted against theoretical baselines.
-- `IBMGuiState`: Reactive container managing simulation state, model stepping, and `GLMakie.Observable` signals.
-- `step_gui_simulation!(state::IBMGuiState, n_steps::Int)`: Advances model state and notifies UI subscribers.
+- `launch_organism_gui(; display_window=true, config_path="")`: Launches the interactive GLMakie dashboards (control & dynamics, demographics & macro models, process functions). A `config_path` naming a readable TOML seeds the initial state from that configuration instead of struct defaults.
+- `launch_organism_gui(config::Dict{Symbol, Any}; display_window=true)`: Variant taking an already-loaded configuration dictionary.
+- `IBMGuiState`: Reactive container managing simulation state, model stepping and `Observables` signals.
+- `step_gui_simulation!(state::IBMGuiState, days::Float64)`: Advances the model and notifies subscribers.
 
 ---
 
 ### 6.10 Backward Compatibility & Domain Aliases
 
-To maintain compatibility with existing analytical scripts while establishing canonical naming:
+Canonical naming, plus the alias surface that remains:
 
 | Exported Symbol | Canonical Target | Category |
 |---|---|---|
-| `Organism` | `Organism` | Type Alias |
 | `stage_size` | `get_stage_size` | Function Alias |
-| `crab_color` | `organism_color` | Visualization Alias |
-| `crab_size` | `organism_size` | Visualization Alias |
-| `crab_marker` | `organism_marker` | Visualization Alias |
-| `crab_heatarray` | `organism_heatarray` | Visualization Alias |
-| `crab_disperse!` | `organism_disperse!` | Dynamic Dispersal Alias |
-| `sample_crab_traits` | `sample_organism_traits` | Phenotypic Trait Alias |
-| `weight_if_adult_female` | `mass_if_adult_female` | Demographic Query Alias |
-| `weight_if_adult_male` | `mass_if_adult_male` | Demographic Query Alias |
-| `weight_if_legal_male` | `mass_if_legal_male` | Demographic Query Alias |
-| `animate_snowcrab_simulation` | `animate_organism_simulation` | Animation Alias |
-| `plot_instar_allometry` | `plot_stage_allometry` | Visualization Alias |
-| `plot_instar_distribution` | `plot_stage_distribution` | Visualization Alias |
-| `FECUNDITY_PRIMIPAROUS_*` | `SpeciesParams` empirical constants | Allometric Invariant |
-| `FECUNDITY_MULTIPAROUS_*` | `SpeciesParams` empirical constants | Allometric Invariant |
-#### IBMParameters
-Top-level configuration structure with 11 modular nested settings:
-- 	oggles::ProcessToggles: Granular biological and operational feature switches.
-- simulation::SimulationParams: Time step $\Delta t$, random seed, initial abundance distributions, calendar duration.
-- environment::EnvironmentParams: Baseline temperature, seasonal amplitude, food replenishment, spatial habitat peaks, carrying capacity.
-- organism::OrganismParams: Metabolic budgets, Kleiber scaling, ecdysis energy thresholds, asymptotic size bounds, stage labels.
-- phenology::PhenologyParams: Molting and mating seasonal calendar windows, thermal brooding duration, spermathecal storage.
-- mortality::MortalityParams: Stage-dependent baseline natural mortality, predation, soft-shell vulnerability, starvation, thermal stress, terminal adult senescence, juvenile cannibalism.
-- ishery::FisheryParams: Minimum legal size threshold ({50}$), fishing season calendar window, daily harvest probability switch.
-- output::OutputParams: Periodic snapshot intervals, CSV results destination, plotting and animation controls.
-- species::SpeciesParams: Species-specific allometry (Hiatt increment, weight-length powers), log-logistic maturity ogives, Sainte-Marie fecundity.
-- leslie::LeslieParams: Generalized Lefkovitch stage-structured projection matrix parameters and multi-year fitting controls.
-- criteria::CriteriaParams: Multi-criteria population viability and fidelity thresholds (persistence, size drift, maturity RMSE, growth RMSE).
+| `is_legal` | `is_legal_male` | Demographic Query Alias |
+| `DEFAULT_FECUNDITY_PRIMIPAROUS_*` | `species.jl` constants | Allometric Invariant |
+| `DEFAULT_FECUNDITY_MULTIPAROUS_*` | `species.jl` constants | Allometric Invariant |
 
----
-
-### 6.2 Snow Crab Species Implementation (`src/species.jl`)
-
-All biological processes, allometric constants, and parameterizations specific to the snow crab (*Chionoecetes*) are centralized within `src/species.jl`.
-
-#### Parameters: `SpeciesParams <: SpeciesParams`
-- **Maturity Ogives**:
-  - `maturity_l50_male::Float64 = 91.8` (mm CW), `maturity_l50_male_sd::Float64 = 1.2`
-  - `maturity_slope_male::Float64 = 6.9957`, `maturity_slope_male_sd::Float64 = 0.25`
-  - `maturity_l50_female::Float64 = 51.6` (mm CW), `maturity_l50_female_sd::Float64 = 0.8`
-  - `maturity_slope_female::Float64 = 12.9812`, `maturity_slope_female_sd::Float64 = 0.40`
-- **Fecundity Allometry**:
-  - `fecundity_parameterization::String = "moncton"` (Sainte-Marie 1993)
-  - `fecundity_primiparous_intercept::Float64 = -0.7229`, `slope = 2.94`, `err = 0.090`
-  - `fecundity_multiparous_intercept::Float64 = 0.0158`, `slope = 2.5811`, `err = 0.145`
-- **Hiatt Growth Increments**:
-  - Male: Intercept $\beta_0 = 0.30153$, slope $\beta_1 = 1.00027$, covariance terms $\beta_2 = -0.00643655$, $\beta_3 = 0.0017492$.
-  - Female: Intercept $\beta_0 = 0.1931$, slope $\beta_1 = 1.0372$, covariance terms $\beta_2 = -0.017376$, $\beta_3 = 0.005068$.
-- **Fishery Selectivity**:
-  - $S_{50} = 95.0$ mm, logistic slope bandwidth $\sigma = 5.0$ mm.
-
-#### Behavioral Dispatch: `SpeciesBehaviorImpl <: SpeciesBehavior`
-```julia
-struct SpeciesBehaviorImpl <: SpeciesBehavior
-    params::SpeciesParams
-end
-SpeciesBehaviorImpl() = SpeciesBehaviorImpl(SpeciesParams())
-default_species_behavior() = SpeciesBehaviorImpl()
-const Organism = Organism
-```
-
-#### Concrete Methods:
-- `stage_size_lower_bound(behavior::SpeciesBehaviorImpl, stage::Real, sex)`: Lower bound of carapace width (mm) across stages 1 to 16.
-- `llbm(stage)`: Convenience shortcut for male lower bound: `stage_size_lower_bound(SpeciesBehaviorImpl(), stage, :male)`.
-- `llbf(stage)`: Convenience shortcut for female lower bound: `stage_size_lower_bound(SpeciesBehaviorImpl(), stage, :female)`.
-- `get_stage_size(behavior::SpeciesBehaviorImpl, stage::Real, sex; type=:mid, rng=...)`: Bounds (`:lb`, `:ub`), midpoint (`:mid`), or stochastic beta-distributed (`:random`) carapace width.
-- `growth_increment(behavior::SpeciesBehaviorImpl, log_size::Real; sex, mat, temp, condition, rng, growth_quantile)`: Evaluates post-molt natural logarithm $\ln(\text{size}_{t+1})$.
-- `predict_postgrowth_size(behavior::SpeciesBehaviorImpl, size::Real; ...)`: Linear post-molt size in millimeters.
-- `growth_schedule(behavior::SpeciesBehaviorImpl)`: Reference `DataFrame` of stage sizes and increments.
-- `maturity(behavior::SpeciesBehaviorImpl, sex, log_size::Real; temp, maturity_quantile, rng, deterministic)`: Log-logistic morphometric maturity probability.
-- `fecundity(behavior::SpeciesBehaviorImpl, size::Real; is_primiparous, method, shell_age, rng, deterministic, fecundity_quantile)`: Brood egg count estimation.
-- `selectivity(behavior::SpeciesBehaviorImpl, size::Real; s50, s50_sigma)`: Logistic gear retention probability.
-- `calculate_mass(behavior::SpeciesBehaviorImpl, size::Real, sex; mat, stochastic, rng)`: Wet body mass (grams) from carapace width (mm).
-- `build_stages(behavior::SpeciesBehaviorImpl; max_male_stage=12, max_female_stage=11)`: Constructs the demographic stage hierarchy.
-- `min_intermolt_days(behavior::SpeciesBehaviorImpl, stage::Int)`: Minimum chronological days required between molts.
-- `required_degree_days(behavior::SpeciesBehaviorImpl, stage::Int)`: Thermal degree-days required before ecdysis.
-- `perform_development!(behavior::SpeciesBehaviorImpl, org::Organism, model)`: Advances physiological development and molting.
-- `perform_reproduction!(behavior::SpeciesBehaviorImpl, org::Organism, model)`: Executes seasonal copulation, spermathecal storage, brood extrusion, and hatching.
-
----
-
-### 6.3 Individual State Queries & Predicates (`src/types.jl`)
-
-High-performance inline predicates for demographic filtering:
-- `is_adult(org::Organism)`: True if individual has undergone terminal morphometric molt (`org.is_mature`).
-- `is_adult_male(org::Organism)`: True if male and mature.
-- `is_adult_female(org::Organism)`: True if female and mature.
-- `is_ovigerous(org::Organism)`: True if carrying an extruded clutch (`org.egg_count > 0`).
-- `is_legal_male(org::Organism; legal_size=95.0)`: True if male and `size >= legal_size`.
-- `is_legal(org::Organism; legal_size=95.0)`: Alias for `is_legal_male`.
-- `mass_if_adult_female(org::Organism)`: Returns `org.mass` if adult female, otherwise `0.0`.
-- `mass_if_adult_male(org::Organism)`: Returns `org.mass` if adult male, otherwise `0.0`.
-- `mass_if_legal_male(org::Organism; legal_size=95.0)`: Returns `org.mass` if legal male, otherwise `0.0`.
-- `weight_if_*`: Backwards-compatible aliases for `mass_if_*`.
-
----
-
-### 6.4 Organism Dynamics & Bioenergetics (`src/organism_dynamics.jl`)
-
-- `calculate_energy_change(temp::Real, food::Real, size::Real; params=IBMParameters(), mass=nothing)`:
-  Evaluates net energy assimilation $\frac{dE}{dt}$ and actual forage intake $I_{\text{actual}}$ via Kleiber metabolic scaling ($W^{0.75}$) and Holling Type II functional response.
-- `calculate_energy_change(org::Organism, temp::Real, food::Real; params=IBMParameters())`:
-  Agent-level method wrapping the above.
-- `molt_probability(org::Organism, current_temp::Real, current_time::Real=0.0; params=IBMParameters())`:
-  Computes daily probability of undergoing ecdysis based on intermolt days, degree-days, energy reserves, and temperature.
-- `check_molt_conditions(org::Organism, current_temp::Real, current_time::Real=0.0; params=IBMParameters(), rng=Random.default_rng())`:
-  Evaluates boolean criteria for ecdysis.
-- `perform_molt!(org::Organism, current_time::Real, current_temp::Real; params=IBMParameters(), rng=Random.default_rng())`:
-  Executes ecdysis, advances stage, evaluates maturity transition, updates size and mass via Hiatt models, and resets degree-days.
-- `calculate_mortality_probability(org::Organism, current_temp::Real, local_density::Real, current_time::Real=0.0; params=IBMParameters())`:
-  Computes aggregate daily mortality hazard combining baseline natural mortality, senescence, thermal stress, and density-dependent competition.
-- `shell_condition(days_since_molt::Real)`:
-  Translates days post-ecdysis into standard fishery shell condition categories (1: soft, 2: new hard, 3: intermediate, 4: old, 5: very old).
-- `step_aggregate_groups!(model; behavior=model.species_behavior)`:
-  Advances pre-individuation aggregate cohorts (stages 0 to 5) through survival, growth, and stage graduation into spatial agents at stage 6.
-- `organism_disperse!(org::Organism, model; rng=abmrng(model))`:
-  Executes spatial movement governed by thermal and forage habitat taxis.
-- `crab_disperse!(args...; kwargs...)`: Alias for `organism_disperse!`.
-
----
-
-### 6.5 Simulation Engine (`src/simulation.jl`)
-
-- `default_ibm_configuration()`:
-  Returns complete baseline configuration `Dict{Symbol, Any}` encompassing spatial grid geometry, runtime duration, environmental forcings, bioenergetics, life-history phenology, fishery dynamics, process toggles, and output handling.
-- `load_ibm_configuration(filepath::String)`:
-  Reads simulation configuration from a structured TOML file.
-- `save_ibm_configuration(config::AbstractDict, filepath::String)`:
-  Serializes configuration dictionary to TOML format.
-- `initialize_model(; N_agents=100, dims=(50, 50), temp_map=nothing, food_map=nothing, dt_days=1.0, params=IBMParameters(), behavior=default_species_behavior(), rng_seed=nothing)`:
-  Constructs and seeds an `Agents.StandardABM` spatial simulation model.
-- `initialize_model(config_filepath::String; kwargs...)`:
-  Initializes model from a TOML configuration file with keyword overrides.
-- `initialize_model(config::AbstractDict; kwargs...)`:
-  Initializes model from a configuration dictionary with keyword overrides.
-- `agent_step!(org::Organism, model)`:
-  Advances an individual agent through one time step (energetics, degree-days, molting, mortality, harvest, dispersal, reproduction).
-- `model_step!(model)`:
-  Advances global environment fields (temperature seasonality, food replenishment), steps aggregate cohorts, and updates demographic caches.
-- `run_simulation(model::StandardABM, total_days::Real; agent_collect=[], model_collect=[])`:
-  Executes the simulation across `total_days` and collects agent- and model-level time-series `DataFrames`.
-- ABM Utility Accessors:
-  - `nagents(model)`: Total active spatial agents.
-  - `allagents(model)`: Iterator over all agents.
-  - `abmrng(model)`: Model random number generator.
-  - `safe_mean(x)`: Mean calculation returning `0.0` for empty collections.
-
----
-
-### 6.6 Empirical Biology, Surveys, & Demographics (`src/analysis.jl`)
-
-- `gaussian_kde(data::AbstractVector{<:Real}; eval_points=nothing, bandwidth=nothing)`:
-  1D Gaussian kernel density estimation.
-- `derive_stage_proportions_kde(sizes::AbstractVector{<:Real}, sexes::AbstractVector; stages=build_stages())`:
-  Discretizes empirical size distributions into stage proportions.
-- `generate_mock_survey_data(; n_samples=500, rng=Random.default_rng(), behavior=default_species_behavior())`:
-  Synthesizes research survey catch records across size, sex, maturity, shell condition, and fecundity.
-- `fit_empirical_biology_model(data::DataFrame)`:
-  Calibrates allometric exponents, maturity ogives, and phenotypic covariance matrices from survey data.
-- `estimate_demographics(model::EmpiricalBiologicalModel; size::Real, sex, temp=nothing, shell_age=1.0, rng=Random.default_rng())`:
-  Predicts mass, maturity probability, and fecundity for an individual crab.
-- `sample_organism_traits(model::EmpiricalBiologicalModel; rng=Random.default_rng())`:
-  Samples correlated individual phenotypic trait quantiles.
-- `sample_crab_traits(args...; kwargs...)`: Alias for `sample_organism_traits`.
-- `summarize_empirical_model(model::EmpiricalBiologicalModel; io=stdout)`:
-  Prints formatted ASCII parameter summary.
-- `compute_empirical_ogive(sizes::AbstractVector{<:Real}, mature_flags::AbstractVector{<:Integer}; n_bins::Int=15)`:
-  Computes binned proportions mature for empirical ogive fitting.
-- `summarize_population(agent_df::DataFrame; frequency_days=365.0)`:
-  Aggregates simulation results into annual demographic summaries.
-
----
-
-### 6.7 Macro-Ecological Models & Stock Assessment (`src/analysis.jl`)
-
-- `extract_stock_recruitment(agent_df::DataFrame, model_df::DataFrame; lag_years::Int=4, frequency_days=365.0)`:
-  Computes annual spawner biomass and lagged recruitment pairs.
-- `fit_stock_recruitment(spawners::AbstractVector{<:Real}, recruits::AbstractVector{<:Real}; model_type::Symbol=:beverton_holt)`:
-  Fits Beverton-Holt ($R = \frac{\alpha S}{1 + \beta S}$) or Ricker ($R = \alpha S e^{-\beta S}$) models.
-- `summarize_stock_recruitment(fit::NamedTuple; io=stdout)`:
-  Prints formatted stock-recruitment parameters ($R^2$, $\alpha$, $\beta$, $S_{\text{max}}$).
-- `extract_annual_production(agent_df::DataFrame, model_df::DataFrame; frequency_days=365.0)`:
-  Extracts annual timeseries of legal biomass, survey biomass, catches, and egg production.
-- `fit_schaefer(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; dt=1.0)`:
-  Fits Schaefer continuous surplus production model: $\frac{dB}{dt} = r B (1 - B/K) - C$.
-- `fit_delay_difference(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; w_recruit=0.25, alpha=0.30, rho=0.85)`:
-  Fits Deriso-Schnute delay-difference model.
-- `fit_population_dynamics(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; model_type::Symbol=:schaefer, kwargs...)`:
-  Unified dispatch wrapper for biomass dynamic models.
-- `summarize_population_dynamics(fit::NamedTuple; io=stdout)`:
-  Prints parameter estimates and diagnostics ($r$, $K$, MSY, $B_{\text{MSY}}$, RMSE, $R^2$).
-- `mohn_rho(retrospective_trajectories::Vector{<:AbstractVector{<:Real}})`:
-  Calculates Mohn's $\rho$ metric quantifying retrospective assessment bias:
-  $$\rho = \frac{1}{P} \sum_{p=1}^P \frac{B_{T-p}^{(-p)} - B_{T-p}^{(0)}}{B_{T-p}^{(0)}}$$
-- `retrospective_analysis(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}; n_peels::Int=5, model_type::Symbol=:schaefer, kwargs...)`:
-  Executes retrospective peels and evaluates assessment stability.
-- `summarize_retrospective(retro_res::NamedTuple; io=stdout)`:
-  Prints retrospective peeling table and Mohn's $\rho$.
-- `extract_annual_stage_matrix(agent_df::DataFrame; stages=build_stages(), frequency_days=365.0)`:
-  Constructs annual abundance matrix $\mathbf{N}_{t,s}$ across discrete life-history stages.
-- `fit_generalized_leslie_model(stage_matrix::AbstractMatrix{<:Real}, catch_matrix::AbstractMatrix{<:Real}; stages=build_stages(), years=Int[])`:
-  Calibrates stage-transition projection matrix $\mathbf{A}$, dominant eigenvalue $\lambda$, damping ratio, reproductive values, and elasticity matrix.
-- `summarize_leslie_model(fit::LeslieMatrixFit; io=stdout)`:
-  Prints formatted Leslie demographic diagnostics ($\lambda$, $r$, damping ratio).
-- `compare_macro_models(biomass_obs::AbstractVector{<:Real}, catches::AbstractVector{<:Real}, leslie_fit::LeslieMatrixFit; stages=build_stages(), years=Int[])`:
-  Constructs comparative evaluation (`MacroModelComparison`) across Schaefer, Delay-Difference, and Leslie formulations.
-- `summarize_macro_comparison(comp::MacroModelComparison; io=stdout)`:
-  Prints comparative table of $R^2$, RMSE, and AIC across macro models.
-- `evaluate_population_criteria(model::StandardABM, agent_df::DataFrame; min_biomass_threshold=100.0, target_sex_ratio=0.50)`:
-  Evaluates population viability and harvest sustainability criteria.
-- `save_simulation_results(agent_df::DataFrame, model_df::DataFrame, output_dir::String="outputs"; prefix="simulation")`:
-  Saves simulation outputs to CSV format.
-- `load_simulation_results(output_dir::String="outputs"; prefix="simulation")`:
-  Loads simulation outputs from CSV files.
-- `write_dataframe_csv(df::DataFrame, filepath::String)` / `read_dataframe_csv(filepath::String)`:
-  CSV I/O helpers.
-
----
-
-### 6.8 Visualization & Animation (`src/visualization.jl`)
-
-- `plot_population_timeseries(model_df::DataFrame)`:
-  Multi-panel plot of total abundance, mature biomass, recruit counts, and catches over time.
-- `plot_stage_distribution(model::StandardABM)`:
-  Histogram of organism stages partitioned by sex.
-- `plot_instar_distribution`: Backwards-compatible alias for `plot_stage_distribution`.
-- `plot_size_by_sex(model::StandardABM)`:
-  Kernel density and histogram of carapace sizes across sexes.
-- `plot_stage_allometry(model::StandardABM)`:
-  Carapace size vs. stage compared against theoretical empirical lower and upper bounds.
-- `plot_instar_allometry`: Backwards-compatible alias for `plot_stage_allometry`.
-- `plot_maturity_ogives(model::StandardABM)`:
-  Empirical maturity proportions vs. size compared with theoretical logistic ogives.
-- `plot_reproduction_dynamics(agent_df::DataFrame, model_df::DataFrame)`:
-  Egg counts, ovigerous female abundance, and larval production over time.
-- `plot_spatial_habitat(model::StandardABM)`:
-  2D heatmap of bottom temperature overlaid with agent spatial positions.
-- `plot_simulation_dashboard(model::StandardABM, agent_df::DataFrame; model_df=DataFrame())`:
-  Executive 6-panel summary dashboard visualizing timeseries, stage composition, spatial positions, and maturity.
-- `plot_stock_recruitment(sr_df::DataFrame, fit::NamedTuple)`:
-  Fitted stock-recruitment curve overlaid on empirical annual points.
-- `plot_population_dynamics_fits(comp::MacroModelComparison)`:
-  Observed survey biomass trajectories compared against Schaefer, Delay-Difference, and Leslie predictions.
-- `plot_macro_model_comparison`: Alias for `plot_population_dynamics_fits`.
-- `plot_retrospective_analysis(retro_res::NamedTuple)`:
-  Retrospective biomass peel trajectories with Mohn's $\rho$ annotation.
-- `plot_stage_specific_dynamics(leslie_fit::LeslieMatrixFit)`:
-  Stable stage distribution, reproductive values, and elasticity matrix heatmap.
-- `plot_functional_relationships(behavior::SpeciesBehavior=default_species_behavior())`:
-  Diagnostic panels showing growth increments, maturity ogives, mass allometry, and fecundity relationships.
-- `export_all_plots(model::StandardABM, agent_df::DataFrame, model_df::DataFrame, output_dir::String="outputs")`:
-  Generates and exports all diagnostic figures to disk as PNG files.
-- `organism_color(org::Organism)`: Color mapper based on sex and maturity status.
-- `organism_size(org::Organism)`: Marker size scaling proportional to carapace width.
-- `organism_marker(org::Organism)`: Shape mapper (`:circle` for female, `:square` for male).
-- `organism_heatarray(model::StandardABM)`: Spatial temperature or food grid matrix extractor.
-- `crab_color`, `crab_size`, `crab_marker`, `crab_heatarray`: Domain aliases.
-- `plot_abm_summary(model::StandardABM; heat_field="temperature", output_path="outputs/abm_spatial_summary.png")`:
-  High-resolution spatial summary rendering using CairoMakie.
-- `animate_organism_simulation(model::StandardABM; filepath="organism_animation.mp4", frames=120, dt=2, framerate=15, field_name="temperature")`:
-  Renders `.mp4` video recording spatial agent movement and environmental dynamics.
-- `animate_snowcrab_simulation`: Backwards-compatible alias for `animate_organism_simulation`.
-
----
-
-### 6.9 Interactive GUI Dashboard (`src/gui.jl`)
-
-- `launch_organism_gui(model=nothing; figure_size=(1600, 1000), target_fps=30)`:
-  Launches interactive multi-panel GUI window (`GLMakie.Screen`) featuring three interlinked dashboards:
-  1. **Control & Dynamics View**: Parameter steering sliders, temperature amplitude, fishing mortality, benthic carrying capacity, real-time spatial heatmaps with animated particle scatter overlays, and live population timeseries.
-  2. **Demographics & Macro Models View**: Real-time stage distribution histograms, size distributions by sex, and dynamic Schaefer logistic vs. Deriso-Schnute surplus production fits.
-  3. **Process Functions View**: Empirical maturity ogives, fishery retention selectivity, and allometric scaling curves plotted against theoretical baselines.
-- `IBMGuiState`: Reactive container managing simulation state, model stepping, and `GLMakie.Observable` signals.
-- `step_gui_simulation!(state::IBMGuiState, n_steps::Int)`: Advances model state and notifies UI subscribers.
-
----
-
-### 6.10 Backward Compatibility & Domain Aliases
-
-To maintain compatibility with existing analytical scripts while establishing canonical naming:
-
-| Exported Symbol | Canonical Target | Category |
-|---|---|---|
-| `Organism` | `Organism` | Type Alias |
-| `stage_size` | `get_stage_size` | Function Alias |
-| `crab_color` | `organism_color` | Visualization Alias |
-| `crab_size` | `organism_size` | Visualization Alias |
-| `crab_marker` | `organism_marker` | Visualization Alias |
-| `crab_heatarray` | `organism_heatarray` | Visualization Alias |
-| `crab_disperse!` | `organism_disperse!` | Dynamic Dispersal Alias |
-| `sample_crab_traits` | `sample_organism_traits` | Phenotypic Trait Alias |
-| `weight_if_adult_female` | `mass_if_adult_female` | Demographic Query Alias |
-| `weight_if_adult_male` | `mass_if_adult_male` | Demographic Query Alias |
-| `weight_if_legal_male` | `mass_if_legal_male` | Demographic Query Alias |
-| `animate_snowcrab_simulation` | `animate_organism_simulation` | Animation Alias |
-| `plot_instar_allometry` | `plot_stage_allometry` | Visualization Alias |
-| `plot_instar_distribution` | `plot_stage_distribution` | Visualization Alias |
-| `FECUNDITY_PRIMIPAROUS_*` | `SpeciesParams` empirical constants | Allometric Invariant |
-| `FECUNDITY_MULTIPAROUS_*` | `SpeciesParams` empirical constants | Allometric Invariant |
-
+The older alias names are gone: the `crab_*` visualization and dispersal aliases, the `weight_if_*` / `mass_if_adult_*` demographic aliases, the `plot_instar_*` plot names, `animate_snowcrab_simulation!` and `sample_crab_traits` no longer exist. The canonical `organism_*`, `mass_if_*`, `plot_stage_*` and `animate_organism_simulation` forms above are the API.
 
 ---
 
@@ -1019,14 +680,14 @@ The simulation architecture enforces strict structural consistency across develo
 | | `days_per_year` | `365.0` | Calendar normalization constant for rates and annual modulos. | `simulation.jl`, `organism_dynamics.jl`, `analysis.jl` |
 | | `temp_seasonal_phase_day`| `80.0` | Day-of-year offset for annual temperature sinusoidal peak. | `simulation.jl` |
 | | `initial_aggregate_cohort` | `[0, 2000, 0, ...]`| Initial cohort abundance distribution. Element 2 (stage 1) holds 2000 larvae. | `simulation.jl` |
-| | `initial_female/male_cohort`| `fill(0.0, 12)` | Initial abundance of post-individuation adults by stage. | `simulation.jl` |
+| | `initial_female/male_cohort`| `fill(0.0, 20)` | Initial abundance of post-individuation cohorts by sex (element `i` is stage `i-1`); both shipped empty, so day-one individuals come solely from the aggregate cohort. | `simulation.jl` |
 | | `initial_cohort_days_per_stage`| `90.0` | Base age scaling (days) for seeded aggregate cohorts. | `simulation.jl` |
 | | `initial_age_days_per_stage`| `180.0` | Base age scaling (days) for seeded post-individuation individuals. | `simulation.jl` |
 | | `initial_age_first_stage`| `3.0` | Stage offset for initial age assignment. | `simulation.jl` |
 | | `initial_age_jitter_days`| `90.0` | Uniform random jitter applied to seeded individual age. | `simulation.jl` |
 | | `initial_degree_days_min/max`| `50.0`, `300.0`| Range of pre-ecdysial degree-days assigned to seeded agents. | `simulation.jl` |
-| **`[environment]`** | `temp_base` | `5.0` | Baseline bottom temperature (°C). | `simulation.jl` |
-| | `temp_amplitude` | `4.0` | Amplitude of seasonal thermal oscillations (°C). | `simulation.jl` |
+| **`[environment]`** | `temp_offset` | `0.0` | Additive temperature control: bottom-water mean in synthetic mode, anomaly on top of the hydrographic mean in GeoData mode (°C). Legacy `temp_base` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
+| | `temp_multiplier` | `1.0` | Multiplicative temperature control: seasonal oscillation amplitude in synthetic mode; scales GeoData anomalies. Legacy `temp_amplitude` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
 | | `temp_noise_sd` | `0.5` | Spatial standard deviation of environmental temperature noise. | `simulation.jl` |
 | | `temp_base_degreedays` | `-1.5` | Threshold temperature $T_0$ (°C) below which degree-days do not accrue. | `organism_dynamics.jl`, `simulation.jl` |
 | | `food_max` | `10.0` | Carrying capacity ceiling on local benthic food density. | `simulation.jl` |
@@ -1036,15 +697,23 @@ The simulation architecture enforces strict structural consistency across develo
 | | `half_saturation_food` | `2.0` | Forage concentration where intake is at 50% saturation. | `organism_dynamics.jl`, `simulation.jl` |
 | | `assimilation_efficiency`| `0.75` | Gross energetic assimilation fraction from ingested food. | `organism_dynamics.jl` |
 | | `habitat_quality_mean/sd`| `0.5`, `0.1` | Gaussian background parameters for habitat suitability index (HSI). | `simulation.jl` |
-| | `habitat_peaks` | `3` | Number of coherent spatial Gaussian habitat hotspots. | `simulation.jl` |
-| | `habitat_peak_height` | `0.3` | HSI elevation added at the center of each Gaussian hotspot. | `simulation.jl` |
-| | `habitat_peak_width_fraction`| `0.15` | Spatial width ($\sigma$) of hotspots relative to grid dimension. | `simulation.jl` |
+| | `habitat_offset` | `0.0` | Additive habitat control: spatial-noise mean in synthetic mode (falling back to `habitat_quality_mean` when 0.0), added after scaling in GeoData mode. | `simulation.jl`, `gui.jl` |
+| | `habitat_multiplier` | `1.0` | Multiplicative habitat control: scales the synthetic noise SD or the GeoData HSI field before the offset is applied. | `simulation.jl`, `gui.jl` |
 | | `habitat_temperature_optimum`| `2.5` | Preferred temperature for spatial dispersal taxis (°C). | `simulation.jl` |
 | | `habitat_temperature_sigma`| `1.5` | Width of thermal preference curve for dispersal. | `simulation.jl` |
 | | `habitat_food_weight` | `0.5` | Relative weighting of local food availability vs temperature in taxis. | `simulation.jl` |
 | | `movement_softmax_temperature`| `0.5` | Softmax temperature regulating heading stochasticity. | `simulation.jl` |
 | | `settlement_dispersal_radius`| `2` | Cell radius for recruit settlement around parental/cohort position. | `organism_dynamics.jl` |
 | | `settlement_size_log_sd` | `0.04` | Log-normal standard deviation in carapace size at recruitment. | `organism_dynamics.jl` |
+| | `use_geodata` | `false` | Switches the run from the synthetic climatology to assimilated GeoData environmental fields. | `simulation.jl` |
+| | `domain_lon`, `domain_lat` | `[-65.0, -63.0]`, `[43.0, 45.0]` | Longitude and latitude extents (°) of the GeoData extraction domain. | `simulation.jl` |
+| | `time_range` | `["1993-01-01", "1993-12-31"]` | Calendar range of the GeoData extraction. | `simulation.jl` |
+| | `pelagic_depth` | `15.0` | Depth (m) defining the pelagic (larval) environmental layer. | `simulation.jl` |
+| | `temperature_source` | `"woa23"` | GeoData hydrography product for the bottom and surface temperature fields. | `simulation.jl` |
+| | `temperature_month` | `0` | Month selector for the hydrography extract. | `simulation.jl` |
+| | `bathymetry_source` | `"etopo2022"` | GeoData bathymetry product. | `simulation.jl` |
+| | `geodata_input_dir` | `"inputs"` | Run-local cache directory for downloaded GeoData inputs. | `simulation.jl` |
+| | `geodata_store_dir` | `"../lakehouse/GeoIBM"` | Shared environmental store written by `assimilate_environmental_inputs`; an empty string falls back to `geodata_input_dir`. | `simulation.jl`, `assimilation.jl` |
 | **`[organism]`** | `max_stage_male/female` | `19`, `16` | Terminal developmental stage ceilings (instar 16 and 13 + 3 pelagic). | `types.jl`, `organism_dynamics.jl`, `simulation.jl` |
 | | `stage_labels` | Vector | Consistent plot and axis labels across the full life cycle. | `types.jl`, `gui.jl`, `visualization.jl` |
 | | `metabolic_rate_base` | `0.01` | Basal metabolic scaling coefficient. | `organism_dynamics.jl` |
@@ -1132,6 +801,7 @@ The simulation architecture enforces strict structural consistency across develo
 | | `leslie_legal_size_male` | `95.0` | Minimum legal size threshold in Leslie projection. | `species.jl` |
 | | `recruitment_stage` | `13` | Biological recruitment stage entering the delay-difference model. | `species.jl`, `analysis.jl` |
 | **`[fishery]`** | `legal_size_male` | `95.0` | Commercial legal carapace width threshold (mm). | `types.jl`, `simulation.jl` |
+| | `no_take_proportion` | `0.0` | Fraction of the grid's cells partitioned into a no-take zone that the fishery does not harvest. | `simulation.jl` |
 | | `fishing_probability_daily`| `0.0` | Daily capture probability per legal male; master fishery switch. | `types.jl`, `simulation.jl` |
 | | `fishing_season_start/end`| `90.0`, `150.0` | Day-of-year window when the fishery is actively harvesting. | `types.jl`, `simulation.jl` |
 | **`[output]`** | `save`, `save_file` | `true`, `"simulation_results.csv"` | Annual CSV indicator persistence controls. | `simulation.jl`, `cli.jl` |
@@ -1159,6 +829,17 @@ The simulation architecture enforces strict structural consistency across develo
 ---
 
 ## 8. Deep Logic, Consistency and Correctness Check (2026-10)
+
+> **Status (2026-10-23):** every finding below has been addressed in `src/`, `configs/`
+> and the documentation, and the fixes are covered by the test suite's current
+> baseline. This section is kept as the dated audit record. The resolution of each
+> finding, the re-audit results, and corrections to three of the audit's own claims —
+> M8 (the damping-ratio row had the standard convention backwards: the code's
+> ρ = λ₁/|λ₂| ≥ 1 is the textbook Caswell 2001 §9.1 definition, "larger is faster"),
+> M2 (the denominator is benthic-only and the per-cell rounding is intentional) and
+> M12 (stage-column parity holds on the empty-results path) — are recorded in
+> **[`docs/deep_check_2026-10.md`](deep_check_2026-10.md)** §10 and the 2026-10-23
+> addendum in §11.
 
 A full audit of `src/`, `configs/` and `test/` was carried out on 2026-10-22:
 every module was read in full, cross-module call graphs were traced, the
@@ -1194,7 +875,7 @@ layer.
 | M5 | `src/organism_dynamics.jl:674-690`, `src/simulation.jl:1096` | `current_day_of_year`'s documented fallback is unreachable — `:day_of_year` is always present — so the GUI-tick path reads a stale calendar. |
 | M6 | `src/simulation.jl:962-966` | The seed actually used is never written to `params.simulation.seed`. |
 | M7 | `src/analysis.jl:1509,1563` | `optimize_blocks` lacks the "every trial was penalised" guard that `optimize_model` has, so a wholly diverging Leslie fit is reported as a successful one. |
-| M8 | `src/analysis.jl:2700-2703` | The Leslie damping ratio is inverted: λ₁/\|λ₂\| instead of \|λ₂\|/λ₁ (Caswell 2001, §9.1). |
+| M8 | `src/analysis.jl:2700-2703` | The Leslie damping ratio is inverted: λ₁/\|λ₂\| instead of \|λ₂\|/λ₁ (Caswell 2001, §9.1). *(Row corrected 2026-10-23: the code's λ₁/\|λ₂\| ≥ 1 **is** the standard §9.1 damping ratio — larger means faster convergence — and this finding was a mis-statement of the convention; see [`deep_check_2026-10.md`](deep_check_2026-10.md) §11.)* |
 | M9 | `src/analysis.jl:3574-3575`, `:3933-3937` | The calibrated maturity curve applies the temperature response twice (fitted logit term *and* an L50 shift), and the reported (L50, slope) is not the fitted curve. |
 | M10 | `src/analysis.jl:3759-3761`, `:3929` | The maturity fallback stores a mm/°C quantity in a dimensionless logit-coefficient slot. |
 | M11 | `src/analysis.jl:687-712` | The Ricker and Beverton-Holt predictors stop reproducing the fitted line when the slope is non-positive, so R²/AIC/`best_model` are computed on a curve that was not fitted. |

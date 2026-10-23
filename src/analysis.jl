@@ -954,10 +954,23 @@ const ANNUAL_PRODUCTION_SCHEMA = (
 
 Zero-row `DataFrame` carrying the full annual production schema.
 """
-function empty_annual_production()
-    return DataFrame(
+function empty_annual_production(agent_df = nothing)
+    df = DataFrame(
         [name => Vector{T}() for (name, T) in ANNUAL_PRODUCTION_SCHEMA]
     )
+    # Keep the empty path schema-identical to the populated one, including the
+    # dynamically propagated per-stage columns, so a short run returns the same
+    # columns as a long one (M12).
+    if agent_df !== nothing
+        for st in 0:30
+            src_col = Symbol("count_stage_$(st)")
+            dst_col = Symbol("stage_$(st + 1)")
+            if src_col in propertynames(agent_df)
+                df[!, dst_col] = Float64[]
+            end
+        end
+    end
+    return df
 end
 
 """
@@ -1068,7 +1081,7 @@ function extract_annual_production(
     n_samples = length(t_targets)
 
     if n_samples < 1
-        return empty_annual_production()
+        return empty_annual_production(agent_df)
     end
 
     num_col = if :length_stage in propertynames(agent_df)
@@ -2741,10 +2754,17 @@ function fit_generalized_leslie_model(
     ref_v = max(v_raw[1], 1.0e-6)
     reproductive_vals = v_raw ./ ref_v
 
-    # Damping Ratio: lambda_1 / |lambda_2|
+    # Damping Ratio: the recovery rate λ₁ / |λ₂| — how much faster the dominant
+    # mode decays relative to the second. By dominance of λ₁ it is >= 1; when no
+    # rival mode exists the dominant mode alone settles the perturbation, which
+    # is the limit, not zero damping.
     sorted_moduli = sort(moduli, rev = true)
     lambda_2 = (length(sorted_moduli) >= 2) ? sorted_moduli[2] : 0.0
-    damping_ratio = (lambda_2 > 1.0e-6) ? (lambda_2 / lambda_1) : 0.0
+    damping_ratio = if lambda_2 > 1.0e-6
+        lambda_1 / lambda_2
+    else
+        Inf
+    end
 
     # Elasticity Matrix
     v_dot_w = dot(reproductive_vals, stable_stage_dist)
