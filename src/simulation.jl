@@ -677,18 +677,18 @@ end
     )
 
 Construct bathymetry, bottom temperature, and habitat suitability index (HSI)
-fields using real physical datasets accessed through `GeoData`.
+fields using real physical datasets accessed through `Tethys`.
 
 # Mathematical and Analytical Workflow
 1. Spatial coordinate mesh:
    Discretizes the spatial domain `(domain_lon, domain_lat)` into regular `nx` by `ny`
    geographic coordinates.
 2. Seabed Bathymetry:
-   If `depth_map` is not provided, loads bathymetric datasets via `GeoData.geoload`
-   and builds continuous interpolator `GeoData.get_bathymetry_interpolator`.
+   If `depth_map` is not provided, loads bathymetric datasets via `Tethys.geoload`
+   and builds continuous interpolator `Tethys.get_bathymetry_interpolator`.
    Depth is extracted as `max(0.0, -elevation)`.
 3. Seabed Bottom Temperature:
-   Queries climatological hydrography via `GeoData.geoload`
+   Queries climatological hydrography via `Tethys.geoload`
    (e.g., from Zarr or NetCDF) and samples temperature at seabed depth `z`.
 4. Habitat Suitability Index (HSI):
    Evaluates `calculate_habitat_suitability(temperature, depth)` across the grid.
@@ -727,35 +727,36 @@ function build_geodata_environmental_fields(
         abs.(Float64.(copy(depth_map)))
     else
         # Search candidate paths in the designated store or central lakehouse
-        store_bathy = joinpath(GeoIBM.environmental_store_dir(env_params), "bathymetry.zarr")
+        store_bathy = joinpath(TethysBio.environmental_store_dir(env_params), "bathymetry.zarr")
         is_nwa = occursin("nwa", lowercase(env_params.bathymetry_source))
         candidate_paths = [
             store_bathy,
-            GeoData.lakehouse_dir("GeoData", "bathymetry", "nwa_bathymetry.nc"),
-            GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc"),
-            GeoData.lakehouse_dir("GeoData", "nwa", "bathymetry.zarr")
+            Tethys.lakehouse_dir("Tethys", "bathymetry", "nwa_bathymetry.nc"),
+            Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs", "bathymetry_active.nc"),
+            Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc"),
+            Tethys.lakehouse_dir("Tethys", "nwa", "bathymetry.zarr")
         ]
         found_idx = findfirst(p -> ispath(p), candidate_paths)
         bathy_ds = if found_idx !== nothing
             candidate_file = candidate_paths[found_idx]
             occursin(".nc", candidate_file) ?
-                GeoData.geoload(candidate_file; backend = :ncdatasets) :
-                GeoData.geoload(candidate_file)
+                Tethys.geoload(candidate_file; backend = :ncdatasets) :
+                Tethys.geoload(candidate_file)
         elseif is_nwa
             # Direct lakehouse fetch/load for nwa_bathymetry
-            GeoData.geoget(
+            Tethys.geoget(
                 "nwa_bathymetry";
-                cache_dir = GeoIBM.environmental_store_dir(env_params),
+                cache_dir = TethysBio.environmental_store_dir(env_params),
                 bounds = (lon_range, lat_range)
             )
         else
-            GeoData.geoget(
+            Tethys.geoget(
                 "erddap://ETOPO_2022_v1_15s";
-                cache_dir = GeoIBM.environmental_store_dir(env_params),
+                cache_dir = TethysBio.environmental_store_dir(env_params),
                 bounds = (lon_range, lat_range)
             )
         end
-        bathy_itp = GeoData.get_bathymetry_interpolator(bathy_ds)
+        bathy_itp = Tethys.get_bathymetry_interpolator(bathy_ds)
         d_mat = zeros(Float64, nx, ny)
         for j in 1:ny, i in 1:nx
             val = bathy_itp(lons[i], lats[j])
@@ -766,27 +767,31 @@ function build_geodata_environmental_fields(
 
     # 2. Bottom and upper water column (pelagic) temperature from hydrography
     pelagic_z = -abs(Float64(env_params.pelagic_depth))
-    store_dir = GeoIBM.environmental_store_dir(env_params)
+    store_dir = TethysBio.environmental_store_dir(env_params)
 
     # Locate hydrographic store (Zarr or NetCDF) in store_dir or lakehouse
     hydro_candidates = [
         joinpath(store_dir, "boundary_$(env_params.temperature_source).zarr"),
-        GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+        Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs",
                               "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
-        GeoData.lakehouse_dir("GeoData", "glorys",
+        Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+                              "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
+        Tethys.lakehouse_dir("Tethys", "glorys",
+                                  "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc"),
+        Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs",
                               "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc"),
-        GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+        Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
                               "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc")
     ]
     h_idx = findfirst(p -> ispath(p), hydro_candidates)
     hydro_ds = if h_idx !== nothing
         hydro_path = hydro_candidates[h_idx]
         occursin(".nc", hydro_path) ?
-            GeoData.geoload(hydro_path; backend = :ncdatasets) :
-            GeoData.geoload(hydro_path)
+            Tethys.geoload(hydro_path; backend = :ncdatasets) :
+            Tethys.geoload(hydro_path)
     else
         scheme = Symbol(env_params.temperature_source) === :woa23 ? "woa23://" : "copernicus://"
-        GeoData.geoget(
+        Tethys.geoget(
             scheme;
             cache_dir = store_dir,
             bounds = (lon_range, lat_range),
@@ -794,9 +799,9 @@ function build_geodata_environmental_fields(
         )
     end
 
-    h_lons_raw, _ = GeoData.axis(hydro_ds, :lon)
-    h_lats_raw, _ = GeoData.axis(hydro_ds, :lat)
-    h_deps_raw, _ = GeoData.axis(hydro_ds, :depth)
+    h_lons_raw, _ = Tethys.axis(hydro_ds, :lon)
+    h_lats_raw, _ = Tethys.axis(hydro_ds, :lat)
+    h_deps_raw, _ = Tethys.axis(hydro_ds, :depth)
 
     # Reconcile depth coordinate to negative-up if positive-down
     z_coords = if !isempty(h_deps_raw) && minimum(h_deps_raw) > -0.5 * maximum(abs, h_deps_raw)

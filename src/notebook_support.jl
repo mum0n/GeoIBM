@@ -1,7 +1,7 @@
 """
     src/notebook_support.jl
 
-Modular helper and rendering functions for Pluto.jl notebooks (e.g. `GeoIBMNotes.jl`)
+Modular helper and rendering functions for Pluto.jl notebooks (e.g. `TethysBioNotes.jl`)
 and interactive dashboard components.
 
 Provides:
@@ -26,7 +26,8 @@ using CairoMakie
 using DataFrames
 using Agents
 using Statistics
-using GeoData
+using Tethys
+const Tethys = Tethys
 using Interpolations
 
 
@@ -134,8 +135,8 @@ function updateCoordinates(lon, lat, dispatch = true, updateMarker = true) {
   }
   
   // When location changes, immediately pause the running simulation, update to new location and wait
-  if (dispatch && window._geoibm_state) {
-    let gs = window._geoibm_state;
+  if (dispatch && window._TethysBio_state) {
+    let gs = window._TethysBio_state;
     if (typeof gs.pauseSimulation === 'function') {
       gs.pauseSimulation();
     } else {
@@ -150,8 +151,8 @@ function updateCoordinates(lon, lat, dispatch = true, updateMarker = true) {
   container.value = currentVal;
   if (dispatch) {
     container.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
-    if (window._geoibm_state) {
-      let gs = window._geoibm_state;
+    if (window._TethysBio_state) {
+      let gs = window._TethysBio_state;
       if (gs.slidersContainer) {
         gs.slidersContainer.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
       }
@@ -295,8 +296,8 @@ Estimate seabed depths over a geographic area centred at `(lon, lat)` spanning
 At latitude `lat`, 1 degree of latitude corresponds to ~111,139 m, and 1 degree of
 longitude corresponds to ~111,139 * cos(lat * π / 180) m.
 
-Searches local store candidates via `GeoData.geoload` and continuous interpolation
-via `GeoData.get_bathymetry_interpolator`. If offline or missing, defaults to the
+Searches local store candidates via `Tethys.geoload` and continuous interpolation
+via `Tethys.get_bathymetry_interpolator`. If offline or missing, defaults to the
 regional shelf analytical bathymetry evaluated over the sampled grid offsets.
 
 # Arguments
@@ -332,9 +333,10 @@ function estimate_aoi_bathymetry(
     lat_pts = range(lat - dlat, lat + dlat; length = n_points)
 
     candidate_paths = [
-        GeoData.lakehouse_dir("GeoData", "bathymetry", "nwa_bathymetry.nc"),
-        GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc"),
-        GeoData.lakehouse_dir("GeoData", "nwa", "bathymetry.zarr")
+        Tethys.lakehouse_dir("Tethys", "bathymetry", "nwa_bathymetry.nc"),
+        Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs", "bathymetry_active.nc"),
+        Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc"),
+        Tethys.lakehouse_dir("Tethys", "nwa", "bathymetry.zarr")
     ]
     c_idx = findfirst(p -> ispath(p), candidate_paths)
 
@@ -343,9 +345,9 @@ function estimate_aoi_bathymetry(
         try
             candidate_file = candidate_paths[c_idx]
             ds_bathy = occursin(".nc", candidate_file) ?
-                GeoData.geoload(candidate_file; backend = :ncdatasets) :
-                GeoData.geoload(candidate_file)
-            bathy_itp = GeoData.get_bathymetry_interpolator(ds_bathy)
+                Tethys.geoload(candidate_file; backend = :ncdatasets) :
+                Tethys.geoload(candidate_file)
+            bathy_itp = Tethys.get_bathymetry_interpolator(ds_bathy)
             for j in 1:n_points, i in 1:n_points
                 val = bathy_itp(lon_pts[i], lat_pts[j])
                 depth_mat[i, j] = isnan(val) ? 0.0 : max(0.0, -val)
@@ -382,7 +384,7 @@ end
 
 Construct the HTML and embedded JavaScript string for the two-column set of
 simulation and environmental sliders, fishery thresholds, and biological process toggles.
-Synchronizes with `window._geoibm_state` so that parameter adjustments seamlessly update
+Synchronizes with `window._TethysBio_state` so that parameter adjustments seamlessly update
 the model state and notify Pluto subscribers.
 """
 function parameter_steering_sliders_widget(; default_years::Int = 30, default_interval::Int = 10)
@@ -572,8 +574,8 @@ const t_senescence = container.querySelector('#tog_senescence');
 const t_movement = container.querySelector('#tog_movement');
 const t_reproduction = container.querySelector('#tog_reproduction');
 
-if (!window._geoibm_state) {
-  window._geoibm_state = {
+if (!window._TethysBio_state) {
+  window._TethysBio_state = {
     simState: "stopped",
     currentSimDay: 0,
     timer: null,
@@ -586,7 +588,7 @@ if (!window._geoibm_state) {
   };
 }
 
-let s = window._geoibm_state;
+let s = window._TethysBio_state;
 s.slidersContainer = container;
 
 function getSlidersState() {
@@ -726,8 +728,8 @@ const btn_rewind = container.querySelector('#btn_rewind');
 const inp_rewind = container.querySelector('#ctrl_rewind_day');
 const status_pill = container.querySelector('#status_pill');
 
-if (!window._geoibm_state) {
-  window._geoibm_state = {
+if (!window._TethysBio_state) {
+  window._TethysBio_state = {
     simState: "stopped",
     currentSimDay: 0,
     timer: null,
@@ -740,7 +742,7 @@ if (!window._geoibm_state) {
   };
 }
 
-let s = window._geoibm_state;
+let s = window._TethysBio_state;
 s.transportContainer = container;
 
 if (s.currentSimDay > 0) {

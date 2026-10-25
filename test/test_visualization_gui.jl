@@ -1,7 +1,7 @@
 # Segment: Visualization Tools, Plots, and GUI Dashboard
 include("test_fixtures.jl")
 
-@testset "GeoIBM - Visualization and Dashboard" begin
+@testset "TethysBio - Visualization and Dashboard" begin
     @testset "Visualization Tools & Plotting" begin
         model = initialize_model(n_agents = 40, grid = (15, 15), seed = 42)
         adata = [(:stage, length), (:size, safe_mean), (is_mature_male, count),
@@ -499,8 +499,8 @@ living = collect(allagents(state.model))
         # The panel is a kernel density estimate on a linear axis. The binned
         # histogram that once stood in for it is gone, so assert it stays gone: it
         # was a divergent second way to compute the same curve.
-        @test !isdefined(GeoIBM, :size_frequency)
-        @test !isdefined(GeoIBM, :GUI_SIZE_BIN_WIDTH_MM)
+        @test !isdefined(TethysBio, :size_frequency)
+        @test !isdefined(TethysBio, :GUI_SIZE_BIN_WIDTH_MM)
         # A shared bandwidth, or the small samples get smoothed far more finely than
         # the large ones and draw as spikes beside them.
         @test SIZE_DENSITY_BANDWIDTH_MM > 0

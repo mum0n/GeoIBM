@@ -18,11 +18,11 @@ end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000002
 begin
-    # GeoIBM is a development package (not registered), so activate the
+    # TethysBio is a development package (not registered), so activate the
     # parent project directory before loading it.
     using Pkg
     Pkg.activate(joinpath(@__DIR__, ".."))
-    using GeoIBM
+    using TethysBio
     using DataFrames
     import CairoMakie: Figure, Axis, heatmap!, lines!, scatter!, barplot!, hist!, vlines!, hlines!, axislegend, Colorbar, Theme, set_theme!, AxisAspect, Label, Point2f, linesegments!, Observable, Mouse, Keyboard, events, on, stem!, empty!, ylims!
     using PlutoUI
@@ -48,12 +48,12 @@ begin
             )
         )
     )
-    "Environment active & GeoIBM loaded successfully."
+    "Environment active & TethysBio loaded successfully."
 end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000001
 md"""
-# GeoIBM: Spatial Individual-Based Life-History Modeling (*Chionoecetes opilio*)
+# TethysBio: Spatial Individual-Based Life-History Modeling (*Chionoecetes opilio*)
 ### Interactive Scientific Simulation, Macro-Ecological Dynamics, and Calibration Workflow
 
 This **Pluto.jl** reactive notebook provides an end-to-end research environment for simulating,
@@ -97,7 +97,7 @@ Every modification automatically ripples through all downstream spatial, demogra
 and macro-ecological analyses.
 
 *Environmental data lakehouse:* Bathymetry and ocean hydrography are resolved via
-`GeoData.lakehouse_dir("GeoIBM")`, honoring `ENV["GEOIBM_STORE_ROOT"]`,
+`Tethys.lakehouse_dir("TethysBio")`, honoring `ENV["TethysBio_STORE_ROOT"]`,
 `ENV["GEODATA_LAKEHOUSE"]`, `LocalPreferences.toml`, and the workspace fallback.
 """
 
@@ -116,7 +116,7 @@ begin
     
     md"""
     Loaded baseline config from: `$(basename(snowcrab_toml_path))`
-    - Bathymetry Product: $(get(base_env, "bathymetry_source", "nwa_bathymetry")) (loaded via `GeoData.geoload`)
+    - Bathymetry Product: $(get(base_env, "bathymetry_source", "nwa_bathymetry")) (loaded via `Tethys.geoload`)
     - Default Grid: $(base_sim["grid_nx"]) × $(base_sim["grid_ny"]) cells
     - Default Carrying Capacity $K$: $(base_env["benthic_carrying_capacity"]) organisms
     - Temperature Offset: $(t_offset_val) °C (Seasonal Multiplier: $(t_mult_val)×)
@@ -233,7 +233,7 @@ begin
     aoi_lat = Float64(extract_ctrl_val(aoi_coords, :lat, 44.5))
     
     # Estimate seabed depths over surrounding ±500 m area (1000 m × 1000 m domain)
-    # using bathymetry source (GeoData store with linear interpolation between points)
+    # using bathymetry source (Tethys store with linear interpolation between points)
     aoi_bathy = estimate_aoi_bathymetry(aoi_lon, aoi_lat; span_meters = 1000.0, n_points = 25)
     aoi_depth = aoi_bathy.mean_depth
     aoi_depth_grid = aoi_bathy.depths
@@ -273,13 +273,19 @@ We construct the model parameters using `load_ibm_configuration` layered with ou
 interactive overrides. The simulation advances in discrete daily steps ($\Delta t = 1.0$ day),
 recording individual agent transitions, energetic budgets, molting events, and annual fishery catch.
 
-Toggle `reuse_saved_simulation` to reload cached simulation outputs when available, skipping full multi-year integration on initial page load.
-
-Use the transport controls below to execute, step, pause, or rewind the simulation across multi-year horizons:
+> ⚠️ **WARNING: STORE OVERWRITE HAZARD**
+>
+> Setting `run_model = true` executes the Individual-Based Model (IBM) multi-year population integration.
+> Running the model manually will integrate demographic agents and **overwrite or update existing simulation results**
+> in the lakehouse / scratch cache (`scratch/saved_ibm_run.jld2`).
+>
+> By default, `run_model = false`, loading previously computed lakehouse results for analysis and plotting.
 """
 
-# ╔═╡ a0000001-0001-0001-0001-000000000050
-@bind reuse_saved_simulation PlutoUI.CheckBox(default = true)
+# ╔═╡ a0000001-0001-0001-0001-000000000060
+# Manual execution switch: defaults to false so opening the notebook does NOT run models or overwrite lakehouse data.
+# Set `run_model = true` ONLY when intending to integrate population trajectories and overwrite/update the store.
+run_model = false
 
 # ╔═╡ a0000001-0001-0001-0001-000000000031
 @bind transport_controls HTML(simulation_transport_widget(default_interval = 10, default_years = 30))
@@ -563,25 +569,34 @@ sim_results = begin
     
     # 6. Execute simulation up to current interactive day or load cached instance
     cache_file = normpath(joinpath(@__DIR__, "..", "scratch", "saved_ibm_run.jld2"))
-    can_load_cache = reuse_saved_simulation && isfile(cache_file) && (sim_status == "stopped" || current_day == 0)
-    
-    agent_df, model_df = if can_load_cache
-        try
-            cached = JLD2.load(cache_file)
-            (cached["agent_df"], cached["model_df"])
-        catch
-            run_simulation(model, effective_days; adata = adata, mdata = mdata)
-        end
-    else
+
+    agent_df, model_df = if run_model
+        # Explicit user-triggered simulation execution: integrates population and overwrites store
+        println("Integrating IBM population model (run_model = true)...")
         res_a, res_m = run_simulation(model, effective_days; adata = adata, mdata = mdata)
         if effective_days > 0
             mkpath(dirname(cache_file))
             try
                 JLD2.save(cache_file, "agent_df", res_a, "model_df", res_m)
-            catch
+            catch err
+                @warn "Failed to update lakehouse cache: $err"
             end
         end
         (res_a, res_m)
+    else
+        # Default behavior: load previously saved simulation store without re-running
+        if isfile(cache_file)
+            try
+                cached = JLD2.load(cache_file)
+                (cached["agent_df"], cached["model_df"])
+            catch err
+                @warn "Failed loading cache $(cache_file), fallback to initial model state: $err"
+                run_simulation(model, 0; adata = adata, mdata = mdata)
+            end
+        else
+            @info "No saved lakehouse cache found at $(cache_file). Running initial step..."
+            run_simulation(model, 0; adata = adata, mdata = mdata)
+        end
     end
     
     # 7. Extract annual demographic and fishery production table
@@ -771,7 +786,7 @@ end
 # ╠═a0000001-0001-0001-0001-000000000055
 # ╠═a0000001-0001-0001-0001-000000000006
 # ╟─a0000001-0001-0001-0001-000000000015
-# ╠═a0000001-0001-0001-0001-000000000050
+# ╠═a0000001-0001-0001-0001-000000000060
 # ╠═a0000001-0001-0001-0001-000000000031
 # ╠═a0000001-0001-0001-0001-000000000016
 # ╠═a0000001-0001-0001-0001-000000000019

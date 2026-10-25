@@ -24,7 +24,7 @@ using Printf
 using Random
 using Statistics
 
-using GeoIBM
+using TethysBio
 
 function parse_macro_args(args::Vector{String})
     config = Dict{Symbol, Any}(

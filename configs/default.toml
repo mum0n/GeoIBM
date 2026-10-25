@@ -90,8 +90,8 @@ temp_offset           = 0.0        # Baseline temperature offset (deg C)
 temp_multiplier       = 1.0        # Seasonal cycle amplitude multiplier (default: 1.0)
 temp_noise_sd         = 0.5        # Spatial thermal stochasticity (SD)
 temp_base_degreedays  = -1.5       # Extra degree-days contributed by temperature
-# --- GeoData Real Habitat Integration ---
-use_geodata           = false      # Query GeoData for real bathymetry and hydrography
+# --- Tethys Real Habitat Integration ---
+use_geodata           = false      # Query Tethys for real bathymetry and hydrography
 domain_lon            = [-65.0, -63.0] # Longitudinal bounds [min_lon, max_lon]
 domain_lat            = [43.0, 45.0]   # Latitudinal bounds [min_lat, max_lat]
 time_range            = ["1993-01-01", "1993-12-31"] # Simulation temporal window
@@ -100,7 +100,7 @@ temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
 temperature_month     = 0          # Climatological month (0 = annual)
 bathymetry_source     = "etopo2022"# Bathymetric dataset (etopo2022, erddap)
 geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
-geodata_store_dir     = "../lakehouse/GeoIBM" # Assimilated environmental storage directory
+geodata_store_dir     = "../lakehouse/TethysBio" # Assimilated environmental storage directory
 # --- Food and habitat ---
 food_max                        = 10.0    # Maximum local benthic food density
 food_replenishment_rate         = 0.1     # Daily replenishment increment per cell

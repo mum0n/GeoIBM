@@ -5,7 +5,7 @@ configuration, inspect the fields the animals live on, run the IBM, and read its
 
 | Notebook | Domain | Species | Inputs |
 |---|---|---|---|
-| [`GeoIBMNotes.jl`](GeoIBMNotes.jl) | a configurable Scotian Shelf / Laurentian Channel window centered on a chosen point | snow crab | config file + interactive steering; environmental store via `GeoData.lakehouse_dir` |
+| [`TethysBioNotes.jl`](TethysBioNotes.jl) | a configurable Scotian Shelf / Laurentian Channel window centered on a chosen point | snow crab | config file + interactive steering; environmental store via `Tethys.lakehouse_dir` |
 
 A **Pluto** notebook: a `.jl` file in Pluto's own format, with `md"""..."""` cells between the
 code. It documents the run as it performs it — what each option means, which assumptions the
@@ -19,8 +19,9 @@ model bakes in, and where each biological relationship comes from.
    initial stage-abundance distribution that feeds the `initial_*_cohort` configuration.
 2. **Model execution** — constructs `IBMParameters` from the merged configuration, calls
    `initialize_model` with an AOI-derived bathymetric depth map, and drives `run_simulation`
-   across a multi-year horizon. Results can be cached to `../scratch/saved_ibm_run.jld2`
-   (`reuse_saved_simulation`) and reloaded instead of re-integrating.
+   across a multi-year horizon. By default, the notebook sets `run_model = false` and loads
+   previously computed results from `../scratch/saved_ibm_run.jld2` to protect existing runs from
+   accidental overwrites; setting `run_model = true` explicitly triggers re-integration and updates the store.
 3. **Dashboards** — spatial habitat/organism map, environmental distributions, stage structure,
    size-frequency densities by sex and maturity, maturity ogives, abundance trajectories,
    biomass/catch panels, and stock–recruitment scatter.
@@ -41,9 +42,9 @@ pinned to this package's environment:
 julia --project=. -e 'using Pluto; Pluto.run()'
 ```
 
-Open `GeoIBMNotes.jl` from the notebook list. Relative paths (`configs/snowcrab.toml`,
+Open `TethysBioNotes.jl` from the notebook list. Relative paths (`configs/snowcrab.toml`,
 `../scratch/saved_ibm_run.jld2`) resolve against the notebook's location, and the environmental
-store resolves through `GeoData.lakehouse_dir("GeoIBM")`.
+store resolves through `Tethys.lakehouse_dir("TethysBio")`.
 
 For a no-browser smoke run — verify every cell executes cleanly — there is a headless runner
 that drives Pluto's session API directly:

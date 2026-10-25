@@ -1,7 +1,7 @@
 # Segment: Configuration, CLI Parsing, and Parameter Validation
 include("test_fixtures.jl")
 
-@testset "GeoIBM - Configuration and Parameters" begin
+@testset "TethysBio - Configuration and Parameters" begin
     @testset "Configuration File Loading and CLI Overrides" begin
         # 1. Default configuration dictionary
         cfg_def = default_ibm_configuration()
@@ -404,8 +404,8 @@ include("test_fixtures.jl")
         @test min_intermolt_days(b, adult, 9) == min_intermolt_days(b, 9)
         @test required_degree_days(b, juvenile, 4) == required_degree_days(b, 4)
         @test required_degree_days(b, adult, 9) == required_degree_days(b, 9)
-        @test GeoIBM.life_stage_index(juvenile) === nothing
-        @test GeoIBM.life_stage_index(egg) == 0
+        @test TethysBio.life_stage_index(juvenile) === nothing
+        @test TethysBio.life_stage_index(egg) == 0
     end
 
     @testset "Every Declared Parameter Is Read" begin
@@ -1145,8 +1145,8 @@ include("test_fixtures.jl")
     @testset "Public surface and configuration plumbing" begin
         # Every exported name must resolve. The module once exported six
         # `FECUNDITY_*` names declared as `DEFAULT_FECUNDITY_*`, so `using
-        # GeoIBM` gave you nothing to import under the exported name.
-        undefined_exports = filter(n -> !isdefined(GeoIBM, n), names(GeoIBM))
+        # TethysBio` gave you nothing to import under the exported name.
+        undefined_exports = filter(n -> !isdefined(TethysBio, n), names(TethysBio))
         @test isempty(undefined_exports)
 
         # --- Configuration surface is derived, not hand-maintained ---
@@ -1280,7 +1280,7 @@ include("test_fixtures.jl")
         base = IBMParameters()
         juv = base.organism.juvenile_max_stage
         agg = fill(0.0, 24)
-        for s in GeoIBM.FIRST_COHORT_STAGE:(juv - 1)
+        for s in TethysBio.FIRST_COHORT_STAGE:(juv - 1)
             agg[s+1] = 100.0
         end
         fem = fill(0.0, 24)
@@ -1299,9 +1299,9 @@ include("test_fixtures.jl")
         orgs = collect(allagents(m))
         pop = Agents.abmproperties(m)[:aggregate_populations]
 @test sort(unique([g.stage for g in pop.groups])) ==
-                collect(GeoIBM.FIRST_COHORT_STAGE:(p.organism.juvenile_max_stage - 1))
+                collect(TethysBio.FIRST_COHORT_STAGE:(p.organism.juvenile_max_stage - 1))
         @test length(pop.groups) ==
-                p.organism.juvenile_max_stage - GeoIBM.FIRST_COHORT_STAGE
+                p.organism.juvenile_max_stage - TethysBio.FIRST_COHORT_STAGE
 
         # Every benthic stage is represented, for each sex, within its ceiling.
         # Recruits are individuated into `juvenile_max_stage`, so that is where

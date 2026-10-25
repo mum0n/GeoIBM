@@ -1,5 +1,5 @@
 # ==============================================================================
-#  assimilation.jl -- the environmental inputs, assimilated into a GeoData store
+#  assimilation.jl -- the environmental inputs, assimilated into a Tethys store
 # ==============================================================================
 #
 #  An IBM needs a world to run in: a sea floor, a bottom temperature, and a seasonal cycle of
@@ -14,7 +14,7 @@
 #  The separation this file makes:
 #
 #      a published product   ETOPO 2022, WOA23 / GLORYS12V1, over HTTP
-#      lakehouse/GeoIBM/       the assimilated store, GeoData-native, built once
+#      lakehouse/TethysBio/       the assimilated store, Tethys-native, built once
 #      a run                 reads the store; writes its own results to its output dir
 #
 #  Assimilation is idempotent, and it knows when to stop: a store artefact at least as new as
@@ -22,7 +22,7 @@
 #
 #  The layout is one directory per input rather than one archive per run:
 #
-#      lakehouse/GeoIBM/
+#      lakehouse/TethysBio/
 #        bathymetry.zarr        the sea floor, from ETOPO 2022 through ERDDAP
 #        hydrography/           the 12-month climatological temperature and salinity
 #        manifest.toml          what was assimilated, from which product, when
@@ -32,16 +32,16 @@
 # ==============================================================================
 
 """
-    geoibm_store_root() -> String
+    TethysBio_store_root() -> String
 
-Where the assimilated environmental store lives: `projects/lakehouse/GeoIBM`, beside the other
-halves' directories, so the lakehouse reads as one directory per package. `GEOIBM_STORE_ROOT`
+Where the assimilated environmental store lives: `projects/lakehouse/TethysBio`, beside the other
+halves' directories, so the lakehouse reads as one directory per package. `TethysBio_STORE_ROOT`
 overrides it for a machine with the lakehouse somewhere else.
 """
-function geoibm_store_root()::String
-    override = get(ENV, "GEOIBM_STORE_ROOT", "")
+function TethysBio_store_root()::String
+    override = get(ENV, "TethysBio_STORE_ROOT", "")
     isempty(override) || return abspath(override)
-    return GeoData.lakehouse_dir("GeoIBM")
+    return Tethys.lakehouse_dir("TethysBio")
 end
 
 """
@@ -59,7 +59,7 @@ and the lakehouse is accepted either inside the project (`lakehouse/...`) or bes
 function environmental_store_dir(env_params::EnvironmentParams)
     d = something(env_params.geodata_store_dir, "")
     isempty(strip(d)) && return env_params.geodata_input_dir
-    return GeoData.project_lakehouse_path(d, _PROJECT_ROOT)
+    return Tethys.project_lakehouse_path(d, _PROJECT_ROOT)
 end
 
 """
@@ -69,7 +69,7 @@ What this configuration will read, where each input's assimilated copy lives, an
 is already there. Read-only: nothing is fetched and nothing is written, so a caller can ask
 before spending the time.
 
-Present-ness is measured with `isdir`, because a GeoData store *is* a directory: a fetch that
+Present-ness is measured with `isdir`, because a Tethys store *is* a directory: a fetch that
 wrote a Zarr store leaves one, and a caller that tested `isfile` would report every assimilated
 input as missing.
 """
@@ -118,7 +118,7 @@ end
 """
     assimilate_environmental_inputs(env_params; verbose = true, force = false) -> NamedTuple
 
-Convert the published products this configuration names into the GeoData store, skipping
+Convert the published products this configuration names into the Tethys store, skipping
 anything already there.
 
 Two fetches, using exactly the calls a simulation makes — `fetch_erddap_bathymetry` and
@@ -150,25 +150,26 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
     bathy_target = joinpath(store, "bathymetry.zarr")
     if force || !isdir(bathy_target)
         central_candidates = [
-            GeoData.lakehouse_dir("GeoData", "nwa", "bathymetry.zarr"),
-            GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc")
+            Tethys.lakehouse_dir("Tethys", "nwa", "bathymetry.zarr"),
+            Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs", "bathymetry_active.nc"),
+            Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc")
         ]
         c_idx = findfirst(p -> ispath(p), central_candidates)
         if c_idx !== nothing
             src = central_candidates[c_idx]
-            verbose && println("  [assimilate] bathymetry: loading from $(src) via GeoData -> bathymetry.zarr")
-            ds_bathy = GeoData.geoload(src)
-            GeoData.geosave(bathy_target, ds_bathy; backend = :zarr)
+            verbose && println("  [assimilate] bathymetry: loading from $(src) via Tethys -> bathymetry.zarr")
+            ds_bathy = Tethys.geoload(src)
+            Tethys.geosave(bathy_target, ds_bathy; backend = :zarr)
             push!(written, "bathymetry")
         else
-            verbose && println("  [assimilate] bathymetry: no local store found; fetching via GeoData.geoget")
-            ds_bathy = GeoData.geoget(
+            verbose && println("  [assimilate] bathymetry: no local store found; fetching via Tethys.geoget")
+            ds_bathy = Tethys.geoget(
                 "erddap://ETOPO_2022_v1_15s";
                 cache_dir = store,
                 bounds = (lon_range, lat_range),
                 verbose = verbose
             )
-            GeoData.geosave(bathy_target, ds_bathy; backend = :zarr)
+            Tethys.geosave(bathy_target, ds_bathy; backend = :zarr)
             push!(written, "bathymetry")
         end
     else
@@ -185,27 +186,29 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
     hydro_domain = (lon_range, lat_range)
     if force || !isdir(hydro_target)
         central_hydro = [
-            GeoData.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+            Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs",
                                   "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
-            GeoData.lakehouse_dir("GeoData", "glorys",
+            Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
+                                  "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
+            Tethys.lakehouse_dir("Tethys", "glorys",
                                   "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc")
         ]
         h_idx = findfirst(p -> ispath(p), central_hydro)
         if h_idx !== nothing
             src_h = central_hydro[h_idx]
-            verbose && println("  [assimilate] hydrography: loading from $(src_h) via GeoData -> $(hydro_target)")
+            verbose && println("  [assimilate] hydrography: loading from $(src_h) via Tethys -> $(hydro_target)")
             ds_hydro = occursin(".nc", src_h) ?
-                GeoData.geoload(src_h; backend = :ncdatasets) :
-                GeoData.geoload(src_h)
-            GeoData.geosave(hydro_target, ds_hydro; backend = :zarr)
+                Tethys.geoload(src_h; backend = :ncdatasets) :
+                Tethys.geoload(src_h)
+            Tethys.geosave(hydro_target, ds_hydro; backend = :zarr)
             push!(written, "hydrography")
             hydro_product = "glorys12v1"
             hydro_domain = ((-71.0, -53.0), (40.0, 48.5))
         else
-            verbose && println("  [assimilate] hydrography: fetching $(temp_src) via GeoData.geoget")
+            verbose && println("  [assimilate] hydrography: fetching $(temp_src) via Tethys.geoget")
             scheme = temp_src === :woa23 ? "woa23://" : "copernicus://"
             try
-                ds_hydro = GeoData.geoget(
+                ds_hydro = Tethys.geoget(
                     scheme;
                     cache_dir = store,
                     bounds = (lon_range, lat_range),
@@ -213,11 +216,11 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
                     verbose = verbose
                 )
                 if ds_hydro isa GeoDataset
-                    GeoData.geosave(hydro_target, ds_hydro; backend = :zarr)
+                    Tethys.geosave(hydro_target, ds_hydro; backend = :zarr)
                     push!(written, "hydrography")
                 end
             catch err
-                verbose && println("  [assimilate] hydrography: provider fetch skipped ($(err)), relying on in-situ GeoData stores")
+                verbose && println("  [assimilate] hydrography: provider fetch skipped ($(err)), relying on in-situ Tethys stores")
             end
         end
     else

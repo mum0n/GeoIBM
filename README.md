@@ -1,4 +1,4 @@
-# Individual and Agent Based Models (GeoIBM)
+# Individual and Agent Based Models (TethysBio)
 
 A species-parameterised individual-based model engine built on
 [Agents.jl](https://juliadynamics.github.io/Agents.jl/stable/). The engine is
@@ -58,16 +58,16 @@ Two pillars:
    each one, and `configs/snowcrab.toml` is the species overlay.
 
 ```
-GeoIBM/
+TethysBio/
 ├── Project.toml
 ├── configs/
 │   ├── default.toml          # every declared parameter, at its struct default
 │   └── snowcrab.toml         # snow crab overlay: biology plus operating scale
 ├── docs/
-│   ├── GeoIBM.md             # detailed reference
+│   ├── TethysBio.md             # detailed reference
 │   └── deep_check_2026-10.md # the October documentation audit and its disposition
 ├── src/
-│   ├── GeoIBM.jl             # module, includes, exports
+│   ├── TethysBio.jl             # module, includes, exports
 │   ├── types.jl              # Organism, the twelve parameter structs, config plumbing
 │   ├── species.jl            # the SpeciesBehavior implementation and stage tables
 │   ├── organism_dynamics.jl  # allometry, bioenergetics, molting, mortality, cohorts
@@ -76,10 +76,10 @@ GeoIBM/
 │   ├── cli.jl                # argument parsing, run reports, orchestration
 │   ├── visualization.jl      # CairoMakie figures and animations
 │   ├── gui.jl                # GLMakie interactive dashboard
-│   ├── assimilation.jl       # GeoData store assimilation and input status
+│   ├── assimilation.jl       # Tethys store assimilation and input status
 │   └── notebook_support.jl   # dashboard helpers shared with the Pluto notebook
 ├── notebooks/
-│   └── GeoIBMNotes.jl        # Pluto: configure, run, visualise, analyse, calibrate
+│   └── TethysBioNotes.jl        # Pluto: configure, run, visualise, analyse, calibrate
 ├── scripts/
 │   ├── organism_ibm.jl             # simulation CLI
 │   ├── organism_orchestrator.jl    # calibration driver
@@ -90,7 +90,7 @@ GeoIBM/
     ├── test_allometry_biology.jl   # growth, maturity, mortality, fecundity
     ├── test_config_parameters.jl   # TOML round trip and parameter coverage
     ├── test_fixtures.jl            # shared test helpers
-    ├── test_habitat_environment.jl # GeoData store and environmental fields
+    ├── test_habitat_environment.jl # Tethys store and environmental fields
     ├── test_macro_dynamics.jl      # macro-model fits and reporting
     ├── test_simulation_agents.jl   # cohort lifecycle, seeding, individuation, step loop
     └── test_visualization_gui.jl   # figures and dashboard internals
@@ -100,37 +100,37 @@ GeoIBM/
 
 An IBM needs a world: a sea floor and a thermal cycle. Those come from published products —
 ETOPO 2022 bathymetry and WOA23 (or GLORYS12V1) hydrography — and they are assimilated once
-into a GeoData store beside the other halves':
+into a Tethys store beside the other halves':
 
 | artefact | product | where |
 |---|---|---|
-| `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `lakehouse_dir("GeoIBM")` |
-| `woa23_temperature_<mm>_0.25deg.zarr` | WOA23, keyless | `lakehouse_dir("GeoIBM")` |
-| `woa23_salinity_<mm>_0.25deg.zarr` | WOA23, keyless | `lakehouse_dir("GeoIBM")` |
+| `bathymetry.zarr` | ETOPO 2022, 15 arc-second, over ERDDAP | `lakehouse_dir("TethysBio")` |
+| `woa23_temperature_<mm>_0.25deg.zarr` | WOA23, keyless | `lakehouse_dir("TethysBio")` |
+| `woa23_salinity_<mm>_0.25deg.zarr` | WOA23, keyless | `lakehouse_dir("TethysBio")` |
 
 ### Lakehouse Location Configuration
 
-`GeoIBM` resolves the shared data lakehouse via `GeoData.lakehouse_dir("GeoIBM")`.
+`TethysBio` resolves the shared data lakehouse via `Tethys.lakehouse_dir("TethysBio")`.
 The lakehouse root is determined by the following precedence:
-* `ENV["GEOIBM_STORE_ROOT"]` or `ENV["GEODATA_LAKEHOUSE"]`.
-* `LocalPreferences.toml` (`[GeoData] lakehouse_dir`).
+* `ENV["TethysBio_STORE_ROOT"]` or `ENV["GEODATA_LAKEHOUSE"]`.
+* `LocalPreferences.toml` (`[Tethys] lakehouse_dir`).
 * `~/.geodata/storage.toml` (`[storage] store_root`).
-* Proximity fallback (`projects/lakehouse/GeoIBM`).
+* Proximity fallback (`projects/lakehouse/TethysBio`).
 
 To configure the lakehouse persistently for your environment:
 ```julia
-using GeoData
-GeoData.set_lakehouse_dir!("/path/to/shared/lakehouse")
+using Tethys
+Tethys.set_lakehouse_dir!("/path/to/shared/lakehouse")
 ```
 
 ```julia
-status  = GeoIBM.environmental_input_status(env)        # what is already there
-result  = GeoIBM.assimilate_environmental_inputs(env)   # fetch what is missing
-fields  = GeoIBM.read_assimilated_environment(env)      # what a run reads
+status  = TethysBio.environmental_input_status(env)        # what is already there
+result  = TethysBio.assimilate_environmental_inputs(env)   # fetch what is missing
+fields  = TethysBio.read_assimilated_environment(env)      # what a run reads
 ```
 
 It is idempotent: what is already assimilated is skipped, so a second run does no downloading.
-`notebooks/GeoIBMNotes.jl` starts with this step and explains what each assumption costs.
+`notebooks/TethysBioNotes.jl` starts with this step and explains what each assumption costs.
 
 | File | Responsibility |
 |---|---|
@@ -336,7 +336,7 @@ or a whole schedule as `--intermolt_days_schedule=60,75,90`.
 ## API
 
 ```julia
-using GeoIBM
+using TethysBio
 
 params = IBMParameters(
     fishery = FisheryParams(fishing_probability_daily = 0.005),
@@ -361,7 +361,7 @@ those alone):
 ```powershell
 julia --project=. test/runtests.jl              # all segments
 julia --project=. test/runtests.jl biology      # allometry, growth, empirical biology
-julia --project=. test/runtests.jl habitat      # habitat suitability, GeoData integration
+julia --project=. test/runtests.jl habitat      # habitat suitability, Tethys integration
 julia --project=. test/runtests.jl macro        # macro models and Leslie matrices
 julia --project=. test/runtests.jl config       # configuration, CLI parsing, parameters
 julia --project=. test/runtests.jl simulation   # agents, energetics, mortality, dispersal

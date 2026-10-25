@@ -599,7 +599,7 @@ Base.@kwdef struct EnvironmentParams
     # so it resolves the same way from a notebook and from the CLI. An empty string means
     # `geodata_input_dir`, which is a run-local cache and not a store shared with the other
     # halves.
-    geodata_store_dir::String = "../lakehouse/GeoIBM"
+    geodata_store_dir::String = "../lakehouse/TethysBio"
     # Density-dependent crowding. Total benthic abundance is
     # `individuated + aggregate`, and the mortality feedback is
     # `1 + (N / K)^exponent`.

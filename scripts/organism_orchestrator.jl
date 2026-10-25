@@ -23,7 +23,7 @@ multi-attribute biological and ecological criteria are achieved:
 ================================================================================
 """
 
-using GeoIBM
+using TethysBio
 
 using Printf
 using Random

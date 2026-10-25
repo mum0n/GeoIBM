@@ -1,7 +1,7 @@
 # Segment: Allometry, Growth, and Empirical Biology
 include("test_fixtures.jl")
 
-@testset "GeoIBM - Allometry and Biology" begin
+@testset "TethysBio - Allometry and Biology" begin
     @testset "Empirical Bounds and Allometry" begin
         # Monotonicity of lower bounds across stages
         @test llbm(7) < llbm(8) < llbm(9) < llbm(10)

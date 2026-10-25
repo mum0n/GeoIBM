@@ -1,5 +1,5 @@
 """
-Test suite orchestrator for the GeoIBM package.
+Test suite orchestrator for the TethysBio package.
 
 Supports modular and targeted test segment execution to minimize compute time
 and avoid recompilation overheads.
@@ -11,7 +11,7 @@ Usage:
     julia --project=. test/runtests.jl config       # Configuration & parameter integrity
     julia --project=. test/runtests.jl simulation   # Agent bioenergetics, dispersal & steps
     julia --project=. test/runtests.jl vis          # Visualization, plots & GUI dashboard
-    julia --project=. test/runtests.jl habitat      # Habitat suitability & GeoData integration
+    julia --project=. test/runtests.jl habitat      # Habitat suitability & Tethys integration
 """
 
 using Test
@@ -22,7 +22,7 @@ const AVAILABLE_SEGMENTS = Dict{Symbol, NamedTuple{(:title, :file), Tuple{String
     :config     => ("Configuration, CLI Parsing, and Parameter Validation", "test_config_parameters.jl"),
     :simulation => ("Agent Simulation, Energetics, Mortality, and Dispersal", "test_simulation_agents.jl"),
     :vis        => ("Visualization Tools, Plots, and GUI Dashboard", "test_visualization_gui.jl"),
-    :habitat    => ("Habitat Suitability and GeoData Environmental Integration", "test_habitat_environment.jl"),
+    :habitat    => ("Habitat Suitability and Tethys Environmental Integration", "test_habitat_environment.jl"),
 )
 
 const DEFAULT_SEGMENTS = [:biology, :macro, :config, :simulation, :vis, :habitat]
@@ -54,7 +54,7 @@ function parse_requested_segments(args)
 end
 
 function run_selected_tests(segments)
-    @testset "GeoIBM Comprehensive Suite" begin
+    @testset "TethysBio Comprehensive Suite" begin
         for seg in segments
             info = AVAILABLE_SEGMENTS[seg]
             println("\n" * "="^80)

@@ -30,18 +30,18 @@ using Statistics
 using DataFrames
 using CairoMakie
 
-# Activate environment and load GeoIBM
-using GeoIBM
+# Activate environment and load TethysBio
+using TethysBio
 
 """
     main()
 
 Entry point for the organism IBM CLI simulation execution.
-Delegates directly to `GeoIBM.run_ibm_cli(ARGS)` to guarantee canonical
+Delegates directly to `TethysBio.run_ibm_cli(ARGS)` to guarantee canonical
 argument parsing, parameter discovery, and dashboard dispatch.
 """
 function main()
-    return GeoIBM.run_ibm_cli(ARGS)
+    return TethysBio.run_ibm_cli(ARGS)
 end
 
 # If invoked as a standalone script from terminal, execute main()

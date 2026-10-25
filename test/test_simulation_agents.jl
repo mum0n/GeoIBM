@@ -1,7 +1,7 @@
 # Segment: Agent Simulation, Energetics, Mortality, and Dispersal
 include("test_fixtures.jl")
 
-@testset "GeoIBM - Simulation and Agents" begin
+@testset "TethysBio - Simulation and Agents" begin
     @testset "Simulation Step and Population Summary" begin
         model = initialize_model(n_agents=30, grid=(15, 15), seed=456)
         init_count = nagents(model)

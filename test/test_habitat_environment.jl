@@ -1,7 +1,7 @@
-# Segment: Habitat Suitability and GeoData Environmental Integration
+# Segment: Habitat Suitability and Tethys Environmental Integration
 include("test_fixtures.jl")
 
-@testset "GeoIBM - Habitat and Environment" begin
+@testset "TethysBio - Habitat and Environment" begin
     @testset "Habitat suitability offset and multiplier" begin
         # In synthetic mode (use_geodata == false), habitat_offset acts as mean
         # and habitat_multiplier acts as amplitude scale on noise.
@@ -25,7 +25,7 @@ include("test_fixtures.jl")
         @test isapprox(std(f_m2), 2.0 * p_m2.habitat_quality_sd, atol = 0.05)
     end
 
-    @testset "Habitat Suitability and GeoData Environmental Integration" begin
+    @testset "Habitat Suitability and Tethys Environmental Integration" begin
         # 1. Thermal suitability component
         # Cold optimal temperature
         hsi_opt = calculate_habitat_suitability(1.5, 150.0)

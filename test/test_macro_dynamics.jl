@@ -1,7 +1,7 @@
 # Segment: Macro Population Dynamics and Leslie Matrices
 include("test_fixtures.jl")
 
-@testset "GeoIBM - Macro Dynamics" begin
+@testset "TethysBio - Macro Dynamics" begin
     @testset "Length-Weight Allometry, Stock Biomass, and Molt Seasonality" begin
         # 1. Length-Weight allometric scaling: W = alpha * Size^beta
         w_f_imm = calculate_mass(50.0, female; mat = 0)

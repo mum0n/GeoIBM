@@ -1,16 +1,9 @@
 """
-    GeoIBM
+    TethysBio
 
-End-to-end individual- and agent-based simulation model (IBM) for biological populations.
-
-This package provides:
-- Agent definitions and life history stage tracking with explicit developmental `stage`.
-- Configurable biological rules (stage bounds, growth increments, logistic maturity
-  schedules, allometric fecundity, and fishery selectivity).
-- Bioenergetics and dynamic spatial simulation in discrete grid environments.
-- High-level execution and statistical analysis utilities.
+End-to-end individual- and agent-based simulation model (IBM) for biological populations, integrated with Tethys.jl.
 """
-module GeoIBM
+module TethysBio
 
 using Agents
 using DataFrames
@@ -18,17 +11,9 @@ using Distributions
 using CairoMakie
 using Random
 using Statistics
-using GeoData
+using Tethys
 using Interpolations
 
-"""
-    _PROJECT_ROOT
-
-The root of this package -- the directory holding `src/`, `configs/` and `Project.toml`.
-
-Configured store paths are resolved against it, so a run started from any working directory
-reads from the same place.
-"""
 const _PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
 
 # Include submodules and components
@@ -42,6 +27,9 @@ include("visualization.jl")
 include("gui.jl")
 include("cli.jl")
 include("notebook_support.jl")
+
+# Backward compatibility alias
+const TethysBio = TethysBio
 
 # Export types and enums
 export LifeStage, Sex, zoea, megalopa, juvenile, adult, egg
@@ -90,7 +78,7 @@ export build_habitat_quality_field, build_geodata_environmental_fields
 export default_agent_observations
 export organism_disperse!, nagents, allagents, abmrng, safe_mean, safe_sum
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
-export geoibm_store_root, environmental_store_dir, environmental_input_status
+export TethysBio_store_root, environmental_store_dir, environmental_input_status
 export assimilate_environmental_inputs, read_assimilated_environment
 export parameter_struct_defaults
 export config_field_types, config_field_type, coerce_config_value
@@ -150,5 +138,6 @@ export plot_bottom_temperature_cycle
 export plot_dashboard_spatial, plot_dashboard_abundance, plot_dashboard_stages
 export plot_dashboard_size_density, plot_dashboard_ogive, plot_dashboard_macro
 export plot_dashboard_stock_recruitment, plot_dashboard_environmental_distributions
+export TethysBio
 
-end # module GeoIBM
+end # module TethysBio

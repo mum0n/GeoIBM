@@ -1,6 +1,6 @@
-# Individual and Agent Based Models (GeoIBM) Documentation
+# Individual and Agent Based Models (TethysBio) Documentation
 
-This document describes the architecture, mathematical formulations, command-line interface, and public API of the biological Individual and Agent Based Model (`GeoIBM`) engine. The engine implements a high-performance, modular individual- and cohort-based simulation system for organismal population dynamics, bioenergetics, and harvest management.
+This document describes the architecture, mathematical formulations, command-line interface, and public API of the biological Individual and Agent Based Model (`TethysBio`) engine. The engine implements a high-performance, modular individual- and cohort-based simulation system for organismal population dynamics, bioenergetics, and harvest management.
 
 Species-specific biological processes (allometry, developmental thresholds, ecdysis, and reproduction) are fully decoupled from generic individual-based model (IBM) simulation logic via an extensible behavioral dispatch interface (`SpeciesBehavior`). A complete concrete implementation is provided for the snow crab (*Chionoecetes*).
 
@@ -95,19 +95,19 @@ Allometry   Development         Phenology         Reproduction
 The source repository is organized into focused, modular components:
 
 ```
-GeoIBM/
+TethysBio/
 ├── Project.toml              # Dependencies and compatibility bounds
 ├── docs/
-│   ├── GeoIBM.md             # Comprehensive architecture and API reference (this file)
+│   ├── TethysBio.md             # Comprehensive architecture and API reference (this file)
 │   └── deep_check_2026-10.md # Methodological audit of documentation claims (2026-10)
 ├── src/
-│   ├── GeoIBM.jl             # Module definition, includes, and exported public APIs
+│   ├── TethysBio.jl             # Module definition, includes, and exported public APIs
 │   ├── types.jl              # Core type system: Organism, StageDefinition, IBMParameters
 │   ├── organism_dynamics.jl  # Generic growth, allometry fallbacks, bioenergetics, molt
 │   ├── species.jl            # Species behaviour: allometry, phenology, reproduction
 │   ├── simulation.jl         # Grid initialization, agent/model steppers, simulation runner
 │   ├── cli.jl                # CLI entry points: parsing, configuration layers, reporting
-│   ├── assimilation.jl       # Environmental store: GeoData fetch, manifest, read-back
+│   ├── assimilation.jl       # Environmental store: Tethys fetch, manifest, read-back
 │   ├── notebook_support.jl   # Pluto widget builders and notebook-facing dashboards
 │   ├── analysis.jl           # KDE, OLS/IRLS estimation, Leslie matrices, macro models
 │   ├── visualization.jl      # Diagnostic figures and video animations (CairoMakie)
@@ -121,7 +121,7 @@ GeoIBM/
 │   └── fit_macro_models.jl   # Post-hoc macro-model fitting CLI for saved results
 ├── notebooks/
 │   ├── README.md             # Pluto launch and headless-run instructions
-│   └── GeoIBMNotes.jl        # Pluto research notebook
+│   └── TethysBioNotes.jl        # Pluto research notebook
 └── test/
     ├── runtests.jl           # Suite entry point: biology, macro, config, simulation, vis, habitat
     ├── test_fixtures.jl      # Shared fixtures and synthetic datasets
@@ -142,13 +142,13 @@ GeoIBM/
 | [`src/species.jl`](src/species.jl) | Implements `SpeciesParams`, `SpeciesBehaviorImpl`, empirical Hiatt increments, log-logistic maturity schedules, allometric fecundity, thermal ecdysial thresholds, and primiparous/multiparous reproductive cycles. |
 | [`src/simulation.jl`](src/simulation.jl) | Manages model instantiation (`initialize_model`), environmental field generation, scheduled time stepping (`agent_step!`, `model_step!`), and batch execution (`run_simulation`). |
 | [`src/cli.jl`](src/cli.jl) | Resolves the two-layer configuration (baseline `default.toml` plus a run overlay), parses CLI switches into typed parameters, and provides terminal reporting, snapshot telemetry, batch figure export and `julia_main` binary entry points. |
-| [`src/assimilation.jl`](src/assimilation.jl) | Assimilates the published environmental inputs (ETOPO 2022 bathymetry, WOA23/GLORYS12V1 hydrography) into an idempotent GeoData store with a manifest, and reads the store back for a run. |
+| [`src/assimilation.jl`](src/assimilation.jl) | Assimilates the published environmental inputs (ETOPO 2022 bathymetry, WOA23/GLORYS12V1 hydrography) into an idempotent Tethys store with a manifest, and reads the store back for a run. |
 | [`src/notebook_support.jl`](src/notebook_support.jl) | Standardized HTML/JS widget builders (domain picker, steering sliders, transport bar) and standalone CairoMakie dashboard panels for the Pluto notebook, mirroring the `gui.jl` dashboards. |
 | [`src/analysis.jl`](src/analysis.jl) | Computes kernel density estimations (KDE), iterative logistic fits (IRLS), demographic summaries, Schaefer and Delay-Difference biomass models, generalized Leslie matrices, and retrospective analyses. |
 | [`src/visualization.jl`](src/visualization.jl) | Generates executive diagnostic figures, maturity ogives, stock-recruitment plots, and video animations via CairoMakie (`Figure` output). |
 | [`src/gui.jl`](src/gui.jl) | Provides interactive real-time multi-dashboard steering GUI with reactive particle streaming, parameter steering, and macro-ecological model fitting via GLMakie (`launch_organism_gui`). |
 | [`scripts/fit_macro_models.jl`](../scripts/fit_macro_models.jl) | Post-hoc CLI fitting Schaefer and delay-difference macro models to saved simulation results — whole population and fishable component — with optional retrospective analysis and Mohn's ρ. |
-| [`notebooks/GeoIBMNotes.jl`](../notebooks/GeoIBMNotes.jl) | Pluto research notebook walking the model's life history, calibration, macro fitting and outputs through the `notebook_support.jl` widgets; `notebooks/README.md` covers launching it and running it headless. |
+| [`notebooks/TethysBioNotes.jl`](../notebooks/TethysBioNotes.jl) | Pluto research notebook walking the model's life history, calibration, macro fitting and outputs through the `notebook_support.jl` widgets; `notebooks/README.md` covers launching it and running it headless. |
 
 ---
 
@@ -340,8 +340,8 @@ julia --project=. scripts/organism_ibm.jl [OPTIONS]
 | `--grid=<nx,ny>` | Int,Int | `100,100` | 2D spatial grid dimensions. |
 | `--grid_nx=<int>`, `--grid_ny=<int>` | Integer | `100` | Grid dimensions, individually. |
 | `--seed=<int>` | Integer | `1234` | Random seed. |
-| `--temp_offset=<float>` | Float | `0.0` | Baseline bottom-temperature offset (°C); anomaly on top of the GeoData hydrographic mean. |
-| `--temp_multiplier=<float>` | Float | `1.0` | Seasonal temperature multiplier on the synthetic oscillation; scales GeoData anomalies. |
+| `--temp_offset=<float>` | Float | `0.0` | Baseline bottom-temperature offset (°C); anomaly on top of the Tethys hydrographic mean. |
+| `--temp_multiplier=<float>` | Float | `1.0` | Seasonal temperature multiplier on the synthetic oscillation; scales Tethys anomalies. |
 | `--temp_base=<float>`, `--temp_amplitude=<float>` | Float | — | Legacy aliases for `--temp_offset` and `--temp_multiplier`. |
 | `--benthic_carrying_capacity=<float>` | Float | `12000.0` | Total benthic capacity for the whole model, not per cell. |
 | `--frequency_days=<float>` | Float | `365.0` | Output sampling interval. |
@@ -686,8 +686,8 @@ The simulation architecture enforces strict structural consistency across develo
 | | `initial_age_first_stage`| `3.0` | Stage offset for initial age assignment. | `simulation.jl` |
 | | `initial_age_jitter_days`| `90.0` | Uniform random jitter applied to seeded individual age. | `simulation.jl` |
 | | `initial_degree_days_min/max`| `50.0`, `300.0`| Range of pre-ecdysial degree-days assigned to seeded agents. | `simulation.jl` |
-| **`[environment]`** | `temp_offset` | `0.0` | Additive temperature control: bottom-water mean in synthetic mode, anomaly on top of the hydrographic mean in GeoData mode (°C). Legacy `temp_base` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
-| | `temp_multiplier` | `1.0` | Multiplicative temperature control: seasonal oscillation amplitude in synthetic mode; scales GeoData anomalies. Legacy `temp_amplitude` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
+| **`[environment]`** | `temp_offset` | `0.0` | Additive temperature control: bottom-water mean in synthetic mode, anomaly on top of the hydrographic mean in Tethys mode (°C). Legacy `temp_base` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
+| | `temp_multiplier` | `1.0` | Multiplicative temperature control: seasonal oscillation amplitude in synthetic mode; scales Tethys anomalies. Legacy `temp_amplitude` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
 | | `temp_noise_sd` | `0.5` | Spatial standard deviation of environmental temperature noise. | `simulation.jl` |
 | | `temp_base_degreedays` | `-1.5` | Threshold temperature $T_0$ (°C) below which degree-days do not accrue. | `organism_dynamics.jl`, `simulation.jl` |
 | | `food_max` | `10.0` | Carrying capacity ceiling on local benthic food density. | `simulation.jl` |
@@ -697,23 +697,23 @@ The simulation architecture enforces strict structural consistency across develo
 | | `half_saturation_food` | `2.0` | Forage concentration where intake is at 50% saturation. | `organism_dynamics.jl`, `simulation.jl` |
 | | `assimilation_efficiency`| `0.75` | Gross energetic assimilation fraction from ingested food. | `organism_dynamics.jl` |
 | | `habitat_quality_mean/sd`| `0.5`, `0.1` | Gaussian background parameters for habitat suitability index (HSI). | `simulation.jl` |
-| | `habitat_offset` | `0.0` | Additive habitat control: spatial-noise mean in synthetic mode (falling back to `habitat_quality_mean` when 0.0), added after scaling in GeoData mode. | `simulation.jl`, `gui.jl` |
-| | `habitat_multiplier` | `1.0` | Multiplicative habitat control: scales the synthetic noise SD or the GeoData HSI field before the offset is applied. | `simulation.jl`, `gui.jl` |
+| | `habitat_offset` | `0.0` | Additive habitat control: spatial-noise mean in synthetic mode (falling back to `habitat_quality_mean` when 0.0), added after scaling in Tethys mode. | `simulation.jl`, `gui.jl` |
+| | `habitat_multiplier` | `1.0` | Multiplicative habitat control: scales the synthetic noise SD or the Tethys HSI field before the offset is applied. | `simulation.jl`, `gui.jl` |
 | | `habitat_temperature_optimum`| `2.5` | Preferred temperature for spatial dispersal taxis (°C). | `simulation.jl` |
 | | `habitat_temperature_sigma`| `1.5` | Width of thermal preference curve for dispersal. | `simulation.jl` |
 | | `habitat_food_weight` | `0.5` | Relative weighting of local food availability vs temperature in taxis. | `simulation.jl` |
 | | `movement_softmax_temperature`| `0.5` | Softmax temperature regulating heading stochasticity. | `simulation.jl` |
 | | `settlement_dispersal_radius`| `2` | Cell radius for recruit settlement around parental/cohort position. | `organism_dynamics.jl` |
 | | `settlement_size_log_sd` | `0.04` | Log-normal standard deviation in carapace size at recruitment. | `organism_dynamics.jl` |
-| | `use_geodata` | `false` | Switches the run from the synthetic climatology to assimilated GeoData environmental fields. | `simulation.jl` |
-| | `domain_lon`, `domain_lat` | `[-65.0, -63.0]`, `[43.0, 45.0]` | Longitude and latitude extents (°) of the GeoData extraction domain. | `simulation.jl` |
-| | `time_range` | `["1993-01-01", "1993-12-31"]` | Calendar range of the GeoData extraction. | `simulation.jl` |
+| | `use_geodata` | `false` | Switches the run from the synthetic climatology to assimilated Tethys environmental fields. | `simulation.jl` |
+| | `domain_lon`, `domain_lat` | `[-65.0, -63.0]`, `[43.0, 45.0]` | Longitude and latitude extents (°) of the Tethys extraction domain. | `simulation.jl` |
+| | `time_range` | `["1993-01-01", "1993-12-31"]` | Calendar range of the Tethys extraction. | `simulation.jl` |
 | | `pelagic_depth` | `15.0` | Depth (m) defining the pelagic (larval) environmental layer. | `simulation.jl` |
-| | `temperature_source` | `"woa23"` | GeoData hydrography product for the bottom and surface temperature fields. | `simulation.jl` |
+| | `temperature_source` | `"woa23"` | Tethys hydrography product for the bottom and surface temperature fields. | `simulation.jl` |
 | | `temperature_month` | `0` | Month selector for the hydrography extract. | `simulation.jl` |
-| | `bathymetry_source` | `"etopo2022"` | GeoData bathymetry product. | `simulation.jl` |
-| | `geodata_input_dir` | `"inputs"` | Run-local cache directory for downloaded GeoData inputs. | `simulation.jl` |
-| | `geodata_store_dir` | `"../lakehouse/GeoIBM"` | Shared environmental store written by `assimilate_environmental_inputs`; an empty string falls back to `geodata_input_dir`. | `simulation.jl`, `assimilation.jl` |
+| | `bathymetry_source` | `"etopo2022"` | Tethys bathymetry product. | `simulation.jl` |
+| | `geodata_input_dir` | `"inputs"` | Run-local cache directory for downloaded Tethys inputs. | `simulation.jl` |
+| | `geodata_store_dir` | `"../lakehouse/TethysBio"` | Shared environmental store written by `assimilate_environmental_inputs`; an empty string falls back to `geodata_input_dir`. | `simulation.jl`, `assimilation.jl` |
 | **`[organism]`** | `max_stage_male/female` | `19`, `16` | Terminal developmental stage ceilings (instar 16 and 13 + 3 pelagic). | `types.jl`, `organism_dynamics.jl`, `simulation.jl` |
 | | `stage_labels` | Vector | Consistent plot and axis labels across the full life cycle. | `types.jl`, `gui.jl`, `visualization.jl` |
 | | `metabolic_rate_base` | `0.01` | Basal metabolic scaling coefficient. | `organism_dynamics.jl` |
